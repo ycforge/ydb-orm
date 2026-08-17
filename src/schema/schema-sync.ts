@@ -66,6 +66,10 @@ const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
   Int64: Type_PrimitiveTypeId.INT64,
   Bool: Type_PrimitiveTypeId.BOOL,
   Double: Type_PrimitiveTypeId.DOUBLE,
+  Float: Type_PrimitiveTypeId.FLOAT,
+  Date: Type_PrimitiveTypeId.DATE,
+  Datetime: Type_PrimitiveTypeId.DATETIME,
+  Timestamp: Type_PrimitiveTypeId.TIMESTAMP,
 };
 
 const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
