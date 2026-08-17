@@ -1,4 +1,15 @@
-import { Uuid, Utf8, Int32, Int64, Bool, Double } from '@ydbjs/value/primitive';
+import {
+  Uuid,
+  Utf8,
+  Int32,
+  Int64,
+  Bool,
+  Double,
+  Float,
+  Date as YdbDate,
+  Datetime,
+  Timestamp,
+} from '@ydbjs/value/primitive';
 import { Optional } from '@ydbjs/value/optional';
 import { mapToYdb } from './mapper.js';
 
@@ -104,6 +115,42 @@ describe('mapToYdb', () => {
     it('returns Optional<Double> for null', () => {
       const val = mapToYdb('Double', null);
       expect(val).toBeInstanceOf(Optional);
+    });
+  });
+
+  describe('Float', () => {
+    it('wraps a number into Float value', () => {
+      const val = mapToYdb('Float', 1.5);
+      expect(val).toBeInstanceOf(Float);
+    });
+
+    it('returns Optional<Float> for null', () => {
+      const val = mapToYdb('Float', null);
+      expect(val).toBeInstanceOf(Optional);
+    });
+  });
+
+  describe('Date / Datetime / Timestamp', () => {
+    const jsDate = new global.Date('2026-08-18T12:30:00.000Z');
+
+    it('wraps Date instance into YDB Date', () => {
+      expect(mapToYdb('Date', jsDate)).toBeInstanceOf(YdbDate);
+    });
+
+    it('wraps ISO string into Datetime', () => {
+      expect(mapToYdb('Datetime', '2026-08-18T12:30:00.000Z')).toBeInstanceOf(
+        Datetime,
+      );
+    });
+
+    it('wraps epoch ms into Timestamp', () => {
+      expect(mapToYdb('Timestamp', jsDate.getTime())).toBeInstanceOf(Timestamp);
+    });
+
+    it('returns Optional for null', () => {
+      expect(mapToYdb('Date', null)).toBeInstanceOf(Optional);
+      expect(mapToYdb('Datetime', null)).toBeInstanceOf(Optional);
+      expect(mapToYdb('Timestamp', null)).toBeInstanceOf(Optional);
     });
   });
 
