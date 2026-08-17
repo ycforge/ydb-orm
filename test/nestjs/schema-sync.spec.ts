@@ -18,6 +18,7 @@ import {
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { UserRoleEntity } from '../fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
+import { Base64TestEncryptionProvider } from '../../src/encryption/base64-test-encryption.provider.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
@@ -69,6 +70,8 @@ describe('NestJS integration: schema sync on bootstrap', () => {
             endpoint: 'grpc://localhost:2136/local',
             auth_type: 'anonymous' as const,
             authOptions: {},
+            encryptionProvider: new Base64TestEncryptionProvider(),
+            blindIndexProvider: new Base64TestEncryptionProvider(),
             sync: true,
           }),
         }),
@@ -131,6 +134,8 @@ describe('NestJS integration: schema sync on bootstrap', () => {
             endpoint: 'grpc://localhost:2136/local',
             auth_type: 'anonymous' as const,
             authOptions: {},
+            encryptionProvider: new Base64TestEncryptionProvider(),
+            blindIndexProvider: new Base64TestEncryptionProvider(),
           }),
         }),
         TestFeatureModule,

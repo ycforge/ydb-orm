@@ -10,6 +10,7 @@ import {
 import { UserProfileEntity } from '../fixtures/user_profile/user_profile.entity.js';
 import { PhotoWithTagsEntity } from '../fixtures/photo_with_tags/photo_with_tags.entity.js';
 import { TagEntity } from '../fixtures/tag/tag.entity.js';
+import { Base64TestEncryptionProvider } from '../../src/encryption/base64-test-encryption.provider.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
@@ -46,6 +47,8 @@ async function createTestingModule(rows: any[][]) {
           endpoint: 'grpc://localhost:2136/local',
           auth_type: 'anonymous' as const,
           authOptions: {},
+          encryptionProvider: new Base64TestEncryptionProvider(),
+          blindIndexProvider: new Base64TestEncryptionProvider(),
           sync: false,
         }),
       }),

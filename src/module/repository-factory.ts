@@ -10,11 +10,13 @@ import {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
+import { validateEntityMetadata } from '../metadata/validate-entity.js';
 
 /**
  * Провайдер, который при инициализации модуля подключает глобальный
  * executor и опциональные encryption/blind-index провайдеры к Active Record
  * сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
+ * Перед подключением валидирует метаданные сущности (validateEntityMetadata).
  */
 export function createActiveRecordEntityProvider(
   entityClass: typeof YdbBaseEntity,
@@ -26,6 +28,17 @@ export function createActiveRecordEntityProvider(
       encryptionProvider?: YdbEncryptionProvider,
       blindIndexProvider?: YdbBlindIndexProvider,
     ) => {
+      const issues = validateEntityMetadata(entityClass, {
+        encryptionProviderConfigured: Boolean(encryptionProvider),
+        blindIndexProviderConfigured: Boolean(blindIndexProvider),
+      });
+      if (issues.length) {
+        throw new Error(
+          `Entity ${entityClass.name} metadata validation failed:\n` +
+            issues.map((i) => `  - ${i}`).join('\n'),
+        );
+      }
+
       entityClass.setExecutor(db);
       if (encryptionProvider) {
         entityClass.setEncryptionProvider(encryptionProvider);
