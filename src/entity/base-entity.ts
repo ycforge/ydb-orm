@@ -727,7 +727,7 @@ export class YdbBaseEntity {
     where: Record<string, any>,
     options?: QueryOptions,
   ): Promise<T | null> {
-    return this.find(where, options);
+    return this.find<T>(where, options);
   }
 
   /**
@@ -739,7 +739,7 @@ export class YdbBaseEntity {
     where: Record<string, any>,
     options?: QueryOptions,
   ): Promise<T[]> {
-    return this.findAll(where, options);
+    return this.findAll<T>(where, options);
   }
 
   /**
