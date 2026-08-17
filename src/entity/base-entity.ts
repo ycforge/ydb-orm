@@ -14,11 +14,19 @@ import {
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import {
+  YDB_CREATE_DATE_KEY,
+  YDB_UPDATE_DATE_KEY,
+} from '../decorators/timestamp.decorator.js';
 import type { YdbPrimitive } from '../core/types.js';
 import type {
   EncryptedFieldMeta,
   YdbEntityMetadata,
 } from '../metadata/entity-metadata.js';
+import {
+  getYdbEnumMetadata,
+  type YdbEnumMeta,
+} from '../decorators/enum.decorator.js';
 import { getEntityRuntime } from './entity-runtime.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 
@@ -41,6 +49,14 @@ export class YdbBaseEntity {
 
   protected static getBlindIndexProvider(): YdbBlindIndexProvider | undefined {
     return getEntityRuntime(this).blindIndexProvider;
+  }
+
+  protected static getCreateDateColumn(): string | undefined {
+    return Reflect.getMetadata(YDB_CREATE_DATE_KEY, this) as string | undefined;
+  }
+
+  protected static getUpdateDateColumn(): string | undefined {
+    return Reflect.getMetadata(YDB_UPDATE_DATE_KEY, this) as string | undefined;
   }
 
   protected static getExecutor(trx?: YdbExecutor): YdbExecutor {
@@ -66,6 +82,51 @@ export class YdbBaseEntity {
     return meta;
   }
 
+  /**
+   * Конвертирует enum значение для записи в БД: string → index (Int32) или string → string (Utf8).
+   * Бросает ошибку при невалидном значении.
+   */
+  private static convertEnumOut(
+    value: any,
+    enumMeta: YdbEnumMeta | undefined,
+  ): any {
+    if (!enumMeta || value === null || value === undefined) return value;
+    if (enumMeta.storage === 'Int32') {
+      const index = enumMeta.values.indexOf(String(value));
+      if (index === -1) {
+        throw new Error(
+          `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
+        );
+      }
+      return index;
+    }
+    // Utf8: валидация значения
+    if (!enumMeta.values.includes(String(value))) {
+      throw new Error(
+        `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Конвертирует enum значение из БД: index (Int32) → string или string → string.
+   */
+  private static convertEnumIn(
+    value: any,
+    enumMeta: YdbEnumMeta | undefined,
+  ): any {
+    if (!enumMeta || value === null || value === undefined) return value;
+    if (enumMeta.storage === 'Int32') {
+      const index = Number(value);
+      if (index >= 0 && index < enumMeta.values.length) {
+        return enumMeta.values[index];
+      }
+      return value; // fallback
+    }
+    return value;
+  }
+
   protected static bindParams(
     this: typeof YdbBaseEntity,
     query: any,
@@ -75,10 +136,13 @@ export class YdbBaseEntity {
   ) {
     const { schema } = this.getMeta();
     const effectiveSchema = dbSchema ?? schema;
+    const enums = getYdbEnumMetadata(this);
     for (const k of keys) {
       const type = effectiveSchema[k];
-      const value = data[k];
+      let value = data[k];
       if (!type) throw new Error(`No schema for field: ${k}`);
+      const enumMeta = enums.find((e) => e.propertyKey === k);
+      value = this.convertEnumOut(value, enumMeta);
       query.parameter(k, mapToYdb(type, value));
     }
   }
@@ -341,9 +405,11 @@ export class YdbBaseEntity {
     const meta = this.getMeta();
     const Ctor = this as new () => YdbBaseEntity;
     const instance = new Ctor();
+    const enums = getYdbEnumMetadata(this);
     for (const [key, value] of Object.entries(row)) {
       if (isSyntheticColumn(meta, key)) continue;
-      (instance as any)[key] = value;
+      const enumMeta = enums.find((e) => e.propertyKey === key);
+      (instance as any)[key] = this.convertEnumIn(value, enumMeta);
     }
     return instance;
   }
@@ -661,7 +727,7 @@ export class YdbBaseEntity {
     where: Record<string, any>,
     options?: QueryOptions,
   ): Promise<T | null> {
-    return this.find(where, options);
+    return this.find<T>(where, options);
   }
 
   /**
@@ -673,7 +739,7 @@ export class YdbBaseEntity {
     where: Record<string, any>,
     options?: QueryOptions,
   ): Promise<T[]> {
-    return this.findAll(where, options);
+    return this.findAll<T>(where, options);
   }
 
   /**
@@ -815,6 +881,20 @@ export class YdbBaseEntity {
       if (!(e as any).uuid) (e as any).uuid = this.generateUuid();
     }
 
+    // Автоматическая простановка Timestamp колонок
+    const createDateCol = this.getCreateDateColumn();
+    const updateDateCol = this.getUpdateDateColumn();
+    if (createDateCol || updateDateCol) {
+      for (const e of entities) {
+        if (createDateCol && (e as any)[createDateCol] === undefined) {
+          (e as any)[createDateCol] = new Date();
+        }
+        if (updateDateCol && (e as any)[updateDateCol] === undefined) {
+          (e as any)[updateDateCol] = new Date();
+        }
+      }
+    }
+
     const dataList = await Promise.all(
       entities.map((e) =>
         this.encryptEntity({ ...(e as Record<string, any>) }, meta),
@@ -866,6 +946,17 @@ export class YdbBaseEntity {
     if (schema['uuid'] && !(entity as any).uuid) {
       (entity as any).uuid = this.generateUuid();
     }
+
+    // Автоматическая простановка Timestamp колонок
+    const createDateCol = this.getCreateDateColumn();
+    const updateDateCol = this.getUpdateDateColumn();
+    if (createDateCol && (entity as any)[createDateCol] === undefined) {
+      (entity as any)[createDateCol] = new Date();
+    }
+    if (updateDateCol && (entity as any)[updateDateCol] === undefined) {
+      (entity as any)[updateDateCol] = new Date();
+    }
+
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
@@ -894,6 +985,12 @@ export class YdbBaseEntity {
     const meta = this.getMeta();
     const { tableName } = meta;
     const dbSchema = this.getDbSchema(meta);
+
+    // Автоматическая простановка Timestamp колонки обновления
+    const updateDateCol = this.getUpdateDateColumn();
+    if (updateDateCol) {
+      (entity as any)[updateDateCol] = new Date();
+    }
 
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
@@ -927,6 +1024,28 @@ export class YdbBaseEntity {
     }
     await this.decryptResult(raw, meta);
     return this.instantiate(raw);
+  }
+
+  /**
+   * Сериализация в JSON: исключает synthetic {field}_bi колонки
+   * (blind index) и внутренние служебные поля.
+   * Возвращает расшифрованные значения — те, что хранятся в инстансе.
+   */
+  toJSON(): Record<string, any> {
+    const meta = getYdbEntityMetadata(this.constructor as any);
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(this)) {
+      if (
+        key.endsWith('_bi') &&
+        meta?.encryptedFields.some(
+          (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
+        )
+      ) {
+        continue;
+      }
+      result[key] = value;
+    }
+    return result;
   }
 
   async loadRelations(
