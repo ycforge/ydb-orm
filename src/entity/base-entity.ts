@@ -20,6 +20,7 @@ import type {
   YdbEntityMetadata,
 } from '../metadata/entity-metadata.js';
 import { getEntityRuntime } from './entity-runtime.js';
+import { YdbQueryBuilder } from '../query/query-builder.js';
 
 export class YdbBaseEntity {
   static setExecutor(db: YdbExecutor): void {
@@ -636,6 +637,80 @@ export class YdbBaseEntity {
     );
     const sql = `SELECT COUNT(*) AS cnt FROM ${quoteIdentifier(meta.tableName)} ${whereClause}`;
 
+    const query = exec([sql] as unknown as TemplateStringsArray);
+    this.bindParams(query, values, keys, dbSchema);
+
+    const rows = await this.executeQuery<Record<string, any>[][]>(
+      query,
+      options,
+    );
+    return Number(rows[0]?.[0]?.cnt ?? 0);
+  }
+
+  /**
+   * Цепочный query builder: Entity.query().where(...).orderBy(...).getMany().
+   */
+  static query<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+  ): YdbQueryBuilder<T> {
+    return new YdbQueryBuilder<T>(this);
+  }
+
+  /**
+   * @internal Мост для YdbQueryBuilder: собрать WHERE по метаданным сущности.
+   * Не является частью публичного API.
+   */
+  static _buildWhereClause(
+    this: typeof YdbBaseEntity,
+    where: Record<string, any>,
+  ) {
+    return this.buildWhere(where, this.getMeta());
+  }
+
+  /**
+   * @internal Мост для YdbQueryBuilder: выполнить SELECT и вернуть сущности
+   * (дешифровка + инстанцирование + eager relations).
+   */
+  static async _executeSelect<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+    sql: string,
+    values: Record<string, any>,
+    keys: string[],
+    dbSchema: Record<string, YdbPrimitive>,
+    options?: QueryOptions,
+  ): Promise<T[]> {
+    const exec = this.getExecutor(options?.trx);
+    const query = exec([sql] as unknown as TemplateStringsArray);
+    this.bindParams(query, values, keys, dbSchema);
+
+    const rows = await this.executeQuery<Record<string, any>[][]>(
+      query,
+      options,
+    );
+    const raw = rows[0] ?? [];
+
+    const meta = this.getMeta();
+    await this.decryptResult(raw, meta);
+
+    const result = raw.map((r) => this.instantiate(r) as T);
+    if (result.length) {
+      await this.loadEagerRelations(result, options);
+    }
+    return result;
+  }
+
+  /**
+   * @internal Мост для YdbQueryBuilder: выполнить COUNT-запрос.
+   */
+  static async _executeCount(
+    this: typeof YdbBaseEntity,
+    sql: string,
+    values: Record<string, any>,
+    keys: string[],
+    dbSchema: Record<string, YdbPrimitive>,
+    options?: QueryOptions,
+  ): Promise<number> {
+    const exec = this.getExecutor(options?.trx);
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
 

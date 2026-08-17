@@ -55,6 +55,8 @@ export { EagerLoad } from './decorators/eager.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
+export { YdbQueryBuilder } from './query/query-builder.js';
+export type { BuiltQuery, OrderDirection } from './query/query-builder.js';
 
 // Шифрование
 export type {
