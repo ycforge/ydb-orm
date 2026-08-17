@@ -26,6 +26,11 @@ export interface YdbModuleOptions {
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
   /**
+   * Версия генерируемых UUID для первичных ключей: v7 (по умолчанию,
+   * время-сортируемые) или v4 (случайные, для переходного периода).
+   */
+  uuidVersion?: 'v4' | 'v7';
+  /**
    * Как в TypeORM synchronize: при старте приложения подстроить схему БД
    * под метаданные всех сущностей (создать недостающие таблицы и колонки).
    * Только для dev-стендов — в проде используйте миграции.

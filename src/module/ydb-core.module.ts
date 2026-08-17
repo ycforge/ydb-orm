@@ -104,6 +104,7 @@ export class YdbCoreModule {
         },
       ],
       exports: [
+        YDB_OPTIONS,
         YDB_DRIVER,
         YDB_QUERY,
         YdbTransactionManager,

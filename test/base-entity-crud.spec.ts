@@ -5,6 +5,8 @@ import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from './fixtures/photo/photo.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { getEntityRuntime } from '../src/entity/entity-runtime.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const userRow = {
   uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
@@ -230,6 +232,38 @@ describe('BaseEntity CRUD (mock executor)', () => {
       expect(q.sql).toContain('`uuid`');
       expect(q.sql).toContain('`email_encrypted`');
       expect(q.sql).toContain('`full_name`');
+    });
+
+    it('generates UUID v7 by default and v4 when runtime generator is set', async () => {
+      const provider = new Base64TestEncryptionProvider();
+      UserEntity.setEncryptionProvider(provider);
+      UserEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      UserEntity.setExecutor(mock.executor);
+
+      const runtime = getEntityRuntime(UserEntity);
+      const prevGenerator = runtime.uuidGenerator;
+      try {
+        // По умолчанию — v7 (время-сортируемые)
+        delete runtime.uuidGenerator;
+        const userV7 = new UserEntity();
+        userV7.full_name = 'V7';
+        await UserEntity.save(userV7);
+        expect(userV7.uuid).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+
+        // Опция uuidVersion: 'v4' в модуле подставляет v4-генератор
+        runtime.uuidGenerator = uuidv4;
+        const userV4 = new UserEntity();
+        userV4.full_name = 'V4';
+        await UserEntity.save(userV4);
+        expect(userV4.uuid).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+      } finally {
+        runtime.uuidGenerator = prevGenerator;
+      }
     });
 
     it('skips undefined fields in UPSERT', async () => {

@@ -1,7 +1,7 @@
 import { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { mapToYdb } from '../core/mapper.js';
-import { v4 as uuidv4 } from 'uuid';
+import { v7 as uuidv7 } from 'uuid';
 import { QueryOptions } from '../core/query-options.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import {
@@ -51,6 +51,11 @@ export class YdbBaseEntity {
       );
     }
     return db;
+  }
+
+  /** Генератор UUID для PK: из рантайма (uuidVersion в опциях модуля), по умолчанию v7. */
+  protected static generateUuid(): string {
+    return getEntityRuntime(this).uuidGenerator?.() ?? uuidv7();
   }
 
   protected static getMeta(this: typeof YdbBaseEntity) {
@@ -783,7 +788,7 @@ export class YdbBaseEntity {
     const dbSchema = this.getDbSchema(meta);
 
     for (const e of entities) {
-      if (!(e as any).uuid) (e as any).uuid = uuidv4();
+      if (!(e as any).uuid) (e as any).uuid = this.generateUuid();
     }
 
     const dataList = await Promise.all(
@@ -835,7 +840,7 @@ export class YdbBaseEntity {
     const dbSchema = this.getDbSchema(meta);
 
     if (schema['uuid'] && !(entity as any).uuid) {
-      (entity as any).uuid = uuidv4();
+      (entity as any).uuid = this.generateUuid();
     }
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },

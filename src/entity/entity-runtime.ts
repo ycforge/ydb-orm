@@ -9,6 +9,8 @@ export interface EntityRuntime {
   executor?: YdbExecutor;
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  /** Генератор UUID для PK (по умолчанию v7 — см. base-entity). */
+  uuidGenerator?: () => string;
 }
 
 /**
