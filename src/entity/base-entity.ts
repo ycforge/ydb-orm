@@ -14,6 +14,10 @@ import {
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import {
+  YDB_CREATE_DATE_KEY,
+  YDB_UPDATE_DATE_KEY,
+} from '../decorators/timestamp.decorator.js';
 import type { YdbPrimitive } from '../core/types.js';
 import type {
   EncryptedFieldMeta,
@@ -41,6 +45,14 @@ export class YdbBaseEntity {
 
   protected static getBlindIndexProvider(): YdbBlindIndexProvider | undefined {
     return getEntityRuntime(this).blindIndexProvider;
+  }
+
+  protected static getCreateDateColumn(): string | undefined {
+    return Reflect.getMetadata(YDB_CREATE_DATE_KEY, this) as string | undefined;
+  }
+
+  protected static getUpdateDateColumn(): string | undefined {
+    return Reflect.getMetadata(YDB_UPDATE_DATE_KEY, this) as string | undefined;
   }
 
   protected static getExecutor(trx?: YdbExecutor): YdbExecutor {
@@ -815,6 +827,20 @@ export class YdbBaseEntity {
       if (!(e as any).uuid) (e as any).uuid = this.generateUuid();
     }
 
+    // Автоматическая простановка Timestamp колонок
+    const createDateCol = this.getCreateDateColumn();
+    const updateDateCol = this.getUpdateDateColumn();
+    if (createDateCol || updateDateCol) {
+      for (const e of entities) {
+        if (createDateCol && (e as any)[createDateCol] === undefined) {
+          (e as any)[createDateCol] = new Date();
+        }
+        if (updateDateCol && (e as any)[updateDateCol] === undefined) {
+          (e as any)[updateDateCol] = new Date();
+        }
+      }
+    }
+
     const dataList = await Promise.all(
       entities.map((e) =>
         this.encryptEntity({ ...(e as Record<string, any>) }, meta),
@@ -866,6 +892,17 @@ export class YdbBaseEntity {
     if (schema['uuid'] && !(entity as any).uuid) {
       (entity as any).uuid = this.generateUuid();
     }
+
+    // Автоматическая простановка Timestamp колонок
+    const createDateCol = this.getCreateDateColumn();
+    const updateDateCol = this.getUpdateDateColumn();
+    if (createDateCol && (entity as any)[createDateCol] === undefined) {
+      (entity as any)[createDateCol] = new Date();
+    }
+    if (updateDateCol && (entity as any)[updateDateCol] === undefined) {
+      (entity as any)[updateDateCol] = new Date();
+    }
+
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
@@ -894,6 +931,12 @@ export class YdbBaseEntity {
     const meta = this.getMeta();
     const { tableName } = meta;
     const dbSchema = this.getDbSchema(meta);
+
+    // Автоматическая простановка Timestamp колонки обновления
+    const updateDateCol = this.getUpdateDateColumn();
+    if (updateDateCol) {
+      (entity as any)[updateDateCol] = new Date();
+    }
 
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
