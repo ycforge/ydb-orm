@@ -68,6 +68,8 @@ export { Base64TestEncryptionProvider } from './encryption/base64-test-encryptio
 
 // Метаданные и реестр сущностей
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
+export { validateEntityMetadata } from './metadata/validate-entity.js';
+export type { EntityValidationContext } from './metadata/validate-entity.js';
 export type {
   YdbEntityMetadata,
   EncryptedFieldMeta,
