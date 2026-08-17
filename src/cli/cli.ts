@@ -20,6 +20,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:run               Применить все новые миграции
   ydb-orm migration:revert            Откатить последнюю миграцию
   ydb-orm migration:show              Показать статус миграций
+  ydb-orm schema:verify             Проверить схему БД против метаданных сущностей
   ydb-orm entity:create <name>        Создать сущность
 
 Опции:
@@ -118,6 +119,30 @@ async function main(): Promise<void> {
         console.warn(`WARNING: ${warning}`);
       }
       console.log(`Migration generated: ${created.filePath}`);
+    } finally {
+      close();
+    }
+    return;
+  }
+
+  if (command === 'schema:verify') {
+    if (!config.entities?.length) {
+      throw new Error(
+        'schema:verify requires "entities" in the CLI config (ydb-orm.config.ts).',
+      );
+    }
+    const { driver, executor, close } = await connectCli(config);
+    try {
+      const syncer = new YdbSchemaSyncer(driver, executor);
+      const issues = await syncer.verify(config.entities);
+      if (issues.length === 0) {
+        console.log('Schema OK — no issues found');
+      } else {
+        for (const issue of issues) {
+          console.error(`[${issue.kind}] ${issue.message}`);
+        }
+        process.exitCode = 1;
+      }
     } finally {
       close();
     }
