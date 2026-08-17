@@ -57,7 +57,7 @@ export class AppModule {}
 await UserEntity.find({ uuid });                    // одна запись или null
 await UserEntity.findAll({ name: 'Ivan' }, { limit: 50, offset: 0 });
 await UserEntity.count({ name: 'Ivan' });
-await UserEntity.save(user);                        // insert (uuid генерируется) или update по uuid
+await UserEntity.save(user);                        // insert (uuid генерируется, по умолчанию v7) или update по uuid
 await UserEntity.insertMany([u1, u2]);              // батчи по 100
 await user.loadRelations(['roles']);
 ```

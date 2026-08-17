@@ -1,15 +1,18 @@
 import { Provider } from '@nestjs/common';
 import {
   YDB_QUERY,
+  YDB_OPTIONS,
   YDB_ENCRYPTION_PROVIDER,
   YDB_BLIND_INDEX_PROVIDER,
 } from '../core/constants.js';
-import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
+import { getEntityRuntime } from '../entity/entity-runtime.js';
+import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
 
 /**
@@ -25,6 +28,7 @@ export function createActiveRecordEntityProvider(
     provide: `${entityClass.name}_AR_INIT`,
     useFactory: (
       db: YdbExecutor,
+      opts: YdbModuleOptions,
       encryptionProvider?: YdbEncryptionProvider,
       blindIndexProvider?: YdbBlindIndexProvider,
     ) => {
@@ -39,6 +43,9 @@ export function createActiveRecordEntityProvider(
         );
       }
 
+      getEntityRuntime(entityClass).uuidGenerator =
+        opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+
       entityClass.setExecutor(db);
       if (encryptionProvider) {
         entityClass.setEncryptionProvider(encryptionProvider);
@@ -50,6 +57,7 @@ export function createActiveRecordEntityProvider(
     },
     inject: [
       YDB_QUERY,
+      YDB_OPTIONS,
       { token: YDB_ENCRYPTION_PROVIDER, optional: true },
       { token: YDB_BLIND_INDEX_PROVIDER, optional: true },
     ],
