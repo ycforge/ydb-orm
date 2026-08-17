@@ -53,6 +53,10 @@ export type {
 } from './decorators/relation.decorators.js';
 export { EagerLoad } from './decorators/eager.decorator.js';
 export {
+  YdbCreateDateColumn,
+  YdbUpdateDateColumn,
+} from './decorators/timestamp.decorator.js';
+export {
   YdbIndex,
   getYdbIndexesMetadata,
   resolveIndexName,
@@ -61,6 +65,8 @@ export type {
   YdbIndexMetadata,
   YdbIndexOptions,
 } from './decorators/index.decorator.js';
+export { YdbEnum, getYdbEnumMetadata } from './decorators/enum.decorator.js';
+export type { YdbEnumMeta } from './decorators/enum.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
