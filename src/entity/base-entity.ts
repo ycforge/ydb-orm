@@ -929,6 +929,28 @@ export class YdbBaseEntity {
     return this.instantiate(raw);
   }
 
+  /**
+   * Сериализация в JSON: исключает synthetic {field}_bi колонки
+   * (blind index) и внутренние служебные поля.
+   * Возвращает расшифрованные значения — те, что хранятся в инстансе.
+   */
+  toJSON(): Record<string, any> {
+    const meta = getYdbEntityMetadata(this.constructor as any);
+    const result: Record<string, any> = {};
+    for (const [key, value] of Object.entries(this)) {
+      if (
+        key.endsWith('_bi') &&
+        meta?.encryptedFields.some(
+          (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
+        )
+      ) {
+        continue;
+      }
+      result[key] = value;
+    }
+    return result;
+  }
+
   async loadRelations(
     relations: string[],
     options?: QueryOptions,
