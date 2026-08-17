@@ -24,8 +24,11 @@ import {
   JoinTable,
 } from '../decorators/relation.decorators.js';
 import { EagerLoad } from '../decorators/eager.decorator.js';
+import { YdbIndex } from '../decorators/index.decorator.js';
 
 @YdbEntity('test_users')
+@YdbIndex({ columns: ['secret_bi'] })
+@YdbIndex({ columns: ['is_active', 'name'], name: 'test_users__active_name' })
 class TestUserEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
@@ -158,7 +161,7 @@ describe('buildExpectedSchemas', () => {
 });
 
 describe('generateCreateTableYql', () => {
-  it('generates CREATE TABLE with quoted identifiers and PRIMARY KEY', () => {
+  it('generates CREATE TABLE with quoted identifiers, INDEX clauses and PRIMARY KEY', () => {
     const yql = generateCreateTableYql(
       buildExpectedTableSchema(meta(TestUserEntity)),
     );
@@ -170,9 +173,22 @@ describe('generateCreateTableYql', () => {
         '  `secret` Utf8,\n' +
         '  `is_active` Bool,\n' +
         '  `secret_bi` Utf8,\n' +
+        '  INDEX `test_users__secret_bi` GLOBAL SYNC ON (`secret_bi`),\n' +
+        '  INDEX `test_users__active_name` GLOBAL SYNC ON (`is_active`, `name`),\n' +
         '  PRIMARY KEY (`uuid`)\n' +
         ')',
     );
+  });
+});
+
+describe('@YdbIndex metadata', () => {
+  it('resolves default index names as {table}__{cols}', () => {
+    const schema = buildExpectedTableSchema(meta(TestUserEntity));
+
+    expect(schema.indexes).toEqual([
+      { name: 'test_users__secret_bi', columns: ['secret_bi'] },
+      { name: 'test_users__active_name', columns: ['is_active', 'name'] },
+    ]);
   });
 });
 

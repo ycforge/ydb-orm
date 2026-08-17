@@ -19,12 +19,23 @@ import {
   getManyToManyJoinTables,
   ManyToManyJoinTable,
 } from '../decorators/relation.decorators.js';
+import {
+  getYdbIndexesMetadata,
+  resolveIndexName,
+} from '../decorators/index.decorator.js';
+
+/** Ожидаемый вторичный индекс таблицы. */
+export interface ExpectedIndex {
+  name: string;
+  columns: string[];
+}
 
 /** Ожидаемая схема таблицы, построенная по метаданным сущности. */
 export interface ExpectedTableSchema {
   tableName: string;
   columns: Record<string, YdbPrimitive>;
   primaryKey: string[];
+  indexes: ExpectedIndex[];
 }
 
 /** Нормализованное описание существующей таблицы из DescribeTable. */
@@ -101,7 +112,14 @@ export function buildExpectedTableSchema(
     }
   }
 
-  return { tableName: meta.tableName, columns, primaryKey };
+  const indexes: ExpectedIndex[] = getYdbIndexesMetadata(meta.target).map(
+    (idx) => ({
+      name: idx.name ?? resolveIndexName(meta.tableName, idx.columns),
+      columns: [...idx.columns],
+    }),
+  );
+
+  return { tableName: meta.tableName, columns, primaryKey, indexes };
 }
 
 /** Ожидаемая схема join-таблицы many-to-many. */
@@ -115,6 +133,7 @@ export function buildExpectedJoinTableSchema(
       [joinTable.inverseJoinColumn]: 'Uuid',
     },
     primaryKey: [joinTable.joinColumn, joinTable.inverseJoinColumn],
+    indexes: [],
   };
 }
 
@@ -143,10 +162,16 @@ export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   const columnDefs = Object.entries(expected.columns).map(
     ([name, type]) => `${quoteIdentifier(name)} ${type}`,
   );
+  const indexDefs = (expected.indexes ?? []).map(
+    (idx) =>
+      `INDEX ${quoteIdentifier(idx.name)} GLOBAL SYNC ON ` +
+      `(${idx.columns.map(quoteIdentifier).join(', ')})`,
+  );
   const pk = expected.primaryKey.map(quoteIdentifier).join(', ');
+  const body = [...columnDefs, ...indexDefs].join(',\n  ');
   return (
     `CREATE TABLE ${quoteIdentifier(expected.tableName)} (\n  ` +
-    `${columnDefs.join(',\n  ')},\n  PRIMARY KEY (${pk})\n)`
+    `${body},\n  PRIMARY KEY (${pk})\n)`
   );
 }
 

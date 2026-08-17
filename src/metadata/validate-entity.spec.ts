@@ -8,6 +8,7 @@ import {
   OneToMany,
   OneToOne,
 } from '../decorators/relation.decorators.js';
+import { YdbIndex } from '../decorators/index.decorator.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import {
   validateEntityMetadata,
@@ -127,6 +128,13 @@ class M2mNoJoinTableB extends YdbBaseEntity {
   as?: M2mNoJoinTableA[];
 }
 
+@YdbEntity('v_bad_idx')
+@YdbIndex({ columns: ['nope'] })
+class BadIndexColumn extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+}
+
 @YdbEntity('v_m2m_two_jt_a')
 class M2mTwoJoinTablesA extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -218,6 +226,13 @@ describe('validateEntityMetadata', () => {
     const issues = validateEntityMetadata(M2mNoJoinTableA, ctx);
     expect(issues).toEqual([
       expect.stringContaining('requires @JoinTable on one of the sides'),
+    ]);
+  });
+
+  it('rejects @YdbIndex with unknown column', () => {
+    const issues = validateEntityMetadata(BadIndexColumn, ctx);
+    expect(issues).toEqual([
+      expect.stringContaining('@YdbIndex references unknown column "nope"'),
     ]);
   });
 
