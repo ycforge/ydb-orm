@@ -64,6 +64,27 @@ await user.loadRelations(['roles']);
 
 `QueryOptions`: `trx`, `timeout` (мс), `signal` (AbortSignal), `limit` (по умолчанию 100, макс 1000), `offset`.
 
+## QueryBuilder
+
+Цепочный builder поверх Active Record (`src/query/`):
+
+```ts
+const photos = await PhotoEntity.query()
+  .where({ is_public: true })
+  .andWhere({ author_email: 'a@b.c' }) // encrypted + blind index — как в find
+  .orderBy('rating', 'DESC')
+  .addOrderBy('title')
+  .limit(20)
+  .offset(10)
+  .getMany();
+
+await PhotoEntity.query().where({ is_public: true }).getOne();   // первая или null
+await PhotoEntity.query().where({ is_public: true }).getCount(); // COUNT(*)
+const { sql, values } = await PhotoEntity.query().where({ is_public: true }).toYql(); // без выполнения
+```
+
+Условия — только равенство (AND). Поля в WHERE/ORDER BY валидируются по метаданным сущности.
+
 ## Декораторы
 
 - `@YdbEntity('table')` — имя таблицы; класс попадает в глобальный реестр сущностей (используется schema sync).
