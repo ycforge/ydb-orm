@@ -19,6 +19,10 @@ import type {
   EncryptedFieldMeta,
   YdbEntityMetadata,
 } from '../metadata/entity-metadata.js';
+import {
+  getYdbEnumMetadata,
+  type YdbEnumMeta,
+} from '../decorators/enum.decorator.js';
 import { getEntityRuntime } from './entity-runtime.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 
@@ -66,6 +70,51 @@ export class YdbBaseEntity {
     return meta;
   }
 
+  /**
+   * Конвертирует enum значение для записи в БД: string → index (Int32) или string → string (Utf8).
+   * Бросает ошибку при невалидном значении.
+   */
+  private static convertEnumOut(
+    value: any,
+    enumMeta: YdbEnumMeta | undefined,
+  ): any {
+    if (!enumMeta || value === null || value === undefined) return value;
+    if (enumMeta.storage === 'Int32') {
+      const index = enumMeta.values.indexOf(String(value));
+      if (index === -1) {
+        throw new Error(
+          `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
+        );
+      }
+      return index;
+    }
+    // Utf8: валидация значения
+    if (!enumMeta.values.includes(String(value))) {
+      throw new Error(
+        `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
+      );
+    }
+    return value;
+  }
+
+  /**
+   * Конвертирует enum значение из БД: index (Int32) → string или string → string.
+   */
+  private static convertEnumIn(
+    value: any,
+    enumMeta: YdbEnumMeta | undefined,
+  ): any {
+    if (!enumMeta || value === null || value === undefined) return value;
+    if (enumMeta.storage === 'Int32') {
+      const index = Number(value);
+      if (index >= 0 && index < enumMeta.values.length) {
+        return enumMeta.values[index];
+      }
+      return value; // fallback
+    }
+    return value;
+  }
+
   protected static bindParams(
     this: typeof YdbBaseEntity,
     query: any,
@@ -75,10 +124,13 @@ export class YdbBaseEntity {
   ) {
     const { schema } = this.getMeta();
     const effectiveSchema = dbSchema ?? schema;
+    const enums = getYdbEnumMetadata(this);
     for (const k of keys) {
       const type = effectiveSchema[k];
-      const value = data[k];
+      let value = data[k];
       if (!type) throw new Error(`No schema for field: ${k}`);
+      const enumMeta = enums.find((e) => e.propertyKey === k);
+      value = this.convertEnumOut(value, enumMeta);
       query.parameter(k, mapToYdb(type, value));
     }
   }
@@ -341,9 +393,11 @@ export class YdbBaseEntity {
     const meta = this.getMeta();
     const Ctor = this as new () => YdbBaseEntity;
     const instance = new Ctor();
+    const enums = getYdbEnumMetadata(this);
     for (const [key, value] of Object.entries(row)) {
       if (isSyntheticColumn(meta, key)) continue;
-      (instance as any)[key] = value;
+      const enumMeta = enums.find((e) => e.propertyKey === key);
+      (instance as any)[key] = this.convertEnumIn(value, enumMeta);
     }
     return instance;
   }
