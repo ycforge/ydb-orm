@@ -653,6 +653,30 @@ export class YdbBaseEntity {
   }
 
   /**
+   * Находит первую сущность по WHERE-условию.
+   * Алиас для find() — тот же.signature, более явный интент.
+   */
+  static async findOneBy<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+    where: Record<string, any>,
+    options?: QueryOptions,
+  ): Promise<T | null> {
+    return this.find(where, options);
+  }
+
+  /**
+   * Находит все сущности по WHERE-условию.
+   * Алиас для findAll() — тот же signature, более явный интент.
+   */
+  static async findBy<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+    where: Record<string, any>,
+    options?: QueryOptions,
+  ): Promise<T[]> {
+    return this.findAll(where, options);
+  }
+
+  /**
    * Цепочный query builder: Entity.query().where(...).orderBy(...).getMany().
    */
   static query<T extends YdbBaseEntity>(
