@@ -71,7 +71,29 @@ await user.loadRelations(['roles']);
 - `@YdbPrimaryColumn(type)` — колонка первичного ключа (поддерживается составной PK: несколько таких колонок). Если PK не объявлен, используется `uuid`.
 - `@YdbEncrypted({ blindIndex })` — поле шифруется перед записью и дешифруется после чтения; `blindIndex: true` (по умолчанию) добавляет synthetic колонку `{field}_bi` для поиска по хешу.
 - `@YdbSecurityAAD()` — незашифрованное поле участвует в AAD.
-- `@OneToMany` / `@ManyToOne` / `@OneToOne` — relations; `@EagerLoad([...])` — batch-загрузка одним `IN (...)` запросом (без N+1).
+- `@OneToMany` / `@ManyToOne` / `@OneToOne` / `@ManyToMany` — relations; `@EagerLoad([...])` — batch-загрузка одним `IN (...)` запросом (без N+1). `@ManyToMany` требует `@JoinTable('join_table_name')` на владеющей стороне; join-таблица попадает в schema sync и миграции автоматически.
+
+```ts
+@YdbEntity('photos')
+@EagerLoad(['tags'])
+class Photo extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid') uuid: string;
+  @YdbColumn('Utf8') title: string;
+
+  @ManyToMany(() => Tag, (tag) => tag.photos)
+  @JoinTable('photo_tag')
+  tags: Tag[];
+}
+
+@YdbEntity('tags')
+class Tag extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid') uuid: string;
+  @YdbColumn('Utf8') name: string;
+
+  @ManyToMany(() => Photo, (photo) => photo.tags)
+  photos: Photo[];
+}
+```
 
 ## Шифрование
 
@@ -96,6 +118,64 @@ await user.loadRelations(['roles']);
 - расхождение типа колонки или PK → ошибка (в YDB не меняется, нужна миграция).
 
 Провайдер `YDB_SCHEMA_SYNC` экспортируется из модуля: `syncer.verify(entities)` проверяет схему без изменений. Генераторы DDL (`generateCreateTableYql` и т.д.) доступны в публичном API — их можно использовать для миграций.
+
+## Миграции
+
+По аналогии с TypeORM: миграция — класс с `up`/`down`, получающий `YdbExecutor`. Применённые миграции хранятся в таблице `ydb_migrations` (создаётся автоматически). Файлы миграций — `<timestamp>-<Name>.ts` в директории `./migrations`, порядок выполнения — по имени файла. Node ≥ 22.18 импортирует `.ts` напрямую, отдельный ts-node не нужен. Из-за нативного стриппинга типов типы (`YdbMigration`, `YdbExecutor`) импортируйте через `import type` — обычный именованный импорт типа упадёт в рантайме.
+
+```ts
+import type { YdbMigration, YdbExecutor } from '@ycforge/ydb-orm';
+import { executeSql } from '@ycforge/ydb-orm';
+
+export class CreateUsers1755000000000 implements YdbMigration {
+  readonly name = '1755000000000-CreateUsers';
+
+  async up(executor: YdbExecutor): Promise<void> {
+    await executeSql(executor, 'CREATE TABLE `users` (`uuid` Uuid, PRIMARY KEY (`uuid`))');
+  }
+
+  async down(executor: YdbExecutor): Promise<void> {
+    await executeSql(executor, 'DROP TABLE `users`');
+  }
+}
+```
+
+### CLI
+
+Пакет ставит бинарь `ydb-orm`:
+
+```bash
+ydb-orm migration:create CreateUsers      # пустая миграция ./migrations/<ts>-CreateUsers.ts
+ydb-orm migration:generate AddPhotos      # миграция по diff сущностей и БД
+ydb-orm migration:run                     # применить все новые миграции
+ydb-orm migration:revert                  # откатить последнюю
+ydb-orm migration:show                    # статус миграций
+ydb-orm entity:create UserProfile         # сущность ./src/user-profile.entity.ts
+```
+
+Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`.
+
+Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; также ищется в `./src/`):
+
+```ts
+import { UserEntity } from './src/user.entity.js';
+
+export default {
+  endpoint: process.env.YDB_ENDPOINT!,
+  auth_type: 'auth_key',
+  authOptions: { authorized_key_path: './authorized_key.json' },
+  entities: [UserEntity],        // нужно для migration:generate
+  migrationsDir: './migrations', // опционально
+};
+```
+
+Без конфига CLI читает env: `YDB_ENDPOINT` (или `YDB_CONNECTION_STRING`), `YDB_AUTH_TYPE` (по умолчанию `anonymous`), `YDB_AUTHORIZED_KEY_PATH`.
+
+`migration:generate` строит diff по всем `entities` из конфига: нет таблицы → `CREATE TABLE` (+ `DROP TABLE` в `down`), нет колонок → `ADD COLUMN` (+ `DROP COLUMN` в `down`). Расхождения типа/PK и лишние колонки не меняются автоматически — попадают в миграцию как `WARNING`-комментарии.
+
+### Программный API
+
+`YdbMigrationRunner` (run/revert/status), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.
 
 ## Транзакции
 

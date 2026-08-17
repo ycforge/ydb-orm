@@ -1,6 +1,10 @@
 import { DynamicModule, Global, Module, Provider, Type } from '@nestjs/common';
 import { Driver } from '@ydbjs/core';
-import { query } from '@ydbjs/query';
+import {
+  createCredentialsProvider,
+  createDriver,
+  createExecutor,
+} from '../core/driver.js';
 import {
   YDB_DRIVER,
   YDB_QUERY,
@@ -20,9 +24,6 @@ import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
-import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
-import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
-import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { CredentialsProvider } from '@ydbjs/auth';
 import { YdbTransactionManager } from '../transaction/transaction.manager.js';
 import { YdbSchemaSyncer } from '../schema/schema-sync.js';
@@ -43,26 +44,8 @@ export class YdbCoreModule {
 
         {
           provide: YDB_CREDENTIALS_PROVIDER,
-          useFactory: (opts: YdbModuleOptions) => {
-            switch (opts.auth_type) {
-              case 'meta':
-                return new MetadataCredentialsProvider();
-              case 'auth_key':
-                if (!opts.authOptions.authorized_key_path) {
-                  throw new Error('Authorized key path not provided');
-                }
-                return AuthKeyCredentialsProvider.fromAuthorizedKeyFile(
-                  opts.authOptions.authorized_key_path,
-                );
-              case 'anonymous':
-                return new AnonymousCredentialsProvider();
-              default:
-                throw new Error(
-                  `Invalid YDB auth type: ${String(opts.auth_type)}. ` +
-                    `Supported: "meta", "auth_key", "anonymous".`,
-                );
-            }
-          },
+          useFactory: (opts: YdbModuleOptions) =>
+            createCredentialsProvider(opts),
           inject: [YDB_OPTIONS],
         },
 
@@ -71,29 +54,14 @@ export class YdbCoreModule {
           useFactory: async (
             opts: YdbModuleOptions,
             credentialsProvider: CredentialsProvider,
-          ) => {
-            const driver = new Driver(opts.endpoint, {
-              credentialsProvider,
-              ...opts.driverOptions,
-            });
-            await driver.ready();
-            return driver;
-          },
+          ) => createDriver(opts, credentialsProvider),
           inject: [YDB_OPTIONS, YDB_CREDENTIALS_PROVIDER],
         },
 
         {
           provide: YDB_QUERY,
           useFactory: (driver: Driver, opts: YdbModuleOptions): YdbExecutor =>
-            query(driver, {
-              poolOptions: opts.poolOptions
-                ? Object.fromEntries(
-                    Object.entries(opts.poolOptions).filter(
-                      ([, v]) => v !== undefined,
-                    ),
-                  )
-                : undefined,
-            }) as unknown as YdbExecutor,
+            createExecutor(driver, opts),
           inject: [YDB_DRIVER, YDB_OPTIONS],
         },
 

@@ -39,10 +39,17 @@ export {
   OneToMany,
   ManyToOne,
   OneToOne,
+  ManyToMany,
+  JoinTable,
+  getYdbRelationsMetadata,
+  getYdbJoinTableMetadata,
+  getManyToManyJoinTables,
 } from './decorators/relation.decorators.js';
 export type {
   RelationMetadata,
   RelationType,
+  JoinTableMetadata,
+  ManyToManyJoinTable,
 } from './decorators/relation.decorators.js';
 export { EagerLoad } from './decorators/eager.decorator.js';
 
@@ -89,6 +96,35 @@ export type {
 
 // Транзакции
 export { YdbTransactionManager } from './transaction/transaction.manager.js';
+
+// Миграции
+export type {
+  YdbMigration,
+  YdbMigrationClass,
+} from './migrations/migration.interface.js';
+export { executeSql } from './migrations/migration.interface.js';
+export {
+  YdbMigrationRunner,
+  MIGRATIONS_TABLE,
+} from './migrations/migration-runner.js';
+export type {
+  AppliedMigration,
+  YdbMigrationStatus,
+} from './migrations/migration-runner.js';
+export { loadMigrationsFromDir } from './migrations/migration-loader.js';
+export {
+  planMigration,
+  renderMigrationFile,
+} from './migrations/migration-generator.js';
+export type { PlannedMigration } from './migrations/migration-generator.js';
+
+// Подключение без NestJS (CLI, скрипты)
+export {
+  createCredentialsProvider,
+  createDriver,
+  createExecutor,
+} from './core/driver.js';
+export type { YdbCliConfig } from './cli/config.js';
 
 // Credentials
 export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';

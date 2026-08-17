@@ -4,7 +4,10 @@ import { mapToYdb } from '../core/mapper.js';
 import { v4 as uuidv4 } from 'uuid';
 import { QueryOptions } from '../core/query-options.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
-import { getYdbRelationsMetadata } from '../decorators/relation.decorators.js';
+import {
+  getYdbJoinTableMetadata,
+  getYdbRelationsMetadata,
+} from '../decorators/relation.decorators.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import {
   YdbEncryptionContext,
@@ -382,6 +385,72 @@ export class YdbBaseEntity {
   }
 
   /**
+   * Batch-загрузка many-to-many: join-таблица + инверсные сущности.
+   * Возвращает Map<owner PK, related entities[]>.
+   */
+  private static async loadManyToManyRelation(
+    items: YdbBaseEntity[],
+    Target: typeof YdbBaseEntity,
+    joinTable: ResolvedJoinTable,
+    ownerPks: any[],
+    options?: QueryOptions,
+  ): Promise<Map<any, YdbBaseEntity[]>> {
+    const exec = this.getExecutor(options?.trx);
+    const inParams = ownerPks.map((_, i) => `$p${i}`).join(', ');
+    const sql =
+      `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
+      `${quoteIdentifier(joinTable.inverseColumn)} ` +
+      `FROM ${quoteIdentifier(joinTable.tableName)} ` +
+      `WHERE ${quoteIdentifier(joinTable.ownerColumn)} IN (${inParams})`;
+
+    const joinQuery = exec([sql] as unknown as TemplateStringsArray);
+    ownerPks.forEach((value, i) => {
+      joinQuery.parameter(`p${i}`, mapToYdb('Uuid', value));
+    });
+
+    const joinRows = await this.executeQuery<Record<string, any>[][]>(
+      joinQuery,
+      options,
+    );
+    const links = (joinRows[0] ?? []) as {
+      [key: string]: any;
+    }[];
+
+    const inverseFks = links
+      .map((row) => row[joinTable.inverseColumn])
+      .filter((v) => v !== undefined);
+
+    const targetPkField = getPrimaryKey(Target);
+    const relatedEntities = await this.fetchByColumnIn(
+      Target,
+      targetPkField,
+      inverseFks,
+      options,
+    );
+
+    const byInversePk = new Map<any, YdbBaseEntity>();
+    for (const entity of relatedEntities) {
+      byInversePk.set((entity as any)[targetPkField], entity);
+    }
+
+    const result = new Map<any, YdbBaseEntity[]>();
+    for (const row of links) {
+      const ownerFk = row[joinTable.ownerColumn];
+      const inverseFk = row[joinTable.inverseColumn];
+      const entity = byInversePk.get(inverseFk);
+      if (!entity) continue;
+      const group = result.get(ownerFk);
+      if (group) {
+        group.push(entity);
+      } else {
+        result.set(ownerFk, [entity]);
+      }
+    }
+
+    return result;
+  }
+
+  /**
    * Batch eager loading: один запрос IN (...) на relation вместо N+1.
    */
   private static async loadEagerRelations<T extends YdbBaseEntity>(
@@ -402,9 +471,9 @@ export class YdbBaseEntity {
       if (!rel) continue;
 
       const Target = rel.target();
-      const joinColumnName = resolveJoinColumn(rel.joinColumn);
 
       if (rel.type === 'one-to-many') {
+        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
         const pks = items
           .map((item) => (item as any)[pkField])
           .filter((v) => v !== undefined);
@@ -431,8 +500,29 @@ export class YdbBaseEntity {
         for (const item of items) {
           (item as any)[name] = byFk.get((item as any)[pkField]) ?? [];
         }
+      } else if (rel.type === 'many-to-many') {
+        const joinTable = resolveManyToManyJoinTable(constructor, rel);
+        if (!joinTable) continue;
+
+        const pks = items
+          .map((item) => (item as any)[pkField])
+          .filter((v) => v !== undefined);
+        if (!pks.length) continue;
+
+        const related = await this.loadManyToManyRelation(
+          items,
+          Target,
+          joinTable,
+          pks,
+          options,
+        );
+
+        for (const item of items) {
+          (item as any)[name] = related.get((item as any)[pkField]) ?? [];
+        }
       } else {
         // many-to-one / one-to-one
+        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
         const fks = items
           .map((item) => (item as any)[joinColumnName])
           .filter((v) => v !== undefined);
@@ -573,6 +663,36 @@ export class YdbBaseEntity {
       ) as Promise<T>;
     }
     return this.insert(entity, options) as Promise<T>;
+  }
+
+  /**
+   * Удаляет сущность по pk.
+   * Возвращает удалённую запись (RETURNING *) или null, если не найдена.
+   */
+  static async delete<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+    pkValue: string | number,
+    options?: QueryOptions,
+  ): Promise<T | null> {
+    const exec = this.getExecutor(options?.trx);
+    const meta = this.getMeta();
+    const dbSchema = this.getDbSchema(meta);
+    const pkField = meta.primaryKeys[0] ?? 'uuid';
+    const pkType = dbSchema[pkField] ?? 'Uuid';
+
+    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(pkField)} = $pk RETURNING *`;
+    const query = exec([sql] as unknown as TemplateStringsArray);
+    query.parameter('pk', mapToYdb(pkType, pkValue));
+
+    const rows = await this.executeQuery<Record<string, any>[][]>(
+      query,
+      options,
+    );
+    const raw = rows[0]?.[0] ?? null;
+    if (!raw) return null;
+
+    await this.decryptResult(raw, meta);
+    return this.instantiate(raw) as T;
   }
 
   static async insertMany<T extends YdbBaseEntity>(
@@ -717,9 +837,9 @@ export class YdbBaseEntity {
       if (!rel) throw new Error(`Unknown relation: ${name}`);
 
       const Target = rel.target();
-      const joinColumnName = resolveJoinColumn(rel.joinColumn);
 
       if (rel.type === 'one-to-many') {
+        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
         const pkField = getPrimaryKey(constructor);
         const pkValue = (this as any)[pkField];
         if (pkValue === undefined) {
@@ -732,7 +852,29 @@ export class YdbBaseEntity {
           { [joinColumnName]: pkValue },
           options,
         );
+      } else if (rel.type === 'many-to-many') {
+        const pkField = getPrimaryKey(constructor);
+        const pkValue = (this as any)[pkField];
+        if (pkValue === undefined) {
+          throw new Error(
+            `Cannot load many-to-many relation "${name}": ` +
+              `primary key "${pkField}" is undefined on ${constructor.name}`,
+          );
+        }
+        const joinTable = resolveManyToManyJoinTable(constructor, rel);
+        if (!joinTable) {
+          throw new Error(
+            `Cannot load many-to-many relation "${name}": ` +
+              `join table is not defined on ${constructor.name}. ` +
+              `Mark the owning side with @JoinTable.`,
+          );
+        }
+        const related = await (
+          this.constructor as typeof YdbBaseEntity
+        ).loadManyToManyRelation([this], Target, joinTable, [pkValue], options);
+        (this as any)[name] = related.get(pkValue) ?? [];
       } else if (rel.type === 'many-to-one' || rel.type === 'one-to-one') {
+        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
         const fkValue = (this as any)[joinColumnName];
         if (fkValue === undefined) {
           throw new Error(
@@ -772,6 +914,65 @@ function getPrimaryKey(target: typeof YdbBaseEntity): string {
   const meta = getYdbEntityMetadata(target);
   if (meta?.primaryKeys?.length) return meta.primaryKeys[0];
   return 'uuid';
+}
+
+/**
+ * Находит метаданные join-таблицы для many-to-many,
+ * ориентированные относительно запрашиваемой сущности (owner).
+ */
+interface ResolvedJoinTable {
+  tableName: string;
+  ownerColumn: string;
+  inverseColumn: string;
+  ownerEntity: typeof YdbBaseEntity;
+  inverseEntity: typeof YdbBaseEntity;
+}
+
+function resolveManyToManyJoinTable(
+  owner: typeof YdbBaseEntity,
+  relation: { propertyKey: string; target: () => typeof YdbBaseEntity },
+): ResolvedJoinTable | undefined {
+  const ownerMeta = getYdbEntityMetadata(owner);
+  const inverseEntity = relation.target();
+  const inverseMeta = getYdbEntityMetadata(inverseEntity);
+  if (!ownerMeta || !inverseMeta) return undefined;
+
+  const ownJoinTables = getYdbJoinTableMetadata(owner);
+  const own = ownJoinTables.find(
+    (jt) => jt.propertyKey === relation.propertyKey,
+  );
+
+  if (own) {
+    return {
+      tableName: own.tableName,
+      ownerColumn: own.joinColumn ?? `${ownerMeta.tableName}_uuid`,
+      inverseColumn: own.inverseJoinColumn ?? `${inverseMeta.tableName}_uuid`,
+      ownerEntity: owner,
+      inverseEntity,
+    };
+  }
+
+  // Пробуем найти владеющую сторону на inverse-сущности
+  const inverseRelations = getYdbRelationsMetadata(inverseEntity).filter(
+    (r) => r.type === 'many-to-many' && r.target() === owner,
+  );
+  for (const invRel of inverseRelations) {
+    const invJoinTables = getYdbJoinTableMetadata(inverseEntity);
+    const inv = invJoinTables.find(
+      (jt) => jt.propertyKey === invRel.propertyKey,
+    );
+    if (inv) {
+      return {
+        tableName: inv.tableName,
+        ownerColumn: inv.inverseJoinColumn ?? `${ownerMeta.tableName}_uuid`,
+        inverseColumn: inv.joinColumn ?? `${inverseMeta.tableName}_uuid`,
+        ownerEntity: owner,
+        inverseEntity,
+      };
+    }
+  }
+
+  return undefined;
 }
 
 /** Проверяет, что колонка — synthetic blind index ({field}_bi) */
