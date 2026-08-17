@@ -36,11 +36,12 @@ lerna-debug.log*
 !.vscode/extensions.json
 
 # dotenv environment variable files
-.env
+../ydb-orm-test-stand/.env
 .env.development.local
 .env.test.local
 .env.production.local
 .env.local
+.env
 
 # secrets
 ../authorized_key.json

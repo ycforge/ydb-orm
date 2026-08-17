@@ -15,6 +15,10 @@ import {
   getYdbEntityMetadata,
   YdbEntityMetadata,
 } from '../metadata/entity-metadata.js';
+import {
+  getManyToManyJoinTables,
+  ManyToManyJoinTable,
+} from '../decorators/relation.decorators.js';
 
 /** Ожидаемая схема таблицы, построенная по метаданным сущности. */
 export interface ExpectedTableSchema {
@@ -94,6 +98,40 @@ export function buildExpectedTableSchema(
   }
 
   return { tableName: meta.tableName, columns, primaryKey };
+}
+
+/** Ожидаемая схема join-таблицы many-to-many. */
+export function buildExpectedJoinTableSchema(
+  joinTable: ManyToManyJoinTable,
+): ExpectedTableSchema {
+  return {
+    tableName: joinTable.tableName,
+    columns: {
+      [joinTable.joinColumn]: 'Uuid',
+      [joinTable.inverseJoinColumn]: 'Uuid',
+    },
+    primaryKey: [joinTable.joinColumn, joinTable.inverseJoinColumn],
+  };
+}
+
+/** Собирает ожидаемые схемы всех таблиц сущностей и их many-to-many join-таблиц. */
+export function buildExpectedSchemas(
+  entities: (new (...args: any[]) => any)[],
+): ExpectedTableSchema[] {
+  const schemas: ExpectedTableSchema[] = [];
+
+  for (const entity of entities) {
+    const meta = getYdbEntityMetadata(entity);
+    if (meta) {
+      schemas.push(buildExpectedTableSchema(meta));
+    }
+  }
+
+  for (const joinTable of getManyToManyJoinTables(entities)) {
+    schemas.push(buildExpectedJoinTableSchema(joinTable));
+  }
+
+  return schemas;
 }
 
 /** Генерирует DDL создания таблицы. */
@@ -186,10 +224,7 @@ export class YdbSchemaSyncer {
   ): Promise<YdbSchemaIssue[]> {
     const issues: YdbSchemaIssue[] = [];
 
-    for (const entity of entities) {
-      const expected = this.getExpectedSchema(entity);
-      if (!expected) continue;
-
+    for (const expected of buildExpectedSchemas(entities)) {
       const existing = await this.describeTable(expected.tableName);
       if (!existing) {
         issues.push({
@@ -214,10 +249,7 @@ export class YdbSchemaSyncer {
    *  - расхождение типа/PK — ошибка (в YDB не меняется, нужна миграция).
    */
   async sync(entities: (new (...args: any[]) => any)[]): Promise<void> {
-    for (const entity of entities) {
-      const expected = this.getExpectedSchema(entity);
-      if (!expected) continue;
-
+    for (const expected of buildExpectedSchemas(entities)) {
       const existing = await this.describeTable(expected.tableName);
 
       if (!existing) {
@@ -252,7 +284,7 @@ export class YdbSchemaSyncer {
       for (const extra of check.extraColumns) {
         this.logger.warn(
           `Table "${expected.tableName}" has extra column "${extra}" ` +
-            `not present in entity ${entity.name} — left as is`,
+            `not present in entity ${expected.tableName} — left as is`,
         );
       }
 
@@ -268,19 +300,6 @@ export class YdbSchemaSyncer {
         await this.executeDdl(yql);
       }
     }
-  }
-
-  private getExpectedSchema(
-    entity: new (...args: any[]) => any,
-  ): ExpectedTableSchema | undefined {
-    const meta = getYdbEntityMetadata(entity);
-    if (!meta) {
-      this.logger.warn(
-        `Class ${entity.name} is not decorated with @YdbEntity — skipped`,
-      );
-      return undefined;
-    }
-    return buildExpectedTableSchema(meta);
   }
 
   private checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
@@ -328,10 +347,9 @@ export class YdbSchemaSyncer {
    * DescribeTable через Table service (query service не отдаёт метаданные
    * колонок). Сессия создаётся на один вызов и сразу закрывается.
    * Возвращает null, если таблицы не существует.
+   * Публичный: используется также генератором миграций (migration:generate).
    */
-  private async describeTable(
-    tableName: string,
-  ): Promise<YdbTableDescription | null> {
+  async describeTable(tableName: string): Promise<YdbTableDescription | null> {
     const client = this.driver.createClient(TableServiceDefinition);
     const path = `${this.driver.database.replace(/\/$/, '')}/${tableName}`;
 

@@ -26,6 +26,9 @@
   "files": [
     "dist"
   ],
+  "bin": {
+    "ydb-orm": "./dist/cli/cli.js"
+  },
   "publishConfig": {
     "access": "public"
   },

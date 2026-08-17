@@ -10,12 +10,20 @@ import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
 import { YdbExecutor } from '../core/interfaces.js';
 import {
   buildExpectedTableSchema,
+  buildExpectedJoinTableSchema,
+  buildExpectedSchemas,
   checkTableSchema,
   generateAddColumnsYql,
   generateCreateTableYql,
   YdbSchemaSyncer,
   YdbTableDescription,
 } from './schema-sync.js';
+import {
+  getManyToManyJoinTables,
+  ManyToMany,
+  JoinTable,
+} from '../decorators/relation.decorators.js';
+import { EagerLoad } from '../decorators/eager.decorator.js';
 
 @YdbEntity('test_users')
 class TestUserEntity extends YdbBaseEntity {
@@ -46,6 +54,32 @@ class TestFallbackPkEntity extends YdbBaseEntity {
 class TestNoPkEntity extends YdbBaseEntity {
   @YdbColumn('Utf8')
   name: string;
+}
+
+@YdbEntity('test_tags')
+class TestTagEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestPhotoEntity, (photo) => photo.tags)
+  photos?: TestPhotoEntity[];
+}
+
+@YdbEntity('test_photos')
+@EagerLoad(['tags'])
+class TestPhotoEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbColumn('Utf8')
+  title: string;
+
+  @ManyToMany(() => TestTagEntity, (tag) => tag.photos)
+  @JoinTable('test_photo_tag')
+  tags?: TestTagEntity[];
 }
 
 const meta = (entity: new (...args: any[]) => any) => {
@@ -92,6 +126,34 @@ describe('buildExpectedTableSchema', () => {
     expect(() => buildExpectedTableSchema(meta(TestNoPkEntity))).toThrow(
       /primary key column "uuid" is not declared/,
     );
+  });
+});
+
+describe('buildExpectedJoinTableSchema', () => {
+  it('builds join table with two Uuid columns and composite PK', () => {
+    const joinTables = getManyToManyJoinTables([
+      TestPhotoEntity,
+      TestTagEntity,
+    ]);
+    expect(joinTables).toHaveLength(1);
+
+    const schema = buildExpectedJoinTableSchema(joinTables[0]);
+    expect(schema.tableName).toBe('test_photo_tag');
+    expect(schema.columns).toEqual({
+      test_photos_uuid: 'Uuid',
+      test_tags_uuid: 'Uuid',
+    });
+    expect(schema.primaryKey).toEqual(['test_photos_uuid', 'test_tags_uuid']);
+  });
+});
+
+describe('buildExpectedSchemas', () => {
+  it('includes entity tables and many-to-many join tables', () => {
+    const schemas = buildExpectedSchemas([TestPhotoEntity, TestTagEntity]);
+    const names = schemas.map((s) => s.tableName);
+    expect(names).toContain('test_photos');
+    expect(names).toContain('test_tags');
+    expect(names).toContain('test_photo_tag');
   });
 });
 
