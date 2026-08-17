@@ -3,6 +3,7 @@ import {
   getYdbRelationsMetadata,
   RelationMetadata,
 } from '../decorators/relation.decorators.js';
+import { getYdbIndexesMetadata } from '../decorators/index.decorator.js';
 import { getYdbEntityMetadata } from './entity-metadata.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 
@@ -64,6 +65,23 @@ export function validateEntityMetadata(
 
   const relations = getYdbRelationsMetadata(entity);
   const joinTables = getYdbJoinTableMetadata(entity);
+
+  const allowedColumns = new Set([
+    ...Object.keys(meta.schema),
+    ...meta.encryptedFields
+      .filter((ef) => ef.blindIndex)
+      .map((ef) => `${ef.propertyKey}_bi`),
+  ]);
+  for (const idx of getYdbIndexesMetadata(entity)) {
+    if (!idx.columns.length) {
+      issues.push('@YdbIndex without columns');
+    }
+    for (const col of idx.columns) {
+      if (!allowedColumns.has(col)) {
+        issues.push(`@YdbIndex references unknown column "${col}"`);
+      }
+    }
+  }
 
   for (const jt of joinTables) {
     const rel = relations.find(

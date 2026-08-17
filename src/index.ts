@@ -52,6 +52,15 @@ export type {
   ManyToManyJoinTable,
 } from './decorators/relation.decorators.js';
 export { EagerLoad } from './decorators/eager.decorator.js';
+export {
+  YdbIndex,
+  getYdbIndexesMetadata,
+  resolveIndexName,
+} from './decorators/index.decorator.js';
+export type {
+  YdbIndexMetadata,
+  YdbIndexOptions,
+} from './decorators/index.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
