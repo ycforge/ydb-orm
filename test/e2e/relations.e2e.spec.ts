@@ -19,7 +19,12 @@ beforeAll(async () => {
   ctx = await createE2eContext();
   if (!ctx) return;
 
-  for (const Entity of [E2eOrderEntity, E2eOrderItemEntity, E2eUserEntity, E2eProfileEntity]) {
+  for (const Entity of [
+    E2eOrderEntity,
+    E2eOrderItemEntity,
+    E2eUserEntity,
+    E2eProfileEntity,
+  ]) {
     await createTableForEntity(ctx.executor, Entity);
   }
 
@@ -31,14 +36,19 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!ctx) return;
-  for (const Entity of [E2eProfileEntity, E2eUserEntity, E2eOrderItemEntity, E2eOrderEntity]) {
+  for (const Entity of [
+    E2eProfileEntity,
+    E2eUserEntity,
+    E2eOrderItemEntity,
+    E2eOrderEntity,
+  ]) {
     await dropTableForEntity(ctx.executor, Entity);
   }
   E2eOrderEntity.setExecutor(undefined as any);
   E2eOrderItemEntity.setExecutor(undefined as any);
   E2eUserEntity.setExecutor(undefined as any);
   E2eProfileEntity.setExecutor(undefined as any);
-  await closeE2eContext(ctx);
+  closeE2eContext(ctx);
 });
 
 const describeE2e = () => (hasYdbCredentials() ? describe : describe.skip);

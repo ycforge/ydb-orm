@@ -5,10 +5,7 @@ import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
 import { YdbExecutor, YdbModuleOptions } from './interfaces.js';
-import {
-  ConsoleQueryLogger,
-  wrapExecutorWithLogging,
-} from './query-logger.js';
+import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
 
 /**
  * Создаёт credentials provider по `auth_type` из опций модуля.

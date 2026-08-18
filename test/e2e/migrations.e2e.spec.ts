@@ -22,8 +22,8 @@ beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ydb-orm-e2e-mig-'));
 });
 
-afterAll(async () => {
-  if (ctx) await closeE2eContext(ctx);
+afterAll(() => {
+  if (ctx) closeE2eContext(ctx);
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

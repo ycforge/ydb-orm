@@ -83,8 +83,8 @@ export async function createE2eContext(): Promise<E2eContext | null> {
 /**
  * Закрывает подключение к YDB.
  */
-export async function closeE2eContext(ctx: E2eContext): Promise<void> {
-  await ctx.driver.close();
+export function closeE2eContext(ctx: E2eContext): void {
+  ctx.driver.close();
 }
 
 /**
@@ -102,15 +102,14 @@ export async function createTableForEntity(
   executor: YdbExecutor,
   entityClass: new (...args: any[]) => any,
 ): Promise<void> {
-  const { buildExpectedTableSchema, generateCreateTableYql } = await import(
-    '../../src/schema/schema-sync.js'
-  );
-  const { getYdbEntityMetadata } = await import(
-    '../../src/metadata/entity-metadata.js'
-  );
+  const { buildExpectedTableSchema, generateCreateTableYql } =
+    await import('../../src/schema/schema-sync.js');
+  const { getYdbEntityMetadata } =
+    await import('../../src/metadata/entity-metadata.js');
 
   const meta = getYdbEntityMetadata(entityClass);
-  if (!meta) throw new Error(`${entityClass.name} is not decorated with @YdbEntity`);
+  if (!meta)
+    throw new Error(`${entityClass.name} is not decorated with @YdbEntity`);
   const expected = buildExpectedTableSchema(meta);
   const yql = generateCreateTableYql(expected);
   const tmpl = [yql] as unknown as TemplateStringsArray;
@@ -129,12 +128,13 @@ export async function dropTableForEntity(
   executor: YdbExecutor,
   entityClass: new (...args: any[]) => any,
 ): Promise<void> {
-  const { getYdbEntityMetadata } = await import(
-    '../../src/metadata/entity-metadata.js'
-  );
+  const { getYdbEntityMetadata } =
+    await import('../../src/metadata/entity-metadata.js');
   const meta = getYdbEntityMetadata(entityClass);
   if (!meta) return;
-  const tmpl = [`DROP TABLE IF EXISTS \`${meta.tableName}\``] as unknown as TemplateStringsArray;
+  const tmpl = [
+    `DROP TABLE IF EXISTS \`${meta.tableName}\``,
+  ] as unknown as TemplateStringsArray;
   tmpl.raw = tmpl;
   try {
     await executor(tmpl);

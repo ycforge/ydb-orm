@@ -6,6 +6,7 @@ export const YDB_COLUMNS_KEY = 'ydb:columns';
 export const YDB_PRIMARY_KEYS_KEY = 'ydb:primaryKeys';
 export const YDB_ENCRYPTED_KEY = 'ydb:encrypted';
 export const YDB_SECURITY_AAD_KEY = 'ydb:security:aad';
+export const YDB_JSON_COLUMNS_KEY = 'ydb:jsonColumns';
 
 export interface EncryptedFieldMeta {
   propertyKey: string;
@@ -19,6 +20,8 @@ export interface YdbEntityMetadata<T = any> {
   primaryKeys: string[];
   encryptedFields: EncryptedFieldMeta[];
   aadFields: string[];
+  /** Колонки с автоматической JSON-сериализацией (хранятся как Utf8). */
+  jsonColumns: string[];
   target: new (...args: any[]) => T;
 }
 
@@ -54,6 +57,8 @@ export function getYdbEntityMetadata<T>(
   )
     .slice()
     .sort();
+  const jsonColumns: string[] =
+    Reflect.getMetadata(YDB_JSON_COLUMNS_KEY, target) || [];
 
   if (!tableName) return undefined;
 
@@ -70,6 +75,7 @@ export function getYdbEntityMetadata<T>(
     primaryKeys,
     encryptedFields,
     aadFields,
+    jsonColumns,
     target,
   };
   metadataCache.set(target, metadata);

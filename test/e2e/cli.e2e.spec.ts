@@ -22,8 +22,8 @@ beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ydb-orm-e2e-cli-'));
 });
 
-afterAll(async () => {
-  if (ctx) await closeE2eContext(ctx);
+afterAll(() => {
+  if (ctx) closeE2eContext(ctx);
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -90,10 +90,11 @@ describeE2e()('CLI e2e', () => {
   it('migration:revert with nothing to revert', async () => {
     // Revert may fail if previous migrations exist in DB but files are missing — that's expected
     try {
-      await execAsync(
-        `node ${cliBin} migration:revert --dir ${tmpDir}`,
-        { cwd: tmpDir, timeout: 30000, env: cliEnv() },
-      );
+      await execAsync(`node ${cliBin} migration:revert --dir ${tmpDir}`, {
+        cwd: tmpDir,
+        timeout: 30000,
+        env: cliEnv(),
+      });
     } catch (e: any) {
       // Expected: "not found — cannot revert" or "nothing to revert"
       expect(e.stderr || e.stdout).toMatch(/not found|nothing to revert/i);

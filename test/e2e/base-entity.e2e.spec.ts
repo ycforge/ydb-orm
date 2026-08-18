@@ -16,7 +16,12 @@ beforeAll(async () => {
   if (!ctx) return;
 
   // Create tables using schema sync (generates correct YQL types)
-  for (const Entity of [E2eItemEntity, E2eSecretEntity, E2eOrderEntity, E2eOrderItemEntity]) {
+  for (const Entity of [
+    E2eItemEntity,
+    E2eSecretEntity,
+    E2eOrderEntity,
+    E2eOrderItemEntity,
+  ]) {
     await createTableForEntity(ctx.executor, Entity);
   }
 
@@ -32,7 +37,12 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!ctx) return;
 
-  for (const Entity of [E2eOrderItemEntity, E2eOrderEntity, E2eSecretEntity, E2eItemEntity]) {
+  for (const Entity of [
+    E2eOrderItemEntity,
+    E2eOrderEntity,
+    E2eSecretEntity,
+    E2eItemEntity,
+  ]) {
     await dropTableForEntity(ctx.executor, Entity);
   }
 
@@ -44,7 +54,7 @@ afterAll(async () => {
   E2eOrderEntity.setExecutor(undefined as any);
   E2eOrderItemEntity.setExecutor(undefined as any);
 
-  await closeE2eContext(ctx);
+  closeE2eContext(ctx);
 });
 
 const describeE2e = () => (hasYdbCredentials() ? describe : describe.skip);

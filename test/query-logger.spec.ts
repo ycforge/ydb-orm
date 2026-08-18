@@ -86,7 +86,9 @@ describe('wrapExecutorWithLogging', () => {
     const mock = createMockExecutor([[{ uuid: '1' }]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
-    const q = logging(['SELECT * FROM users'] as unknown as TemplateStringsArray);
+    const q = logging([
+      'SELECT * FROM users',
+    ] as unknown as TemplateStringsArray);
     q.parameter('id', 'test');
     await q;
 

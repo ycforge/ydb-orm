@@ -30,7 +30,11 @@ const MAX_PARAM_LENGTH = 64;
 /** Маскирование значения параметра: секреты скрыты, длинные строки обрезаны. */
 function maskValue(value: unknown): unknown {
   if (value === null || value === undefined) return value;
-  if (typeof value === 'object' && 'type' in (value as any) && 'value' in (value as any)) {
+  if (
+    typeof value === 'object' &&
+    'type' in (value as any) &&
+    'value' in (value as any)
+  ) {
     // YDB typed value { type: ..., value: ... }
     const inner = (value as any).value;
     if (inner === null || inner === undefined) return inner;
@@ -66,12 +70,13 @@ export class ConsoleQueryLogger implements QueryLogger {
       .join(', ');
 
     const base = `[YDB] QUERY ${entry.durationMs}ms`;
-    const sql = entry.sql.length > 200
-      ? entry.sql.slice(0, 200) + '...'
-      : entry.sql;
+    const sql =
+      entry.sql.length > 200 ? entry.sql.slice(0, 200) + '...' : entry.sql;
 
     if (entry.error) {
-      console.error(`${base} ERROR: ${entry.error.message}\n  SQL: ${sql}\n  Params: ${params}`);
+      console.error(
+        `${base} ERROR: ${entry.error.message}\n  SQL: ${sql}\n  Params: ${params}`,
+      );
     } else {
       console.log(`${base}\n  SQL: ${sql}\n  Params: ${params}`);
     }
