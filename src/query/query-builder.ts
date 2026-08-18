@@ -40,6 +40,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   private limitValue?: number;
   private offsetValue?: number;
   private queryOptions?: QueryOptions;
+  private selectColumns?: string[];
 
   constructor(private readonly entity: EntityClass<T>) {}
 
@@ -61,6 +62,12 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   addOrderBy(field: string, direction: OrderDirection = 'ASC'): this {
     this.orderClauses.push({ field, direction });
+    return this;
+  }
+
+  /** Указать конкретные колонки для SELECT (вместо SELECT *). */
+  select(columns: string[]): this {
+    this.selectColumns = columns;
     return this;
   }
 
@@ -140,8 +147,12 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
           .join(', ')
       : '';
 
+    const selectClause = this.selectColumns?.length
+      ? this.selectColumns.map(quoteIdentifier).join(', ')
+      : '*';
+
     const sql =
-      `SELECT * FROM ${quoteIdentifier(meta.tableName)}` +
+      `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)}` +
       `${whereClause ? ` ${whereClause}` : ''}${orderClause}` +
       ` LIMIT ${this.resolveLimit()} OFFSET ${this.resolveOffset()}`;
 

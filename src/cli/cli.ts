@@ -20,6 +20,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:run               Применить все новые миграции
   ydb-orm migration:revert            Откатить последнюю миграцию
   ydb-orm migration:show              Показать статус миграций
+  ydb-orm migration:check             Проверить, все ли миграции применены (exit 1 если нет)
   ydb-orm schema:verify             Проверить схему БД против метаданных сущностей
   ydb-orm entity:create <name>        Создать сущность
 
@@ -29,6 +30,8 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
                     YDB_AUTHORIZED_KEY_PATH)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
+  --json            JSON-вывод (для migration:show)
+  --json            Machine-readable output (для migration:check)
 `;
 
 interface ParsedArgs {
@@ -36,6 +39,7 @@ interface ParsedArgs {
   positional?: string;
   config?: string;
   dir?: string;
+  json?: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -44,6 +48,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--config') result.config = argv[++i];
     else if (argv[i] === '--dir') result.dir = argv[++i];
+    else if (argv[i] === '--json') result.json = true;
     else rest.push(argv[i]);
   }
   [result.command, result.positional] = rest;
@@ -172,12 +177,58 @@ async function main(): Promise<void> {
         console.log(reverted ? `Reverted: ${reverted}` : 'Nothing to revert');
       } else {
         const statuses = await runner.status(migrations);
-        for (const s of statuses) {
-          console.log(
-            `${s.applied ? '[x]' : '[ ]'} ${s.name}` +
-              (s.appliedAt ? ` (${s.appliedAt.toISOString()})` : ''),
-          );
+        if (args.json) {
+          const json = statuses.map((s) => ({
+            name: s.name,
+            applied: s.applied,
+            appliedAt: s.appliedAt ? s.appliedAt.toISOString() : null,
+          }));
+          console.log(JSON.stringify(json, null, 2));
+        } else {
+          for (const s of statuses) {
+            console.log(
+              `${s.applied ? '[x]' : '[ ]'} ${s.name}` +
+                (s.appliedAt ? ` (${s.appliedAt.toISOString()})` : ''),
+            );
+          }
         }
+      }
+    } finally {
+      close();
+    }
+    return;
+  }
+
+  if (command === 'migration:check') {
+    const { executor, close } = await connectCli(config);
+    try {
+      const runner = new YdbMigrationRunner(executor);
+      const migrations = await loadMigrationsFromDir(migrationsDir);
+      const statuses = await runner.status(migrations);
+      const pending = statuses.filter((s) => !s.applied);
+
+      if (args.json) {
+        const result = {
+          applied: pending.length === 0,
+          pending: pending.map((s) => s.name),
+          total: statuses.length,
+        };
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (pending.length === 0) {
+          console.log('All migrations applied');
+        } else {
+          console.error(
+            `Pending migrations (${pending.length}/${statuses.length}):`,
+          );
+          for (const s of pending) {
+            console.error(`  - ${s.name}`);
+          }
+        }
+      }
+
+      if (pending.length > 0) {
+        process.exitCode = 1;
       }
     } finally {
       close();

@@ -94,7 +94,8 @@ const meta = (entity: new (...args: any[]) => any) => {
 const description = (
   columns: [string, Type_PrimitiveTypeId][],
   primaryKey: string[] = ['uuid'],
-): YdbTableDescription => ({ columns: new Map(columns), primaryKey });
+  indexes: Array<{ name: string; columns: string[]; unique: boolean }> = [],
+): YdbTableDescription => ({ columns: new Map(columns), primaryKey, indexes });
 
 describe('entity registry', () => {
   it('registers classes decorated with @YdbEntity', () => {
@@ -186,8 +187,12 @@ describe('@YdbIndex metadata', () => {
     const schema = buildExpectedTableSchema(meta(TestUserEntity));
 
     expect(schema.indexes).toEqual([
-      { name: 'test_users__secret_bi', columns: ['secret_bi'] },
-      { name: 'test_users__active_name', columns: ['is_active', 'name'] },
+      { name: 'test_users__secret_bi', columns: ['secret_bi'], unique: false },
+      {
+        name: 'test_users__active_name',
+        columns: ['is_active', 'name'],
+        unique: false,
+      },
     ]);
   });
 });
@@ -322,19 +327,36 @@ describe('YdbSchemaSyncer', () => {
 
     expect(executedSql()).toEqual([
       'ALTER TABLE `test_users` ADD COLUMN `secret_bi` Utf8',
+      'ALTER TABLE `test_users` ADD INDEX `test_users__secret_bi` GLOBAL SYNC ON (`secret_bi`)',
+      'ALTER TABLE `test_users` ADD INDEX `test_users__active_name` GLOBAL SYNC ON (`is_active`, `name`)',
     ]);
   });
 
   it('does nothing when schema matches', async () => {
     mockDescribe(
-      description([
-        ['uuid', Type_PrimitiveTypeId.UUID],
-        ['name', Type_PrimitiveTypeId.UTF8],
-        ['secret', Type_PrimitiveTypeId.UTF8],
-        ['is_active', Type_PrimitiveTypeId.BOOL],
-        ['secret_bi', Type_PrimitiveTypeId.UTF8],
-        ['unknown_extra', Type_PrimitiveTypeId.UTF8],
-      ]),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.UTF8],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+          ['unknown_extra', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: false,
+          },
+        ],
+      ),
     );
 
     await syncer.sync([TestUserEntity]);

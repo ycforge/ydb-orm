@@ -11,4 +11,6 @@ export interface QueryOptions {
   limit?: number;
   /** Смещение для SELECT */
   offset?: number;
+  /** Конкретные колонки для SELECT (вместо SELECT *) */
+  select?: string[];
 }

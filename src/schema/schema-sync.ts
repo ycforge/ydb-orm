@@ -23,11 +23,13 @@ import {
   getYdbIndexesMetadata,
   resolveIndexName,
 } from '../decorators/index.decorator.js';
+import { getYdbTtlMetadata } from '../decorators/ttl.decorator.js';
 
 /** Ожидаемый вторичный индекс таблицы. */
 export interface ExpectedIndex {
   name: string;
   columns: string[];
+  unique: boolean;
 }
 
 /** Ожидаемая схема таблицы, построенная по метаданным сущности. */
@@ -36,6 +38,7 @@ export interface ExpectedTableSchema {
   columns: Record<string, YdbPrimitive>;
   primaryKey: string[];
   indexes: ExpectedIndex[];
+  ttl?: { interval: string; column: string };
 }
 
 /** Нормализованное описание существующей таблицы из DescribeTable. */
@@ -43,6 +46,8 @@ export interface YdbTableDescription {
   /** Колонка → примитивный typeId (Optional обёртка снята). */
   columns: Map<string, Type_PrimitiveTypeId>;
   primaryKey: string[];
+  /** Индексы, описанные в БД. */
+  indexes?: Array<{ name: string; columns: string[]; unique: boolean }>;
 }
 
 /** Результат проверки существующей таблицы против ожидаемой схемы. */
@@ -55,6 +60,12 @@ export interface SchemaCheckResult {
   /** Лишние колонки в БД (не удаляются автоматически — потеря данных). */
   extraColumns: string[];
   primaryKeyMatches: boolean;
+  /** Индексы, которые есть в метаданных, но нет в БД. */
+  missingIndexes: ExpectedIndex[];
+  /** Индексы, которые есть в БД, но нет в метаданных. */
+  extraIndexes: Array<{ name: string; columns: string[]; unique: boolean }>;
+  /** Индексы с несовпадающим флагом unique. */
+  uniqueMismatches: { name: string; expected: boolean; actual: boolean }[];
 }
 
 /** Проблема схемы, найденная при verify. */
@@ -65,7 +76,9 @@ export interface YdbSchemaIssue {
     | 'missing-column'
     | 'type-mismatch'
     | 'primary-key-mismatch'
-    | 'extra-column';
+    | 'extra-column'
+    | 'missing-index'
+    | 'extra-index';
   message: string;
 }
 
@@ -116,10 +129,19 @@ export function buildExpectedTableSchema(
     (idx) => ({
       name: idx.name ?? resolveIndexName(meta.tableName, idx.columns),
       columns: [...idx.columns],
+      unique: idx.unique ?? false,
     }),
   );
 
-  return { tableName: meta.tableName, columns, primaryKey, indexes };
+  const ttlOptions = getYdbTtlMetadata(meta.target);
+  const ttl = ttlOptions
+    ? {
+        interval: ttlOptions.interval,
+        column: ttlOptions.column ?? primaryKey[0] ?? 'uuid',
+      }
+    : undefined;
+
+  return { tableName: meta.tableName, columns, primaryKey, indexes, ttl };
 }
 
 /** Ожидаемая схема join-таблицы many-to-many. */
@@ -164,14 +186,19 @@ export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   );
   const indexDefs = (expected.indexes ?? []).map(
     (idx) =>
-      `INDEX ${quoteIdentifier(idx.name)} GLOBAL SYNC ON ` +
+      `${idx.unique ? 'UNIQUE ' : ''}INDEX ${quoteIdentifier(idx.name)} GLOBAL SYNC ON ` +
       `(${idx.columns.map(quoteIdentifier).join(', ')})`,
   );
   const pk = expected.primaryKey.map(quoteIdentifier).join(', ');
-  const body = [...columnDefs, ...indexDefs].join(',\n  ');
+  const parts = [...columnDefs, ...indexDefs, `PRIMARY KEY (${pk})`];
+  if (expected.ttl) {
+    parts.push(
+      `TTL = Interval("${expected.ttl.interval}") ON \`${expected.ttl.column}\``,
+    );
+  }
+  const body = parts.join(',\n  ');
   return (
-    `CREATE TABLE ${quoteIdentifier(expected.tableName)} (\n  ` +
-    `${body},\n  PRIMARY KEY (${pk})\n)`
+    `CREATE TABLE ${quoteIdentifier(expected.tableName)} (\n  ` + `${body}\n)`
   );
 }
 
@@ -184,6 +211,30 @@ export function generateAddColumnsYql(
     ([name, type]) => `ADD COLUMN ${quoteIdentifier(name)} ${type}`,
   );
   return `ALTER TABLE ${quoteIdentifier(tableName)} ${clauses.join(', ')}`;
+}
+
+/** Генерирует DDL добавления индекса через ALTER TABLE. */
+export function generateAddIndexYql(
+  tableName: string,
+  index: ExpectedIndex,
+): string {
+  const uniquePart = index.unique ? 'UNIQUE ' : '';
+  return (
+    `ALTER TABLE ${quoteIdentifier(tableName)} ` +
+    `ADD ${uniquePart}INDEX ${quoteIdentifier(index.name)} GLOBAL SYNC ON ` +
+    `(${index.columns.map(quoteIdentifier).join(', ')})`
+  );
+}
+
+/** Генерирует DDL удаления индекса через ALTER TABLE. */
+export function generateDropIndexYql(
+  tableName: string,
+  indexName: string,
+): string {
+  return (
+    `ALTER TABLE ${quoteIdentifier(tableName)} ` +
+    `DROP INDEX ${quoteIdentifier(indexName)}`
+  );
 }
 
 /**
@@ -222,12 +273,44 @@ export function checkTableSchema(
     expected.primaryKey.length === existing.primaryKey.length &&
     expected.primaryKey.every((pk) => existing.primaryKey.includes(pk));
 
+  const existingIndexes = existing.indexes ?? [];
+
+  const existingIndexMap = new Map(
+    existingIndexes.map((idx) => [idx.name, idx]),
+  );
+  const expectedIndexMap = new Map(
+    (expected.indexes ?? []).map((idx) => [idx.name, idx]),
+  );
+
+  const missingIndexes: ExpectedIndex[] = (expected.indexes ?? []).filter(
+    (idx) => !existingIndexMap.has(idx.name),
+  );
+
+  const extraIndexes = existingIndexes.filter(
+    (idx) => !expectedIndexMap.has(idx.name),
+  );
+
+  const uniqueMismatches: SchemaCheckResult['uniqueMismatches'] = [];
+  for (const idx of expected.indexes ?? []) {
+    const existingIdx = existingIndexMap.get(idx.name);
+    if (existingIdx && existingIdx.unique !== idx.unique) {
+      uniqueMismatches.push({
+        name: idx.name,
+        expected: idx.unique,
+        actual: existingIdx.unique,
+      });
+    }
+  }
+
   return {
     tableName: expected.tableName,
     missingColumns,
     typeMismatches,
     extraColumns,
     primaryKeyMatches,
+    missingIndexes,
+    extraIndexes,
+    uniqueMismatches,
   };
 }
 
@@ -328,6 +411,28 @@ export class YdbSchemaSyncer {
         );
         await this.executeDdl(yql);
       }
+
+      for (const extra of check.extraIndexes) {
+        this.logger.warn(
+          `Table "${expected.tableName}" has extra index "${extra.name}" ` +
+            `not present in entity — left as is`,
+        );
+      }
+
+      for (const idx of check.missingIndexes) {
+        const yql = generateAddIndexYql(expected.tableName, idx);
+        this.logger.log(
+          `Adding index "${idx.name}" to "${expected.tableName}"`,
+        );
+        await this.executeDdl(yql);
+      }
+
+      for (const m of check.uniqueMismatches) {
+        this.logger.warn(
+          `Table "${expected.tableName}" index "${m.name}" unique flag mismatch: ` +
+            `expected ${m.expected}, actual ${m.actual} — recreate index manually if needed`,
+        );
+      }
     }
   }
 
@@ -362,6 +467,20 @@ export class YdbSchemaSyncer {
         tableName: check.tableName,
         kind: 'extra-column',
         message: `Table "${check.tableName}" has extra column "${column}"`,
+      });
+    }
+    for (const idx of check.missingIndexes) {
+      issues.push({
+        tableName: check.tableName,
+        kind: 'missing-index',
+        message: `Table "${check.tableName}" is missing index "${idx.name}"`,
+      });
+    }
+    for (const idx of check.extraIndexes) {
+      issues.push({
+        tableName: check.tableName,
+        kind: 'extra-index',
+        message: `Table "${check.tableName}" has extra index "${idx.name}"`,
       });
     }
 
@@ -418,7 +537,13 @@ export class YdbSchemaSyncer {
         columns.set(column.name, this.extractPrimitiveTypeId(column.type));
       }
 
-      return { columns, primaryKey: [...result.primaryKey] };
+      const indexes = result.indexes.map((idx) => ({
+        name: idx.name,
+        columns: [...idx.indexColumns],
+        unique: idx.type.case === 'globalUniqueIndex',
+      }));
+
+      return { columns, primaryKey: [...result.primaryKey], indexes };
     } finally {
       await client.deleteSession({ sessionId }).catch((error: unknown) => {
         this.logger.warn(
