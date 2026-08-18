@@ -4,8 +4,10 @@ import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { QueryLogger } from './query-logger.js';
 
 export type { QueryOptions } from './query-options.js';
+export type { QueryLogger, QueryLogEntry } from './query-logger.js';
 
 export interface YdbAuthOptions {
   authorized_key_path?: string;
@@ -36,6 +38,11 @@ export interface YdbModuleOptions {
    * Только для dev-стендов — в проде используйте миграции.
    */
   sync?: boolean;
+  /**
+   * Логирование запросов: true (консоль по умолчанию) или экземпляр QueryLogger.
+   * Логирует SQL, замаскированные параметры и длительность.
+   */
+  logQueries?: boolean | QueryLogger;
 }
 
 export interface YdbOptionsFactory {

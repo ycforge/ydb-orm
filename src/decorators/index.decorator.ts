@@ -7,11 +7,14 @@ export interface YdbIndexOptions {
   columns: string[];
   /** Явное имя индекса. По умолчанию: `{table}__{col1}_{col2}`. */
   name?: string;
+  /** Уникальный индекс. По умолчанию false. */
+  unique?: boolean;
 }
 
 export interface YdbIndexMetadata {
   columns: string[];
   name?: string;
+  unique?: boolean;
 }
 
 /**

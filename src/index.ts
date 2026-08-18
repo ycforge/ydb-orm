@@ -14,6 +14,8 @@ export type {
   YdbQuery,
   YdbExecutor,
   QueryOptions,
+  QueryLogger,
+  QueryLogEntry,
 } from './core/interfaces.js';
 export {
   YDB_DRIVER,
@@ -26,6 +28,10 @@ export {
 } from './core/constants.js';
 export { mapToYdb } from './core/mapper.js';
 export { quoteIdentifier, validateIdentifier } from './core/sql-utils.js';
+export {
+  ConsoleQueryLogger,
+  wrapExecutorWithLogging,
+} from './core/query-logger.js';
 
 // Декораторы
 export { YdbEntity } from './decorators/entity.decorator.js';
@@ -67,6 +73,11 @@ export type {
 } from './decorators/index.decorator.js';
 export { YdbEnum, getYdbEnumMetadata } from './decorators/enum.decorator.js';
 export type { YdbEnumMeta } from './decorators/enum.decorator.js';
+export { YdbTtl, getYdbTtlMetadata } from './decorators/ttl.decorator.js';
+export type {
+  YdbTtlOptions,
+  YdbTtlMetadata,
+} from './decorators/ttl.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
@@ -80,6 +91,18 @@ export type {
   YdbEncryptionContext,
 } from './encryption/ydb-encryption-provider.interface.js';
 export { Base64TestEncryptionProvider } from './encryption/base64-test-encryption.provider.js';
+export {
+  KmsEncryptionProvider,
+  KmsBlindIndexProvider,
+} from './encryption/kms-encryption.provider.js';
+export type { KmsEncryptionProviderOptions } from './encryption/kms-encryption.provider.js';
+
+// Валидация
+export type {
+  YdbValidationProvider,
+  YdbValidationOptions,
+} from './validation/ydb-validate.interface.js';
+export { ClassValidatorProvider } from './validation/ydb-validate.provider.js';
 
 // Метаданные и реестр сущностей
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
@@ -143,6 +166,7 @@ export {
   createDriver,
   createExecutor,
 } from './core/driver.js';
+export { configureEntities } from './core/standalone.js';
 export type { YdbCliConfig } from './cli/config.js';
 
 // Credentials

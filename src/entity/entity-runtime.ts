@@ -3,12 +3,14 @@ import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { YdbBaseEntity } from './base-entity.js';
 
 export interface EntityRuntime {
   executor?: YdbExecutor;
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  validationProvider?: YdbValidationProvider;
   /** Генератор UUID для PK (по умолчанию v7 — см. base-entity). */
   uuidGenerator?: () => string;
 }

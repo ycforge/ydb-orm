@@ -48,9 +48,11 @@
     "prepublishOnly": "yarn build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
     "lint": "eslint \"{src,test,examples}/**/*.ts\" --fix",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e",
+    "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e",
+    "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --testPathPatterns=test/e2e --testTimeout=30000",
     "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
-    "test:cov": "NODE_OPTIONS=--experimental-vm-modules jest --coverage"
+    "test:cov": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e --coverage"
   },
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",

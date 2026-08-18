@@ -18,6 +18,7 @@ import {
   YDB_CREATE_DATE_KEY,
   YDB_UPDATE_DATE_KEY,
 } from '../decorators/timestamp.decorator.js';
+import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
 import type { YdbPrimitive } from '../core/types.js';
 import type {
   EncryptedFieldMeta,
@@ -28,6 +29,7 @@ import {
   type YdbEnumMeta,
 } from '../decorators/enum.decorator.js';
 import { getEntityRuntime } from './entity-runtime.js';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 
 export class YdbBaseEntity {
@@ -41,6 +43,45 @@ export class YdbBaseEntity {
 
   static setBlindIndexProvider(provider: YdbBlindIndexProvider): void {
     getEntityRuntime(this).blindIndexProvider = provider;
+  }
+
+  static setValidationProvider(provider: YdbValidationProvider): void {
+    getEntityRuntime(this).validationProvider = provider;
+  }
+
+  protected static getValidationProvider(): YdbValidationProvider | undefined {
+    return getEntityRuntime(this).validationProvider;
+  }
+
+  protected static async runValidation(
+    entity: Record<string, any>,
+  ): Promise<void> {
+    const provider = this.getValidationProvider();
+    if (!provider) return;
+    const errors = await provider.validate(entity);
+    if (errors.length) {
+      throw new Error(
+        `Validation failed for ${this.name}: ${errors.join('; ')}`,
+      );
+    }
+  }
+
+  /**
+   * Вызывает lifecycle hooks указанной фазы на экземпляре сущности.
+   * Все хуки выполняются последовательно и awaitятся.
+   */
+  private static async callHooks(
+    phase: keyof ReturnType<typeof getLifecycleHooks>,
+    instance: any,
+  ): Promise<void> {
+    const hooks = getLifecycleHooks(this);
+    const methods = hooks[phase];
+    for (const methodName of methods) {
+      const fn = instance[methodName];
+      if (typeof fn === 'function') {
+        await fn.call(instance);
+      }
+    }
   }
 
   protected static getEncryptionProvider(): YdbEncryptionProvider | undefined {
@@ -639,7 +680,10 @@ export class YdbBaseEntity {
       );
     }
 
-    const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT 1`;
+    const selectClause = options?.select?.length
+      ? options.select.map(quoteIdentifier).join(', ')
+      : '*';
+    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT 1`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
@@ -657,6 +701,8 @@ export class YdbBaseEntity {
 
     await this.loadEagerRelations([result], options);
 
+    await this.callHooks('afterFind', result);
+
     return result;
   }
 
@@ -672,7 +718,10 @@ export class YdbBaseEntity {
       where,
       meta,
     );
-    const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${this.resolveLimit(options?.limit)} OFFSET ${this.resolveOffset(options?.offset)}`;
+    const selectClause = options?.select?.length
+      ? options.select.map(quoteIdentifier).join(', ')
+      : '*';
+    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${this.resolveLimit(options?.limit)} OFFSET ${this.resolveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
@@ -895,6 +944,18 @@ export class YdbBaseEntity {
       }
     }
 
+    const provider = this.getValidationProvider();
+    if (provider) {
+      for (const e of entities) {
+        const errors = await provider.validate(e);
+        if (errors.length) {
+          throw new Error(
+            `Validation failed for ${this.name}: ${errors.join('; ')}`,
+          );
+        }
+      }
+    }
+
     const dataList = await Promise.all(
       entities.map((e) =>
         this.encryptEntity({ ...(e as Record<string, any>) }, meta),
@@ -957,6 +1018,10 @@ export class YdbBaseEntity {
       (entity as any)[updateDateCol] = new Date();
     }
 
+    await this.callHooks('beforeInsert', entity);
+
+    await this.runValidation(entity as Record<string, any>);
+
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
@@ -973,6 +1038,9 @@ export class YdbBaseEntity {
     this.bindParams(query, data, keys, dbSchema);
 
     await this.executeQuery(query, options);
+
+    await this.callHooks('afterInsert', entity);
+
     return entity;
   }
 
@@ -991,6 +1059,10 @@ export class YdbBaseEntity {
     if (updateDateCol) {
       (entity as any)[updateDateCol] = new Date();
     }
+
+    await this.callHooks('beforeUpdate', entity);
+
+    await this.runValidation(entity as Record<string, any>);
 
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
@@ -1024,6 +1096,158 @@ export class YdbBaseEntity {
     }
     await this.decryptResult(raw, meta);
     return this.instantiate(raw);
+  }
+
+  /**
+   * Массовое обновление по условию.
+   * Возвращает количество затронутых строк.
+   */
+  static async updateBy(
+    this: typeof YdbBaseEntity,
+    where: Record<string, any>,
+    patch: Partial<Record<string, any>>,
+    options?: QueryOptions,
+  ): Promise<number> {
+    if (!Object.keys(where).length) {
+      throw new Error(
+        `updateBy() on ${this.name} requires at least one WHERE condition to prevent full-table update`,
+      );
+    }
+    if (!Object.keys(patch).length) {
+      throw new Error(
+        `updateBy() on ${this.name} requires at least one field in patch`,
+      );
+    }
+
+    const exec = this.getExecutor(options?.trx);
+    const meta = this.getMeta();
+    const { tableName } = meta;
+    const dbSchema = this.getDbSchema(meta);
+
+    // Автоматическая простановка Timestamp колонки обновления
+    const updateDateCol = this.getUpdateDateColumn();
+    const data = { ...patch };
+    if (updateDateCol && data[updateDateCol] === undefined) {
+      data[updateDateCol] = new Date();
+    }
+
+    // Шифрование зашифрованных полей в patch
+    const encryptedFieldsToProcess = meta.encryptedFields.filter((ef) =>
+      Object.prototype.hasOwnProperty.call(data, ef.propertyKey),
+    );
+    if (encryptedFieldsToProcess.length) {
+      const encryptionProvider = this.getEncryptionProvider();
+      if (!encryptionProvider) {
+        throw new Error(
+          `Encryption provider is not configured for entity ${this.name} but @YdbEncrypted fields exist in patch`,
+        );
+      }
+      const blindIndexProvider = this.getBlindIndexProvider();
+      for (const ef of encryptedFieldsToProcess) {
+        const value = data[ef.propertyKey];
+        if (value === null || value === undefined) continue;
+
+        const aad = ef.aadOverride ?? this.buildAAD({}, meta.aadFields);
+        const context: YdbEncryptionContext = {
+          entityName: this.name,
+          tableName: meta.tableName,
+          fieldName: ef.propertyKey,
+          primaryKeyValue: undefined,
+          aadFields: {},
+        };
+
+        data[ef.propertyKey] = await encryptionProvider.encrypt(
+          String(value),
+          aad,
+          context,
+        );
+
+        if (ef.blindIndex) {
+          if (!blindIndexProvider) {
+            throw new Error(
+              `Blind index provider is not configured for entity ${this.name}`,
+            );
+          }
+          data[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
+            String(value),
+            { ...context, fieldName: ef.propertyKey },
+          );
+        }
+      }
+    }
+
+    // Валидация: все ключи patch должны быть в схеме
+    const setKeys = Object.keys(data).filter((k) => dbSchema[k]);
+    for (const k of Object.keys(data)) {
+      if (!dbSchema[k]) {
+        throw new Error(`Unknown field in patch: ${k}`);
+      }
+    }
+    if (!setKeys.length) {
+      throw new Error(`updateBy() on ${this.name}: no valid fields in patch`);
+    }
+
+    const setClause = setKeys
+      .map((k) => `${quoteIdentifier(k)} = $${k}`)
+      .join(', ');
+
+    const {
+      whereClause,
+      values: whereValues,
+      keys: whereKeys,
+      dbSchema: whereDbSchema,
+    } = await this.buildWhere(where, meta);
+
+    const allValues: Record<string, any> = { ...whereValues };
+    for (const k of setKeys) {
+      allValues[k] = data[k];
+    }
+    const allKeys = [...whereKeys, ...setKeys];
+    const allDbSchema = { ...whereDbSchema, ...dbSchema };
+
+    const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause}`;
+    const query = exec([sql] as unknown as TemplateStringsArray);
+    this.bindParams(query, allValues, allKeys, allDbSchema);
+
+    const rows = await this.executeQuery<Record<string, any>[][]>(
+      query,
+      options,
+    );
+    return rows[0]?.length ?? 0;
+  }
+
+  /**
+   * Массовое удаление по условию.
+   * Возвращает количество удалённых строк.
+   */
+  static async deleteBy(
+    this: typeof YdbBaseEntity,
+    where: Record<string, any>,
+    options?: QueryOptions,
+  ): Promise<number> {
+    if (!Object.keys(where).length) {
+      throw new Error(
+        `deleteBy() on ${this.name} requires at least one WHERE condition to prevent full-table delete`,
+      );
+    }
+
+    const exec = this.getExecutor(options?.trx);
+    const meta = this.getMeta();
+
+    const { whereClause, values, keys, dbSchema } = await this.buildWhere(
+      where,
+      meta,
+    );
+
+    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause}`;
+    const query = exec([sql] as unknown as TemplateStringsArray);
+    this.bindParams(query, values, keys, dbSchema);
+
+    const rows = await this.executeQuery<Record<string, any>[][]>(
+      query,
+      options,
+    );
+    return rows[0]?.length ?? 0;
   }
 
   /**
