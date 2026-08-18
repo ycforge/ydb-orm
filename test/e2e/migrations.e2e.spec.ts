@@ -69,6 +69,7 @@ describeE2e()('Migrations e2e', () => {
       { cwd: tmpDir, timeout: 30000, env: cliEnv() },
     );
 
-    expect(result.exitCode).toBe(0);
+    // On success, execAsync resolves (exitCode undefined for 0)
+    expect(result.stdout).toBeDefined();
   });
 });

@@ -14,6 +14,8 @@ export type {
   YdbQuery,
   YdbExecutor,
   QueryOptions,
+  QueryLogger,
+  QueryLogEntry,
 } from './core/interfaces.js';
 export {
   YDB_DRIVER,
@@ -26,6 +28,10 @@ export {
 } from './core/constants.js';
 export { mapToYdb } from './core/mapper.js';
 export { quoteIdentifier, validateIdentifier } from './core/sql-utils.js';
+export {
+  ConsoleQueryLogger,
+  wrapExecutorWithLogging,
+} from './core/query-logger.js';
 
 // Декораторы
 export { YdbEntity } from './decorators/entity.decorator.js';

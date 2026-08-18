@@ -5,6 +5,10 @@ import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
 import { YdbExecutor, YdbModuleOptions } from './interfaces.js';
+import {
+  ConsoleQueryLogger,
+  wrapExecutorWithLogging,
+} from './query-logger.js';
 
 /**
  * Создаёт credentials provider по `auth_type` из опций модуля.
@@ -51,11 +55,21 @@ export function createExecutor(
   driver: Driver,
   opts: YdbModuleOptions,
 ): YdbExecutor {
-  return query(driver, {
+  let executor = query(driver, {
     poolOptions: opts.poolOptions
       ? Object.fromEntries(
           Object.entries(opts.poolOptions).filter(([, v]) => v !== undefined),
         )
       : undefined,
   }) as unknown as YdbExecutor;
+
+  if (opts.logQueries) {
+    const logger =
+      typeof opts.logQueries === 'object' && opts.logQueries !== null
+        ? opts.logQueries
+        : new ConsoleQueryLogger();
+    executor = wrapExecutorWithLogging(executor, logger);
+  }
+
+  return executor;
 }
