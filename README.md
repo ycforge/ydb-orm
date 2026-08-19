@@ -173,9 +173,23 @@ ydb-orm migration:run                     # применить все новые
 ydb-orm migration:revert                  # откатить последнюю
 ydb-orm migration:show                    # статус миграций
 ydb-orm entity:create UserProfile         # сущность ./src/user-profile.entity.ts
+ydb-orm completion bash                   # скрипт shell-автодополнения (bash|zsh|fish)
 ```
 
-Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`.
+Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`, `--json` (для `migration:show`/`migration:check`).
+
+`migration:generate` и `schema:verify` печатают цветной diff расхождений «сущности vs БД», сгруппированный по таблицам; цвета отключаются при выводе не в TTY или переменной `NO_COLOR`.
+
+Автодополнение команд и флагов для шелла:
+
+```bash
+# bash
+ydb-orm completion bash | sudo tee /etc/bash_completion.d/ydb-orm
+# zsh (путь из $fpath)
+ydb-orm completion zsh > ~/.zsh/completions/_ydb-orm
+# fish
+ydb-orm completion fish > ~/.config/fish/completions/ydb-orm.fish
+```
 
 Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; также ищется в `./src/`):
 

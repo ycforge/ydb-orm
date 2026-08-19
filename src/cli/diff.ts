@@ -1,0 +1,90 @@
+/**
+ * Человекочитаемый цветной вывод расхождений схемы «сущности vs БД»
+ * для команд CLI (`schema:verify`, `migration:generate`).
+ * ANSI-коды вручную, без зависимостей; цвет отключается при не-TTY
+ * выводе и по переменной окружения NO_COLOR.
+ */
+import type { YdbSchemaIssue } from '../schema/schema-sync.js';
+
+const RESET = '\x1b[0m';
+const BOLD = '\x1b[1m';
+const RED = '\x1b[31m';
+const YELLOW = '\x1b[33m';
+const BLUE = '\x1b[34m';
+const GRAY = '\x1b[90m';
+
+/** Маркер и цвет по типу расхождения. */
+const KIND_STYLE: Record<
+  YdbSchemaIssue['kind'],
+  { marker: string; color: string }
+> = {
+  'missing-table': { marker: '✖', color: RED },
+  'missing-column': { marker: '+', color: YELLOW },
+  'missing-index': { marker: '+', color: YELLOW },
+  'type-mismatch': { marker: '~', color: RED },
+  'primary-key-mismatch': { marker: '!', color: RED },
+  'extra-column': { marker: '-', color: GRAY },
+  'extra-index': { marker: '-', color: BLUE },
+};
+
+/** Цвет включён, только если вывод — TTY и не задана NO_COLOR. */
+export function shouldUseColor(): boolean {
+  return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+}
+
+/** Оборачивает текст в ANSI-цвет, если раскраска включена. */
+function paint(text: string, color: string, colorEnabled: boolean): string {
+  return colorEnabled ? `${color}${text}${RESET}` : text;
+}
+
+/** Убирает префикс `Table "<name>" ` из сообщения — таблица уже в заголовке группы. */
+function stripTablePrefix(issue: YdbSchemaIssue): string {
+  return issue.message.replace(`Table "${issue.tableName}" `, '');
+}
+
+/**
+ * Для type-mismatch переформатирует сообщение в «было → стало»:
+ * `column "c" type mismatch: expected Utf8, actual Int32`
+ * → `column "c": Int32 → Utf8`.
+ */
+function formatIssueText(issue: YdbSchemaIssue): string {
+  const text = stripTablePrefix(issue);
+  if (issue.kind === 'type-mismatch') {
+    const match =
+      /column "(.+)" type mismatch: expected (.+), actual (.+)$/.exec(text);
+    if (match) {
+      return `column "${match[1]}": ${match[3]} → ${match[2]}`;
+    }
+  }
+  return text;
+}
+
+/**
+ * Рендерит список расхождений, сгруппированный по таблицам.
+ * Возвращает многострочную строку (без завершающего перевода строки).
+ */
+export function renderSchemaDiff(
+  issues: YdbSchemaIssue[],
+  options?: { color?: boolean },
+): string {
+  const colorEnabled = options?.color ?? shouldUseColor();
+
+  // Группировка по таблицам с сохранением исходного порядка.
+  const byTable = new Map<string, YdbSchemaIssue[]>();
+  for (const issue of issues) {
+    const list = byTable.get(issue.tableName) ?? [];
+    list.push(issue);
+    byTable.set(issue.tableName, list);
+  }
+
+  const lines: string[] = [];
+  for (const [tableName, tableIssues] of byTable) {
+    lines.push(paint(tableName, BOLD, colorEnabled));
+    for (const issue of tableIssues) {
+      const style = KIND_STYLE[issue.kind];
+      const marker = paint(style.marker, style.color, colorEnabled);
+      lines.push(`  ${marker} ${formatIssueText(issue)}`);
+    }
+  }
+  return lines.join('\n');
+}
