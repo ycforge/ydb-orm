@@ -78,6 +78,24 @@ describe('renderSchemaDiff', () => {
     expect(out).toContain('~ column "age": Int64 → Int32');
   });
 
+  it('renders index-columns-mismatch as "actual → expected"', () => {
+    const issues: YdbSchemaIssue[] = [
+      {
+        tableName: 'users',
+        kind: 'index-columns-mismatch',
+        message:
+          'Table "users" index "users__name_age" columns mismatch: ' +
+          'expected [name, age], actual [age, name]',
+      },
+    ];
+
+    const out = renderSchemaDiff(issues, { color: false });
+
+    expect(out).toContain(
+      '~ index "users__name_age": [age, name] → [name, age]',
+    );
+  });
+
   it('adds ANSI codes when color is enabled', () => {
     const issues: YdbSchemaIssue[] = [
       {
@@ -135,6 +153,33 @@ describe('diffSchemas + renderSchemaDiff (schema:verify output)', () => {
     expect(out).toContain('users');
     expect(out).toContain('photos');
     expect(out).toContain('~ column "age": Int64 → Int32');
+  });
+
+  it('reports index-columns-mismatch for same-name index with reordered columns', () => {
+    const expected: ExpectedTableSchema = {
+      ...makeExpected(),
+      indexes: [
+        { name: 'users__name_age', columns: ['name', 'age'], unique: false },
+      ],
+    };
+    const existing: YdbTableDescription = {
+      ...makeExisting(),
+      indexes: [
+        { name: 'users__name_age', columns: ['age', 'name'], unique: false },
+      ],
+    };
+
+    const issues = diffSchemas([expected], [existing]);
+
+    const mismatch = issues.find((i) => i.kind === 'index-columns-mismatch');
+    expect(mismatch).toBeDefined();
+    expect(mismatch?.message).toContain('expected [name, age]');
+    expect(mismatch?.message).toContain('actual [age, name]');
+
+    const out = renderSchemaDiff(issues, { color: false });
+    expect(out).toContain(
+      '~ index "users__name_age": [age, name] → [name, age]',
+    );
   });
 });
 
