@@ -203,6 +203,18 @@ describe('@YdbEnum', () => {
       expect(entities[0].status).toBe('active');
       expect(entities[1].status).toBe('pending');
     });
+
+    it('binds Int32 enum in WHERE as ordinal index', async () => {
+      const mock = createMockExecutor([[]]);
+      EnumInt32Entity.setExecutor(mock.executor);
+
+      await EnumInt32Entity.find({ status: Status.PENDING });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('`status` = $status');
+      // PENDING = index 2
+      expect(rawValue(q.params.status)).toBe(2);
+    });
   });
 
   describe('metadata', () => {

@@ -21,6 +21,8 @@ export interface YdbEncryptedOptions {
 
 /**
  * Помечает поле как шифруемое. Без параметров = { blindIndex: true }.
+ * Шифротекст всегда хранится в YDB-колонке `Bytes` (raw bytes) — тип из
+ * @YdbColumn для таких полей игнорируется, объявлять его не нужно.
  * Опция lazy: true откладывает дешифровку до явного вызова
  * decryptField()/decryptLazyFields() на инстансе.
  * Метаданные клонируются перед изменением (copy-on-write), чтобы

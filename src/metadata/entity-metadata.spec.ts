@@ -48,8 +48,8 @@ describe('getYdbEntityMetadata', () => {
       uuid: 'Uuid',
       name: 'Utf8',
       count: 'Int32',
-      secret: 'Utf8',
-      secret_no_blind: 'Utf8',
+      secret: 'Bytes',
+      secret_no_blind: 'Bytes',
       tenant_id: 'Utf8',
     });
     expect(meta!.primaryKeys).toEqual(['uuid']);

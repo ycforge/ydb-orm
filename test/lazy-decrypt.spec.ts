@@ -13,7 +13,7 @@ class CountingEncryptionProvider extends Base64TestEncryptionProvider {
   decryptContexts: YdbEncryptionContext[] = [];
 
   override async decrypt(
-    ciphertext: string,
+    ciphertext: Uint8Array,
     aad: string,
     context: YdbEncryptionContext,
   ): Promise<string> {
@@ -26,21 +26,24 @@ class CountingEncryptionProvider extends Base64TestEncryptionProvider {
     plaintext: string,
     aad: string,
     context: YdbEncryptionContext,
-  ): Promise<string> {
+  ): Promise<Uint8Array> {
     this.encryptCalls.push(context.fieldName);
     return super.encrypt(plaintext, aad, context);
   }
 }
 
-const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+// Base64TestEncryptionProvider сейчас "identity": ciphertext = utf8-байты plaintext
+const ct = (s: string) => new TextEncoder().encode(s);
+const biHash = (s: string) =>
+  Buffer.from(`bi:${s}`, 'utf8').toString('base64');
 
 function makeRow() {
   return {
     uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
     tenant_id: 'tenant-1',
-    secret_lazy: b64('lazy-secret-value'),
-    secret_lazy_bi: b64('bi:lazy-secret-value'),
-    secret_eager: b64('eager-secret-value'),
+    secret_lazy: ct('lazy-secret-value'),
+    secret_lazy_bi: biHash('lazy-secret-value'),
+    secret_eager: ct('eager-secret-value'),
   };
 }
 
@@ -68,8 +71,8 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     expect(entity).not.toBeNull();
     // decrypt вызван только для не-lazy поля
     expect(provider.decryptCalls).toEqual(['secret_eager']);
-    // lazy-поле хранит ciphertext, обычное — plaintext
-    expect(entity!.secret_lazy).toBe(b64('lazy-secret-value'));
+    // lazy-поле хранит ciphertext (Uint8Array), обычное — plaintext
+    expect(entity!.secret_lazy).toEqual(ct('lazy-secret-value'));
     expect(entity!.secret_eager).toBe('eager-secret-value');
   });
 
@@ -145,6 +148,10 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     const entity = (await LazySecretEntity.find({ uuid: row.uuid }))!;
     entity.secret_eager = 'new-eager-value';
 
+    // find() дешифрует мок-строку in-place; RETURNING при update читает
+    // ту же строку — восстанавливаем ciphertext, как сделала бы реальная БД.
+    row.secret_eager = ct('eager-secret-value');
+
     await LazySecretEntity.save(entity);
 
     // encrypt вызван только для изменённого не-lazy поля
@@ -153,7 +160,7 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     const updateQuery = mock.queries.find((q) => q.sql.includes('UPDATE'))!;
     expect(updateQuery).toBeDefined();
     // lazy-поле ушло в БД как исходный ciphertext, _bi не пересчитывался
-    expect((updateQuery.params['secret_lazy'] as any).value).toBe(
+    expect((updateQuery.params['secret_lazy'] as any).value).toEqual(
       row.secret_lazy,
     );
     expect(updateQuery.params).not.toHaveProperty('secret_lazy_bi');
@@ -167,6 +174,10 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     const entity = (await LazySecretEntity.find({ uuid: row.uuid }))!;
     await entity.decryptLazyFields();
 
+    // find() дешифрует мок-строку in-place; RETURNING при update читает
+    // ту же строку — восстанавливаем ciphertext, как сделала бы реальная БД.
+    row.secret_eager = ct('eager-secret-value');
+
     await LazySecretEntity.save(entity);
 
     expect(provider.encryptCalls.sort()).toEqual([
@@ -174,8 +185,8 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
       'secret_lazy',
     ]);
     const updateQuery = mock.queries.find((q) => q.sql.includes('UPDATE'))!;
-    // Base64-провайдер детерминирован: ciphertext совпадает с исходным
-    expect((updateQuery.params['secret_lazy'] as any).value).toBe(
+    // Тестовый провайдер identity: ciphertext совпадает с исходными байтами
+    expect((updateQuery.params['secret_lazy'] as any).value).toEqual(
       row.secret_lazy,
     );
     expect((updateQuery.params['secret_lazy_bi'] as any).value).toBe(
@@ -192,7 +203,7 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     const query = mock.queries[0];
     expect(query.sql).toContain('secret_lazy_bi');
     expect((query.params['secret_lazy_bi'] as any).value).toBe(
-      b64('bi:lazy-secret-value'),
+      biHash('lazy-secret-value'),
     );
     // Поиск по blind index не требует дешифровки значения
     expect(provider.decryptCalls).toEqual(['secret_eager']);

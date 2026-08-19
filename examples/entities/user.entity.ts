@@ -37,11 +37,9 @@ export class UserEntity extends YdbBaseEntity {
   organization: string;
 
   @YdbEncrypted({ blindIndex: true })
-  @YdbColumn('Utf8')
   email: string;
 
   @YdbEncrypted({ blindIndex: false })
-  @YdbColumn('Utf8')
   government_id: string;
 
   // join column — FK на стороне Target (PostEntity.user_uuid).

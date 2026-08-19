@@ -13,6 +13,7 @@ import {
  * - secret_lazy — lazy-поле: не дешифруется при чтении из БД;
  * - secret_eager — обычное encrypted-поле: дешифруется сразу;
  * - tenant_id — AAD-поле для дешифровки.
+ * Шифруемые поля хранятся как Bytes — @YdbColumn для них не объявляется.
  */
 @YdbEntity('lazy_secrets')
 export class LazySecretEntity extends YdbBaseEntity {
@@ -24,10 +25,8 @@ export class LazySecretEntity extends YdbBaseEntity {
   tenant_id: string;
 
   @YdbEncrypted({ lazy: true, blindIndex: true })
-  @YdbColumn('Utf8')
   secret_lazy: string;
 
   @YdbEncrypted({ blindIndex: false })
-  @YdbColumn('Utf8')
   secret_eager: string;
 }
