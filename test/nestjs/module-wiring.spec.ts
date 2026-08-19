@@ -105,7 +105,15 @@ describe('NestJS integration: module wiring', () => {
   it('runs insertMany with batching through the injected executor', async () => {
     const { module, mock } = await createTestingModule([[]]);
 
-    const roles = [new UserRoleEntity(), new UserRoleEntity()];
+    const makeRole = (n: number) => {
+      const r = new UserRoleEntity();
+      r.user_uuid = `00000000-0000-0000-0000-00000000000${n}`;
+      r.role_uuid = `00000000-0000-0000-0000-00000000001${n}`;
+      r.organization_uuid = `00000000-0000-0000-0000-00000000002${n}`;
+      r.is_global = true;
+      return r;
+    };
+    const roles = [makeRole(0), makeRole(1)];
     await UserRoleEntity.insertMany(roles);
 
     expect(mock.queries[0].sql).toContain('UPSERT INTO `user_roles`');
