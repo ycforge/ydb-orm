@@ -92,6 +92,58 @@ export class YdbBaseEntity {
     return getEntityRuntime(this).blindIndexProvider;
   }
 
+  /** Encryption provider или понятная ошибка с подсказкой, как его настроить. */
+  private static requireEncryptionProvider(): YdbEncryptionProvider {
+    const provider = this.getEncryptionProvider();
+    if (!provider) {
+      throw new Error(
+        `Encryption provider is not configured for entity ${this.name} ` +
+          `but it has @YdbEncrypted fields. Pass "encryptionProvider" ` +
+          `in YdbCoreModule.forRootAsync() options or configureEntities().`,
+      );
+    }
+    return provider;
+  }
+
+  /** Blind index provider или понятная ошибка с подсказкой, как его настроить. */
+  private static requireBlindIndexProvider(): YdbBlindIndexProvider {
+    const provider = this.getBlindIndexProvider();
+    if (!provider) {
+      throw new Error(
+        `Blind index provider is not configured for entity ${this.name} ` +
+          `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
+          `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+          `or configureEntities().`,
+      );
+    }
+    return provider;
+  }
+
+  /** Список известных полей сущности для сообщений об ошибках. */
+  private static knownFields(meta: YdbEntityMetadata): string {
+    return Object.keys(meta.schema).join(', ');
+  }
+
+  /**
+   * Fail-fast проверка колонок select: опечатка иначе уйдёт в YDB
+   * и вернётся непонятной SQL-ошибкой.
+   */
+  private static validateSelectFields(
+    select: string[] | undefined,
+    meta: YdbEntityMetadata,
+  ): void {
+    if (!select?.length) return;
+    for (const field of select) {
+      if (!meta.schema[field]) {
+        throw new Error(
+          `Unknown field in select: "${field}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
+      }
+    }
+  }
+
   protected static getCreateDateColumn(): string | undefined {
     return Reflect.getMetadata(YDB_CREATE_DATE_KEY, this) as string | undefined;
   }
@@ -104,7 +156,9 @@ export class YdbBaseEntity {
     const db = trx ?? getEntityRuntime(this).executor;
     if (!db) {
       throw new Error(
-        `YDB executor not set for entity ${this.name}. Did you forget to import it via YdbModule.forFeature()?`,
+        `YDB executor not set for entity ${this.name}. ` +
+          `Register the entity via YdbModule.forFeature([${this.name}]) (NestJS) ` +
+          `or pass it to configureEntities([${this.name}], { executor }) (standalone).`,
       );
     }
     return db;
@@ -118,7 +172,11 @@ export class YdbBaseEntity {
   protected static getMeta(this: typeof YdbBaseEntity) {
     const meta = getYdbEntityMetadata(this);
     if (!meta) {
-      throw new Error(`Entity ${this.name} is not decorated with @YdbEntity`);
+      throw new Error(
+        `Entity ${this.name} is not decorated with @YdbEntity. ` +
+          `Add @YdbEntity('table_name') to the class and declare its columns ` +
+          `via @YdbColumn/@YdbPrimaryColumn.`,
+      );
     }
     return meta;
   }
@@ -221,13 +279,7 @@ export class YdbBaseEntity {
   ): Promise<Record<string, any>> {
     if (!meta.encryptedFields.length) return entity;
 
-    const encryptionProvider = this.getEncryptionProvider();
-    if (!encryptionProvider) {
-      throw new Error(
-        `Encryption provider is not configured for entity ${this.name} but @YdbEncrypted fields exist`,
-      );
-    }
-    const blindIndexProvider = this.getBlindIndexProvider();
+    const encryptionProvider = this.requireEncryptionProvider();
     const pkField = meta.primaryKeys[0] ?? 'uuid';
     const pkValue = entity[pkField];
 
@@ -265,15 +317,11 @@ export class YdbBaseEntity {
       );
 
       if (ef.blindIndex) {
-        if (!blindIndexProvider) {
-          throw new Error(
-            `Blind index provider is not configured for entity ${this.name}`,
-          );
-        }
-        encrypted[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
-          String(value),
-          { ...baseContext, fieldName: ef.propertyKey },
-        );
+        const provider = this.requireBlindIndexProvider();
+        encrypted[`${ef.propertyKey}_bi`] = await provider.hash(String(value), {
+          ...baseContext,
+          fieldName: ef.propertyKey,
+        });
       }
     }
     return encrypted;
@@ -349,12 +397,17 @@ export class YdbBaseEntity {
       }
       if (!ef.blindIndex) {
         throw new Error(
-          `Cannot search by encrypted field "${k}" without blind index`,
+          `Cannot search by encrypted field "${k}" on entity ${this.name}: ` +
+            `blind index is disabled for it. ` +
+            `Use @YdbEncrypted({ blindIndex: true }) to make it searchable.`,
         );
       }
       if (!blindIndexProvider) {
         throw new Error(
-          `Blind index provider is not configured for entity ${this.name}`,
+          `Blind index provider is not configured for entity ${this.name} ` +
+            `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
+            `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+            `or configureEntities().`,
         );
       }
       const value = where[k];
@@ -390,7 +443,13 @@ export class YdbBaseEntity {
       (k) => processedWhere[k] !== undefined,
     );
     for (const k of keys) {
-      if (!dbSchema[k]) throw new Error(`Unknown field in WHERE: ${k}`);
+      if (!dbSchema[k]) {
+        throw new Error(
+          `Unknown field in WHERE: "${k}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
+      }
     }
     const conditions = keys
       .map((k) => `${quoteIdentifier(k)} = $${k}`)
@@ -664,6 +723,7 @@ export class YdbBaseEntity {
   ): Promise<T | null> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
+    this.validateSelectFields(options?.select, meta);
 
     const { whereClause, values, keys, dbSchema } = await this.buildWhere(
       where,
@@ -709,6 +769,7 @@ export class YdbBaseEntity {
   ): Promise<T[]> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
+    this.validateSelectFields(options?.select, meta);
 
     const { whereClause, values, keys, dbSchema } = await this.buildWhere(
       where,
@@ -895,7 +956,14 @@ export class YdbBaseEntity {
     const meta = this.getMeta();
     const dbSchema = this.getDbSchema(meta);
     const pkField = meta.primaryKeys[0] ?? 'uuid';
-    const pkType = dbSchema[pkField] ?? 'Uuid';
+    if (!dbSchema[pkField]) {
+      throw new Error(
+        `Cannot delete ${this.name} by primary key: column "${pkField}" ` +
+          `is not declared. Declare it via @YdbPrimaryColumn ` +
+          `(or a "uuid" @YdbColumn).`,
+      );
+    }
+    const pkType = dbSchema[pkField];
 
     // beforeRemove-хуки работают на инстансе — загружаем запись до удаления
     if (getLifecycleHooks(this).beforeRemove.length) {
@@ -1152,13 +1220,7 @@ export class YdbBaseEntity {
       Object.prototype.hasOwnProperty.call(data, ef.propertyKey),
     );
     if (encryptedFieldsToProcess.length) {
-      const encryptionProvider = this.getEncryptionProvider();
-      if (!encryptionProvider) {
-        throw new Error(
-          `Encryption provider is not configured for entity ${this.name} but @YdbEncrypted fields exist in patch`,
-        );
-      }
-      const blindIndexProvider = this.getBlindIndexProvider();
+      const encryptionProvider = this.requireEncryptionProvider();
       for (const ef of encryptedFieldsToProcess) {
         const value = data[ef.propertyKey];
         if (value === null || value === undefined) continue;
@@ -1188,11 +1250,7 @@ export class YdbBaseEntity {
         );
 
         if (ef.blindIndex) {
-          if (!blindIndexProvider) {
-            throw new Error(
-              `Blind index provider is not configured for entity ${this.name}`,
-            );
-          }
+          const blindIndexProvider = this.requireBlindIndexProvider();
           data[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
             String(value),
             { ...context, fieldName: ef.propertyKey },
@@ -1205,7 +1263,11 @@ export class YdbBaseEntity {
     const setKeys = Object.keys(data).filter((k) => dbSchema[k]);
     for (const k of Object.keys(data)) {
       if (!dbSchema[k]) {
-        throw new Error(`Unknown field in patch: ${k}`);
+        throw new Error(
+          `Unknown field in patch: "${k}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
       }
     }
     if (!setKeys.length) {
@@ -1222,6 +1284,12 @@ export class YdbBaseEntity {
       keys: whereKeys,
       dbSchema: whereDbSchema,
     } = await this.buildWhere(where, meta);
+    if (!whereKeys.length) {
+      throw new Error(
+        `updateBy() on ${this.name} has no effective WHERE condition ` +
+          `(all values are undefined) — refusing full-table update`,
+      );
+    }
 
     const allValues: Record<string, any> = { ...whereValues };
     for (const k of setKeys) {
@@ -1266,6 +1334,12 @@ export class YdbBaseEntity {
       where,
       meta,
     );
+    if (!keys.length) {
+      throw new Error(
+        `deleteBy() on ${this.name} has no effective WHERE condition ` +
+          `(all values are undefined) — refusing full-table delete`,
+      );
+    }
 
     // RETURNING по PK: без него YDB не отдаёт result set и счётчик строк всегда 0
     const pkColumn = quoteIdentifier(meta.primaryKeys[0] ?? 'uuid');
@@ -1305,7 +1379,15 @@ export class YdbBaseEntity {
 
     for (const name of relations) {
       const rel = allRelations.find((r) => r.propertyKey === name);
-      if (!rel) throw new Error(`Unknown relation: ${name}`);
+      if (!rel) {
+        const known = allRelations.map((r) => r.propertyKey).join(', ');
+        throw new Error(
+          `Unknown relation: "${name}" on entity ${constructor.name}. ` +
+            `Known relations: ${known || '(none)'}. ` +
+            `Check the property name or declare the relation ` +
+            `via @OneToMany/@ManyToOne/@OneToOne.`,
+        );
+      }
 
       const Target = rel.target();
 

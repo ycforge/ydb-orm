@@ -171,6 +171,7 @@ export {
   createCredentialsProvider,
   createDriver,
   createExecutor,
+  validateYdbModuleOptions,
 } from './core/driver.js';
 export { configureEntities } from './core/standalone.js';
 export type { YdbCliConfig } from './cli/config.js';
