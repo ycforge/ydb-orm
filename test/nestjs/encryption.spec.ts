@@ -18,9 +18,11 @@ import { createMockExecutor, MockExecutor } from '../helpers/mock-executor.js';
 })
 class TestFeatureModule {}
 
-const encryptMock = jest.fn((value: string) => Promise.resolve(`enc:${value}`));
-const decryptMock = jest.fn((value: string) =>
-  Promise.resolve(value.replace(/^enc:/, '')),
+const encryptMock = jest.fn((value: string) =>
+  Promise.resolve(new TextEncoder().encode(`enc:${value}`)),
+);
+const decryptMock = jest.fn((value: Uint8Array) =>
+  Promise.resolve(new TextDecoder().decode(value).replace(/^enc:/, '')),
 );
 const hashMock = jest.fn((value: string) => Promise.resolve(`bi:${value}`));
 
@@ -95,8 +97,10 @@ describe('NestJS integration: encryption providers', () => {
     const [upsert] = mock.queries;
     expect(upsert.sql).toContain('UPSERT INTO `photos`');
     expect(upsert.sql).toContain('`author_email_bi`');
-    // параметры обёрнуты в YDB-значения: Utf8.value = ciphertext / blind index
-    expect((upsert.params.author_email as any).value).toBe('enc:a@b.c');
+    // параметры обёрнуты в YDB-значения: Bytes.value = ciphertext / blind index (Utf8)
+    expect((upsert.params.author_email as any).value).toEqual(
+      new TextEncoder().encode('enc:a@b.c'),
+    );
     expect((upsert.params.author_email_bi as any).value).toBe('bi:a@b.c');
     expect((upsert.params.title as any).value).toBe('Sunset');
   });
@@ -108,7 +112,7 @@ describe('NestJS integration: encryption providers', () => {
         {
           uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
           title: 'Sunset',
-          author_email: 'enc:a@b.c',
+          author_email: new TextEncoder().encode('enc:a@b.c'),
         },
       ],
     ]));
@@ -118,7 +122,7 @@ describe('NestJS integration: encryption providers', () => {
     });
 
     expect(decryptMock).toHaveBeenCalledWith(
-      'enc:a@b.c',
+      new TextEncoder().encode('enc:a@b.c'),
       expect.any(String),
       expect.objectContaining({ fieldName: 'author_email' }),
     );

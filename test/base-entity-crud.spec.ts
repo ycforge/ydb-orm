@@ -290,8 +290,8 @@ describe('BaseEntity CRUD (mock executor)', () => {
       UserEntity.setBlindIndexProvider(provider);
       const updatedRow = {
         ...userRow,
-        email_encrypted: Buffer.from('enc').toString('base64'),
-        full_name: Buffer.from('Updated').toString('base64'),
+        email_encrypted: new TextEncoder().encode('enc'),
+        full_name: new TextEncoder().encode('Updated'),
       };
       const mock = createMockExecutor([[updatedRow]]);
       UserEntity.setExecutor(mock.executor);
@@ -331,7 +331,15 @@ describe('BaseEntity CRUD (mock executor)', () => {
       const provider = new Base64TestEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
-      const mock = createMockExecutor([[userRow]]);
+      const mock = createMockExecutor([
+        [
+          {
+            ...userRow,
+            email_encrypted: new TextEncoder().encode('enc'),
+            full_name: new TextEncoder().encode('Ivan'),
+          },
+        ],
+      ]);
       UserEntity.setExecutor(mock.executor);
 
       const user = new UserEntity();
@@ -442,16 +450,21 @@ describe('BaseEntity CRUD (mock executor)', () => {
 
       const saveQ = mock.queries[0];
       const emailParam = saveQ.params.email_encrypted;
-      // Should be base64-encoded
-      expect(String((emailParam as any).value)).toBe(
-        Buffer.from('plain@example.com').toString('base64'),
+      // Should be stored as raw bytes (Bytes), not base64 string
+      expect((emailParam as any).value).toEqual(
+        new TextEncoder().encode('plain@example.com'),
       );
 
       // Find: should decrypt
-      const encryptedEmail =
-        Buffer.from('plain@example.com').toString('base64');
+      const encryptedEmail = new TextEncoder().encode('plain@example.com');
       const mock2 = createMockExecutor([
-        [{ ...userRow, email_encrypted: encryptedEmail }],
+        [
+          {
+            ...userRow,
+            email_encrypted: encryptedEmail,
+            full_name: new TextEncoder().encode('Ivan'),
+          },
+        ],
       ]);
       UserEntity.setExecutor(mock2.executor);
 
