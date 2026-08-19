@@ -53,7 +53,7 @@ describe('KmsEncryptionProvider', () => {
     const provider = new KmsEncryptionProvider({ keyId: 'test-key-id' });
     const result = await provider.encrypt('hello world', 'aad-value', context);
 
-    expect(result).toBe(Buffer.from([1, 2, 3, 4, 5]).toString('base64'));
+    expect(result).toEqual(new Uint8Array([1, 2, 3, 4, 5]));
     expect(mockKmsClient.encrypt).toHaveBeenCalledTimes(1);
     expect(mockKmsClient.encrypt).toHaveBeenCalledWith({
       keyId: 'test-key-id',
@@ -74,7 +74,7 @@ describe('KmsEncryptionProvider', () => {
 
   it('decrypts and calls KMS client', async () => {
     const provider = new KmsEncryptionProvider({ keyId: 'test-key-id' });
-    const ciphertext = Buffer.from([1, 2, 3, 4, 5]).toString('base64');
+    const ciphertext = new Uint8Array([1, 2, 3, 4, 5]);
     const result = await provider.decrypt(ciphertext, 'aad-value', context);
 
     expect(result).toBe('hello world');
@@ -87,7 +87,7 @@ describe('KmsEncryptionProvider', () => {
 
   it('decrypts without AAD when aad is empty', async () => {
     const provider = new KmsEncryptionProvider({ keyId: 'test-key-id' });
-    const ciphertext = Buffer.from([10, 20]).toString('base64');
+    const ciphertext = new Uint8Array([10, 20]);
     await provider.decrypt(ciphertext, '', context);
 
     expect(mockKmsClient.decrypt).toHaveBeenCalledWith({

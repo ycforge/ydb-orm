@@ -86,6 +86,7 @@ export interface YdbSchemaIssue {
 const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
   Uuid: Type_PrimitiveTypeId.UUID,
   Utf8: Type_PrimitiveTypeId.UTF8,
+  Bytes: Type_PrimitiveTypeId.STRING,
   Int32: Type_PrimitiveTypeId.INT32,
   Int64: Type_PrimitiveTypeId.INT64,
   Bool: Type_PrimitiveTypeId.BOOL,

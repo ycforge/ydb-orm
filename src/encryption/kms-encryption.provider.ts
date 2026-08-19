@@ -68,12 +68,13 @@ export class KmsEncryptionProvider implements YdbEncryptionProvider {
   /**
    * Шифрует открытым текст через KMS.
    * AAD (Additional Authenticated Data) передаётся для защиты целостности контекста.
+   * Возвращает raw ciphertext (Uint8Array) для хранения в колонке `Bytes`.
    */
   async encrypt(
     plaintext: string,
     aad: string,
     _context: YdbEncryptionContext,
-  ): Promise<string> {
+  ): Promise<Uint8Array> {
     const client = await this.kmsClientPromise;
     const plaintextBytes = new TextEncoder().encode(plaintext);
     const params: {
@@ -88,21 +89,20 @@ export class KmsEncryptionProvider implements YdbEncryptionProvider {
       params.aad = new TextEncoder().encode(aad);
     }
     const { ciphertext } = await client.encrypt(params);
-    return Buffer.from(ciphertext).toString('base64');
+    return ciphertext;
   }
 
   /**
-   * Дешифрует ciphertext, полученный через KMS.
+   * Дешифрует ciphertext (Uint8Array из колонки `Bytes`), полученный через KMS.
    */
   async decrypt(
-    ciphertext: string,
+    ciphertext: Uint8Array,
     aad: string,
     _context: YdbEncryptionContext,
   ): Promise<string> {
     const client = await this.kmsClientPromise;
-    const ciphertextBytes = Buffer.from(ciphertext, 'base64');
     const params: { ciphertext: Uint8Array; aad?: Uint8Array } = {
-      ciphertext: ciphertextBytes,
+      ciphertext,
     };
     if (aad) {
       params.aad = new TextEncoder().encode(aad);

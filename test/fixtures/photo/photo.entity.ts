@@ -39,7 +39,6 @@ export class PhotoEntity extends YdbBaseEntity {
   is_public: boolean;
 
   @YdbEncrypted({ blindIndex: true })
-  @YdbColumn('Utf8')
   author_email: string;
 
   @YdbColumn('Int32')

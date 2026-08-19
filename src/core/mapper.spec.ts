@@ -1,6 +1,7 @@
 import {
   Uuid,
   Utf8,
+  Bytes,
   Int32,
   Int64,
   Bool,
@@ -41,6 +42,20 @@ describe('mapToYdb', () => {
 
     it('returns Optional<Utf8> for null', () => {
       const val = mapToYdb('Utf8', null);
+      expect(val).toBeInstanceOf(Optional);
+    });
+  });
+
+  describe('Bytes', () => {
+    it('wraps a Uint8Array into Bytes value', () => {
+      const bytes = new Uint8Array([0, 1, 2, 255]);
+      const val = mapToYdb('Bytes', bytes);
+      expect(val).toBeInstanceOf(Bytes);
+      expect((val as any).value).toBe(bytes);
+    });
+
+    it('returns Optional<Bytes> for null', () => {
+      const val = mapToYdb('Bytes', null);
       expect(val).toBeInstanceOf(Optional);
     });
   });
