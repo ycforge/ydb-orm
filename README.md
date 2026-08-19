@@ -73,7 +73,7 @@ export class UserService {
 }
 ```
 
-Также доступен `YdbEntityManager` — фабрика репозиториев (`manager.getRepository(UserEntity)`). Active Record остаётся полностью работоспособным: методы `YdbRepository` делегируют в статические методы сущности.
+Также доступен `YdbEntityManager` — фабрика репозиториев (`manager.getRepository(UserEntity)`). `YdbRepository` — ядро ORM: вся CRUD-логика живёт в нём (и в `YdbEntityPersistence`/`YdbEntityRelations` под капотом). Active Record остаётся полностью работоспособным: статические методы `UserEntity.find(...)` и т.д. — тонкий фасад, делегирующий в репозиторий.
 
 ## Active Record
 

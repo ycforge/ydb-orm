@@ -1,5 +1,7 @@
 import type { YdbBaseEntity } from '../entity/base-entity.js';
-import { YdbRepository, type YdbEntityConstructor } from './ydb-repository.js';
+import type { YdbEntityConstructor } from './ydb-repository.js';
+import { YdbRepository } from './ydb-repository.js';
+import { getOrCreateRepository } from './repository-resolver.js';
 
 /**
  * Менеджер сущностей — фабрика репозиториев.
@@ -12,6 +14,6 @@ export class YdbEntityManager {
   getRepository<T extends YdbBaseEntity>(
     entityClass: YdbEntityConstructor<T>,
   ): YdbRepository<T> {
-    return new YdbRepository<T>(entityClass);
+    return getOrCreateRepository(entityClass);
   }
 }

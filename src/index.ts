@@ -99,8 +99,15 @@ export {
   YdbEntityManager,
   getRepositoryToken,
   InjectRepository,
+  getOrCreateRepository,
 } from './repository/index.js';
 export type { YdbEntityConstructor } from './repository/index.js';
+
+// Persistence / Relations (новое ядро ORM)
+export { YdbEntityPersistence } from './persistence/index.js';
+export { YdbEntityRelations } from './relations/index.js';
+export type { PersistenceDeps } from './persistence/index.js';
+export type { RelationsDeps } from './relations/index.js';
 
 // Шифрование
 export type {

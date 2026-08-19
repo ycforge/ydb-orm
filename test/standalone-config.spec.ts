@@ -4,6 +4,8 @@ import {
   YdbEntity,
   YdbColumn,
   YdbBaseEntity,
+  YdbPrimaryColumn,
+  YdbEncrypted,
   Base64TestEncryptionProvider,
 } from '../src/index.js';
 import { configureEntities } from '../src/core/standalone.js';
@@ -27,39 +29,50 @@ class TestSimple extends YdbBaseEntity {
   value!: string;
 }
 
+@YdbEntity('test_encrypted')
+class TestEncrypted extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  declare uuid: string;
+
+  @YdbEncrypted({ blindIndex: true })
+  secret?: string;
+}
+
 describe('configureEntities', () => {
-  it('устанавливает executor на все сущности', () => {
+  it('устанавливает executor на все сущности', async () => {
     const { executor } = createMockExecutor();
     configureEntities([TestUser, TestPost], { executor });
 
-    // Если executor установлен, getExecutor() не бросит ошибку
-    expect(() => (TestUser as any).getExecutor()).not.toThrow();
-    expect(() => (TestPost as any).getExecutor()).not.toThrow();
+    // Если executor установлен, findAll() не бросит ошибку и вернёт пустой массив
+    await expect(TestUser.findAll()).resolves.toEqual([]);
+    await expect(TestPost.findAll()).resolves.toEqual([]);
   });
 
-  it('устанавливает encryptionProvider и blindIndexProvider если переданы', () => {
-    const { executor } = createMockExecutor();
-    const encryptionProvider = new Base64TestEncryptionProvider();
-    const blindIndexProvider = {
-      hash: (value: string) => Promise.resolve(`idx_${value}`),
-    };
+  it('устанавливает encryptionProvider и blindIndexProvider если переданы', async () => {
+    const provider = new Base64TestEncryptionProvider();
+    const mock = createMockExecutor([[]]);
 
-    configureEntities([TestUser], {
-      executor,
-      encryptionProvider,
-      blindIndexProvider,
+    configureEntities([TestEncrypted], {
+      executor: mock.executor,
+      encryptionProvider: provider,
+      blindIndexProvider: provider,
     });
 
-    expect((TestUser as any).getEncryptionProvider()).toBe(encryptionProvider);
-    expect((TestUser as any).getBlindIndexProvider()).toBe(blindIndexProvider);
+    const e = new TestEncrypted();
+    e.secret = 'hello';
+    await TestEncrypted.save(e);
+
+    const [saveQ] = mock.queries;
+    expect(saveQ.sql).toContain('UPSERT INTO `test_encrypted`');
+    expect(saveQ.params.secret).toBeDefined();
+    expect(saveQ.params.secret_bi).toBeDefined();
   });
 
-  it('работает без опциональных провайдеров', () => {
+  it('работает без опциональных провайдеров', async () => {
     const { executor } = createMockExecutor();
     configureEntities([TestSimple], { executor });
 
-    expect((TestSimple as any).getEncryptionProvider()).toBeUndefined();
-    expect((TestSimple as any).getBlindIndexProvider()).toBeUndefined();
+    await expect(TestSimple.findAll()).resolves.toEqual([]);
   });
 
   it('устанавливает executor на пустом массиве сущностей без ошибок', () => {

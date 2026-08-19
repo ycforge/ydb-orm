@@ -3,7 +3,8 @@ import { YdbCoreModule } from './ydb-core.module.js';
 import { createActiveRecordEntityProvider } from './repository-factory.js';
 import { YdbModuleAsyncOptions } from '../core/interfaces.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
-import { getRepositoryToken, YdbRepository } from '../repository/index.js';
+import { getEntityRuntime } from '../entity/entity-runtime.js';
+import { getRepositoryToken } from '../repository/index.js';
 
 @Module({})
 export class YdbModule {
@@ -22,7 +23,17 @@ export class YdbModule {
     );
     const repositoryProviders: Provider[] = entities.map((entityClass) => ({
       provide: getRepositoryToken(entityClass as any),
-      useFactory: () => new YdbRepository(entityClass),
+      useFactory: () => {
+        const repo = getEntityRuntime(entityClass).repository;
+        if (!repo) {
+          throw new Error(
+            `Repository for ${entityClass.name} is not initialized. ` +
+              `Make sure YdbModule.forFeature([${entityClass.name}]) is imported after YdbCoreModule.`,
+          );
+        }
+        return repo;
+      },
+      inject: [`${entityClass.name}_AR_INIT`],
     }));
 
     return {

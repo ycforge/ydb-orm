@@ -14,12 +14,14 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
  * Провайдер, который при инициализации модуля подключает глобальный
  * executor и опциональные encryption/blind-index провайдеры к Active Record
  * сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
  * Перед подключением валидирует метаданные сущности (validateEntityMetadata).
+ * Также создаёт `YdbRepository` для сущности и сохраняет его в entity-runtime.
  */
 export function createActiveRecordEntityProvider(
   entityClass: typeof YdbBaseEntity,
@@ -53,6 +55,9 @@ export function createActiveRecordEntityProvider(
       if (blindIndexProvider) {
         entityClass.setBlindIndexProvider(blindIndexProvider);
       }
+
+      getOrCreateRepository(entityClass as any);
+
       return entityClass;
     },
     inject: [

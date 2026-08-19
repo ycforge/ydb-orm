@@ -4,11 +4,12 @@ import type {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
+import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
  * Конфигурация сущностей для программного использования без NestJS.
  * Устанавливает executor и (опционально) провайдеры шифрования
- * на каждую переданную сущность.
+ * на каждую переданную сущность и создаёт для неё YdbRepository.
  *
  * @example
  * ```ts
@@ -57,5 +58,7 @@ export function configureEntities(
         options.blindIndexProvider,
       );
     }
+
+    getOrCreateRepository(entity as unknown as typeof YdbBaseEntity);
   }
 }
