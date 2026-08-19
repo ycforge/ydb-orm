@@ -384,7 +384,14 @@ describe('BaseEntity CRUD (mock executor)', () => {
       const mock = createMockExecutor([[]]);
       UserRoleEntity.setExecutor(mock.executor);
 
-      const roles = Array.from({ length: 3 }, () => new UserRoleEntity());
+      const roles = Array.from({ length: 3 }, (_, i) => {
+        const r = new UserRoleEntity();
+        r.user_uuid = `00000000-0000-0000-0000-00000000000${i}`;
+        r.role_uuid = `00000000-0000-0000-0000-00000000001${i}`;
+        r.organization_uuid = `00000000-0000-0000-0000-00000000002${i}`;
+        r.is_global = true;
+        return r;
+      });
       await UserRoleEntity.insertMany(roles);
 
       const [q] = mock.queries;

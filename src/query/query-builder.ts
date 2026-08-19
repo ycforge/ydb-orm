@@ -139,6 +139,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     const { whereClause, values, keys, dbSchema } =
       await this.entity._buildWhereClause(this.whereValues);
     this.validateOrderFields(dbSchema);
+    this.validateSelectFields(dbSchema);
 
     const orderClause = this.orderClauses.length
       ? ' ORDER BY ' +
@@ -163,7 +164,9 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     const meta = getYdbEntityMetadata(this.entity);
     if (!meta) {
       throw new Error(
-        `Class ${this.entity.name} is not decorated with @YdbEntity`,
+        `Class ${this.entity.name} is not decorated with @YdbEntity. ` +
+          `Add @YdbEntity('table_name') to the class and declare its columns ` +
+          `via @YdbColumn/@YdbPrimaryColumn.`,
       );
     }
     return meta;
@@ -173,10 +176,28 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     for (const { field } of this.orderClauses) {
       if (!dbSchema[field]) {
         throw new Error(
-          `Unknown field in ORDER BY: ${field} (entity ${this.entity.name})`,
+          `Unknown field in ORDER BY: "${field}" on entity ` +
+            `${this.entity.name}. Known fields: ${this.knownFields(dbSchema)}. ` +
+            `Check for a typo in the property name.`,
         );
       }
     }
+  }
+
+  private validateSelectFields(dbSchema: Record<string, YdbPrimitive>): void {
+    for (const field of this.selectColumns ?? []) {
+      if (!dbSchema[field]) {
+        throw new Error(
+          `Unknown field in select: "${field}" on entity ` +
+            `${this.entity.name}. Known fields: ${this.knownFields(dbSchema)}. ` +
+            `Check for a typo in the property name.`,
+        );
+      }
+    }
+  }
+
+  private knownFields(dbSchema: Record<string, YdbPrimitive>): string {
+    return Object.keys(dbSchema).join(', ');
   }
 
   private resolveLimit(): number {

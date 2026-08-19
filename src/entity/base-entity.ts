@@ -32,6 +32,13 @@ import { getEntityRuntime } from './entity-runtime.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 
+/**
+ * Состояние lazy-дешифровки инстансов: поле → ciphertext из БД.
+ * Записывается при instantiate(); снимается после decryptField().
+ * WeakMap — не мешает сборке мусора и не виден в Object.entries/toJSON.
+ */
+const lazyPendingCiphertext = new WeakMap<object, Map<string, any>>();
+
 export class YdbBaseEntity {
   static setExecutor(db: YdbExecutor): void {
     getEntityRuntime(this).executor = db;
@@ -92,6 +99,58 @@ export class YdbBaseEntity {
     return getEntityRuntime(this).blindIndexProvider;
   }
 
+  /** Encryption provider или понятная ошибка с подсказкой, как его настроить. */
+  private static requireEncryptionProvider(): YdbEncryptionProvider {
+    const provider = this.getEncryptionProvider();
+    if (!provider) {
+      throw new Error(
+        `Encryption provider is not configured for entity ${this.name} ` +
+          `but it has @YdbEncrypted fields. Pass "encryptionProvider" ` +
+          `in YdbCoreModule.forRootAsync() options or configureEntities().`,
+      );
+    }
+    return provider;
+  }
+
+  /** Blind index provider или понятная ошибка с подсказкой, как его настроить. */
+  private static requireBlindIndexProvider(): YdbBlindIndexProvider {
+    const provider = this.getBlindIndexProvider();
+    if (!provider) {
+      throw new Error(
+        `Blind index provider is not configured for entity ${this.name} ` +
+          `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
+          `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+          `or configureEntities().`,
+      );
+    }
+    return provider;
+  }
+
+  /** Список известных полей сущности для сообщений об ошибках. */
+  private static knownFields(meta: YdbEntityMetadata): string {
+    return Object.keys(meta.schema).join(', ');
+  }
+
+  /**
+   * Fail-fast проверка колонок select: опечатка иначе уйдёт в YDB
+   * и вернётся непонятной SQL-ошибкой.
+   */
+  private static validateSelectFields(
+    select: string[] | undefined,
+    meta: YdbEntityMetadata,
+  ): void {
+    if (!select?.length) return;
+    for (const field of select) {
+      if (!meta.schema[field]) {
+        throw new Error(
+          `Unknown field in select: "${field}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
+      }
+    }
+  }
+
   protected static getCreateDateColumn(): string | undefined {
     return Reflect.getMetadata(YDB_CREATE_DATE_KEY, this) as string | undefined;
   }
@@ -104,7 +163,9 @@ export class YdbBaseEntity {
     const db = trx ?? getEntityRuntime(this).executor;
     if (!db) {
       throw new Error(
-        `YDB executor not set for entity ${this.name}. Did you forget to import it via YdbModule.forFeature()?`,
+        `YDB executor not set for entity ${this.name}. ` +
+          `Register the entity via YdbModule.forFeature([${this.name}]) (NestJS) ` +
+          `or pass it to configureEntities([${this.name}], { executor }) (standalone).`,
       );
     }
     return db;
@@ -118,7 +179,11 @@ export class YdbBaseEntity {
   protected static getMeta(this: typeof YdbBaseEntity) {
     const meta = getYdbEntityMetadata(this);
     if (!meta) {
-      throw new Error(`Entity ${this.name} is not decorated with @YdbEntity`);
+      throw new Error(
+        `Entity ${this.name} is not decorated with @YdbEntity. ` +
+          `Add @YdbEntity('table_name') to the class and declare its columns ` +
+          `via @YdbColumn/@YdbPrimaryColumn.`,
+      );
     }
     return meta;
   }
@@ -210,33 +275,78 @@ export class YdbBaseEntity {
   }
 
   /**
+   * PK-поля сущности: из метаданных (поддерживается составной PK),
+   * fallback — одиночный 'uuid'.
+   */
+  protected static getPkFields(meta: YdbEntityMetadata): string[] {
+    return meta.primaryKeys.length ? meta.primaryKeys : ['uuid'];
+  }
+
+  /**
+   * Проверяет, что все компоненты PK заданы в объекте, и возвращает
+   * фильтр { pkField: value }. Бросает понятную ошибку, если какой-то
+   * компонент отсутствует (undefined/null).
+   */
+  protected static requirePkValues(
+    meta: YdbEntityMetadata,
+    source: Record<string, any>,
+    action: string,
+  ): Record<string, any> {
+    const pkFields = this.getPkFields(meta);
+    const missing = pkFields.filter(
+      (f) => source[f] === undefined || source[f] === null,
+    );
+    if (missing.length) {
+      throw new Error(
+        `Cannot ${action} ${this.name}: primary key field(s) ${missing
+          .map((f) => `"${f}"`)
+          .join(', ')} must be set`,
+      );
+    }
+    const filter: Record<string, any> = {};
+    for (const f of pkFields) filter[f] = source[f];
+    return filter;
+  }
+
+  /**
+   * Строковое представление PK для контекста шифрования:
+   * значения всех компонентов, соединённые через ':'.
+   */
+  protected static pkValueForContext(
+    meta: YdbEntityMetadata,
+    source: Record<string, any>,
+  ): string | undefined {
+    const parts = this.getPkFields(meta)
+      .map((f) => source[f])
+      .filter((v) => v !== undefined && v !== null);
+    return parts.length ? parts.map(String).join(':') : undefined;
+  }
+
+  /**
    * Возвращает копию сущности с зашифрованными полями и _bi колонками.
    * Исходный объект не мутируется: он должен хранить plaintext, иначе
    * повторный save() зашифрует ciphertext повторно.
    * Null/undefined не шифруются.
+   *
+   * Lazy-поля: если инстанс пришёл из БД и поле не менялось (в нём всё ещё
+   * ciphertext), оно прокидывается как есть — повторное шифрование и
+   * пересчёт blind index не нужны. Если пользователь присвоил новое
+   * значение, оно шифруется как обычный plaintext.
    */
   protected static async encryptEntity(
     entity: Record<string, any>,
     meta: YdbEntityMetadata,
+    source?: object,
   ): Promise<Record<string, any>> {
     if (!meta.encryptedFields.length) return entity;
 
-    const encryptionProvider = this.getEncryptionProvider();
-    if (!encryptionProvider) {
-      throw new Error(
-        `Encryption provider is not configured for entity ${this.name} but @YdbEncrypted fields exist`,
-      );
-    }
-    const blindIndexProvider = this.getBlindIndexProvider();
-    const pkField = meta.primaryKeys[0] ?? 'uuid';
-    const pkValue = entity[pkField];
+    const encryptionProvider = this.requireEncryptionProvider();
 
     const baseContext: YdbEncryptionContext = {
       entityName: this.name,
       tableName: meta.tableName,
       fieldName: '',
-      primaryKeyValue:
-        pkValue !== undefined && pkValue !== null ? String(pkValue) : undefined,
+      primaryKeyValue: this.pkValueForContext(meta, entity),
       aadFields: {},
     };
 
@@ -246,10 +356,18 @@ export class YdbBaseEntity {
       if (av !== undefined && av !== null) aadFields[aadName] = String(av);
     }
 
+    const pendingLazy = source ? lazyPendingCiphertext.get(source) : undefined;
+
     const encrypted = { ...entity };
     for (const ef of meta.encryptedFields) {
       const value = entity[ef.propertyKey];
       if (value === null || value === undefined) continue;
+
+      // Нетронутое lazy-поле: ciphertext не зашифровываем повторно.
+      if (ef.lazy && pendingLazy?.get(ef.propertyKey) === value) {
+        encrypted[ef.propertyKey] = value;
+        continue;
+      }
 
       const aad = ef.aadOverride ?? this.buildAAD(entity, meta.aadFields);
       const context: YdbEncryptionContext = {
@@ -265,21 +383,17 @@ export class YdbBaseEntity {
       );
 
       if (ef.blindIndex) {
-        if (!blindIndexProvider) {
-          throw new Error(
-            `Blind index provider is not configured for entity ${this.name}`,
-          );
-        }
-        encrypted[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
-          String(value),
-          { ...baseContext, fieldName: ef.propertyKey },
-        );
+        const provider = this.requireBlindIndexProvider();
+        encrypted[`${ef.propertyKey}_bi`] = await provider.hash(String(value), {
+          ...baseContext,
+          fieldName: ef.propertyKey,
+        });
       }
     }
     return encrypted;
   }
 
-  /** Дешифрует поля в результате запроса. Null/undefined пропускаются. */
+  /** Дешифрует поля в результате запроса. Null/undefined и lazy-поля пропускаются. */
   protected static async decryptResult(
     result: Record<string, any> | Record<string, any>[] | null,
     meta: YdbEntityMetadata,
@@ -292,8 +406,6 @@ export class YdbBaseEntity {
     const encryptionProvider = this.getEncryptionProvider();
     if (!encryptionProvider) return;
 
-    const pkField = meta.primaryKeys[0] ?? 'uuid';
-
     for (const row of rows) {
       const aadFields: Record<string, string> = {};
       for (const aadName of meta.aadFields) {
@@ -302,6 +414,7 @@ export class YdbBaseEntity {
       }
 
       for (const ef of meta.encryptedFields) {
+        if (ef.lazy) continue;
         const ct = row[ef.propertyKey];
         if (ct === null || ct === undefined) continue;
 
@@ -313,10 +426,7 @@ export class YdbBaseEntity {
             entityName: this.name,
             tableName: meta.tableName,
             fieldName: ef.propertyKey,
-            primaryKeyValue:
-              row[pkField] !== undefined && row[pkField] !== null
-                ? String(row[pkField])
-                : undefined,
+            primaryKeyValue: this.pkValueForContext(meta, row),
             aadFields,
           },
         );
@@ -349,12 +459,17 @@ export class YdbBaseEntity {
       }
       if (!ef.blindIndex) {
         throw new Error(
-          `Cannot search by encrypted field "${k}" without blind index`,
+          `Cannot search by encrypted field "${k}" on entity ${this.name}: ` +
+            `blind index is disabled for it. ` +
+            `Use @YdbEncrypted({ blindIndex: true }) to make it searchable.`,
         );
       }
       if (!blindIndexProvider) {
         throw new Error(
-          `Blind index provider is not configured for entity ${this.name}`,
+          `Blind index provider is not configured for entity ${this.name} ` +
+            `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
+            `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+            `or configureEntities().`,
         );
       }
       const value = where[k];
@@ -390,7 +505,13 @@ export class YdbBaseEntity {
       (k) => processedWhere[k] !== undefined,
     );
     for (const k of keys) {
-      if (!dbSchema[k]) throw new Error(`Unknown field in WHERE: ${k}`);
+      if (!dbSchema[k]) {
+        throw new Error(
+          `Unknown field in WHERE: "${k}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
+      }
     }
     const conditions = keys
       .map((k) => `${quoteIdentifier(k)} = $${k}`)
@@ -448,7 +569,99 @@ export class YdbBaseEntity {
       const enumMeta = enums.find((e) => e.propertyKey === key);
       (instance as any)[key] = this.convertEnumIn(value, enumMeta);
     }
+    // Lazy-поля: запоминаем ciphertext, пока поле не дешифровано явно.
+    const lazyFields = meta.encryptedFields.filter((ef) => ef.lazy);
+    if (lazyFields.length) {
+      const pending = new Map<string, any>();
+      for (const ef of lazyFields) {
+        const value = (instance as any)[ef.propertyKey];
+        if (value !== null && value !== undefined) {
+          pending.set(ef.propertyKey, value);
+        }
+      }
+      if (pending.size) lazyPendingCiphertext.set(instance, pending);
+    }
     return instance;
+  }
+
+  /**
+   * Дешифрует одно lazy-поле (@YdbEncrypted({ lazy: true })) на инстансе.
+   * Идемпотентно: повторный вызов отдаёт закешированный plaintext
+   * без обращения к провайдеру. Возвращает plaintext.
+   */
+  async decryptField(name: string): Promise<any> {
+    const constructor = this.constructor as typeof YdbBaseEntity;
+    const meta = constructor.getMeta();
+    const ef = meta.encryptedFields.find(
+      (f) => f.propertyKey === name && f.lazy,
+    );
+    if (!ef) {
+      throw new Error(`Field "${name}" is not a lazy encrypted field`);
+    }
+    const pending = lazyPendingCiphertext.get(this);
+    if (!pending?.has(name)) {
+      // Уже дешифровано или значение null — отдаём текущее значение.
+      return (this as any)[name];
+    }
+
+    const ciphertext = pending.get(name);
+    if ((this as any)[name] !== ciphertext) {
+      // Пользователь присвоил новое значение — это уже plaintext.
+      pending.delete(name);
+      if (!pending.size) lazyPendingCiphertext.delete(this);
+      return (this as any)[name];
+    }
+
+    const provider = getEntityRuntime(constructor).encryptionProvider;
+    if (!provider) {
+      throw new Error(
+        `Encryption provider is not configured for entity ${constructor.name} but lazy @YdbEncrypted fields exist`,
+      );
+    }
+
+    const aadFields: Record<string, string> = {};
+    for (const aadName of meta.aadFields) {
+      const av = (this as any)[aadName];
+      if (av !== undefined && av !== null) aadFields[aadName] = String(av);
+    }
+    const pkField = meta.primaryKeys[0] ?? 'uuid';
+    const pkValue = (this as any)[pkField];
+
+    const plaintext = await provider.decrypt(
+      ciphertext as Uint8Array,
+      ef.aadOverride ?? YdbBaseEntity.buildAAD(this, meta.aadFields),
+      {
+        entityName: constructor.name,
+        tableName: meta.tableName,
+        fieldName: name,
+        primaryKeyValue:
+          pkValue !== undefined && pkValue !== null
+            ? String(pkValue)
+            : undefined,
+        aadFields,
+      },
+    );
+
+    (this as any)[name] = plaintext;
+    pending.delete(name);
+    if (!pending.size) lazyPendingCiphertext.delete(this);
+    return plaintext;
+  }
+
+  /**
+   * Дешифрует все lazy-поля инстанса. Идемпотентно.
+   * Нужен перед toJSON()/JSON.stringify(), если есть lazy-поля.
+   */
+  async decryptLazyFields(): Promise<this> {
+    const constructor = this.constructor as typeof YdbBaseEntity;
+    const meta = constructor.getMeta();
+    const pending = lazyPendingCiphertext.get(this);
+    if (!pending) return this;
+    const names = meta.encryptedFields
+      .filter((ef) => ef.lazy && pending.has(ef.propertyKey))
+      .map((ef) => ef.propertyKey);
+    await Promise.all(names.map((name) => this.decryptField(name)));
+    return this;
   }
 
   /**
@@ -506,6 +719,12 @@ export class YdbBaseEntity {
   ): Promise<Map<any, YdbBaseEntity[]>> {
     const exec = this.getExecutor(options?.trx);
     const inParams = ownerPks.map((_, i) => `$p${i}`).join(', ');
+    // Тип owner PK — из схемы owner-сущности (составной PK в m2m не поддерживается,
+    // используется первый PK-компонент как FK-колонка join-таблицы)
+    const ownerPkField = getPrimaryKey(joinTable.ownerEntity);
+    const ownerPkType =
+      getYdbEntityMetadata(joinTable.ownerEntity)?.schema[ownerPkField] ??
+      'Uuid';
     const sql =
       `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
       `${quoteIdentifier(joinTable.inverseColumn)} ` +
@@ -514,7 +733,7 @@ export class YdbBaseEntity {
 
     const joinQuery = exec([sql] as unknown as TemplateStringsArray);
     ownerPks.forEach((value, i) => {
-      joinQuery.parameter(`p${i}`, mapToYdb('Uuid', value));
+      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value));
     });
 
     const joinRows = await this.executeQuery<Record<string, any>[][]>(
@@ -664,6 +883,7 @@ export class YdbBaseEntity {
   ): Promise<T | null> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
+    this.validateSelectFields(options?.select, meta);
 
     const { whereClause, values, keys, dbSchema } = await this.buildWhere(
       where,
@@ -709,6 +929,7 @@ export class YdbBaseEntity {
   ): Promise<T[]> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
+    this.validateSelectFields(options?.select, meta);
 
     const { whereClause, values, keys, dbSchema } = await this.buildWhere(
       where,
@@ -863,50 +1084,82 @@ export class YdbBaseEntity {
 
   /**
    * Сохраняет сущность:
-   *  - без `uuid` — вставка (uuid присваивается автоматически);
-   *  - с `uuid` — UPDATE, если строки нет — ошибка.
+   *  - без заполненного PK — вставка (uuid генерируется автоматически,
+   *    если у сущности есть колонка `uuid`);
+   *  - с заполненным PK (все компоненты при составном PK) — UPDATE,
+   *    если строки нет — ошибка.
    */
   static async save<T extends YdbBaseEntity & { uuid?: string }>(
     this: { new (): T } & typeof YdbBaseEntity,
     entity: T,
     options?: QueryOptions,
   ): Promise<T> {
-    if (entity.uuid) {
-      return this.update(
-        entity as YdbBaseEntity & { uuid: string },
-        options,
-      ) as Promise<T>;
+    const meta = this.getMeta();
+    const pkFields = this.getPkFields(meta);
+    const hasPk = pkFields.every(
+      (f) =>
+        (entity as Record<string, any>)[f] !== undefined &&
+        (entity as Record<string, any>)[f] !== null,
+    );
+    if (hasPk) {
+      return this.update(entity, options) as Promise<T>;
     }
     return this.insert(entity, options) as Promise<T>;
   }
 
   /**
-   * Удаляет сущность по pk.
+   * Удаляет сущность по PK.
+   * Для одиночного PK принимает значение (string/number) или объект
+   * `{ [pkField]: value }`; для составного PK — объект со всеми компонентами.
    * Возвращает удалённую запись (RETURNING *) или null, если не найдена.
    * Если у сущности есть хуки @BeforeRemove, запись сначала загружается
    * (SELECT) и хуки вызываются на инстансе до удаления.
    */
   static async delete<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
-    pkValue: string | number,
+    pkValue: string | number | Record<string, any>,
     options?: QueryOptions,
   ): Promise<T | null> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
     const dbSchema = this.getDbSchema(meta);
-    const pkField = meta.primaryKeys[0] ?? 'uuid';
-    const pkType = dbSchema[pkField] ?? 'Uuid';
+    const pkFields = this.getPkFields(meta);
+    // Fail-fast на необъявленной PK-колонке (например, fallback 'uuid'
+    // без такой колонки в схеме) — иначе странная SQL-ошибка от YDB.
+    for (const f of pkFields) {
+      if (!dbSchema[f]) {
+        throw new Error(
+          `Cannot delete ${this.name} by primary key: column "${f}" ` +
+            `is not declared. Declare it via @YdbPrimaryColumn ` +
+            `(or a "uuid" @YdbColumn).`,
+        );
+      }
+    }
+    const filter = this.requirePkValues(
+      meta,
+      typeof pkValue === 'object' && pkValue !== null
+        ? pkValue
+        : { [pkFields[0]]: pkValue },
+      'delete',
+    );
 
     // beforeRemove-хуки работают на инстансе — загружаем запись до удаления
     if (getLifecycleHooks(this).beforeRemove.length) {
-      const entity = await this.find<T>({ [pkField]: pkValue }, options);
+      const entity = await this.find<T>(filter, options);
       if (!entity) return null;
       await this.callHooks('beforeRemove', entity);
     }
 
-    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(pkField)} = $pk RETURNING *`;
+    // Для одиночного PK сохраняем историческое имя параметра $pk
+    const paramName = (f: string) => (pkFields.length === 1 ? 'pk' : `pk_${f}`);
+    const whereClause = pkFields
+      .map((f) => `${quoteIdentifier(f)} = $${paramName(f)}`)
+      .join(' AND ');
+    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} WHERE ${whereClause} RETURNING *`;
     const query = exec([sql] as unknown as TemplateStringsArray);
-    query.parameter('pk', mapToYdb(pkType, pkValue));
+    for (const f of pkFields) {
+      query.parameter(paramName(f), mapToYdb(dbSchema[f], filter[f]));
+    }
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -931,8 +1184,12 @@ export class YdbBaseEntity {
     const { tableName } = meta;
     const dbSchema = this.getDbSchema(meta);
 
-    for (const e of entities) {
-      if (!(e as any).uuid) (e as any).uuid = this.generateUuid();
+    // uuid генерируется только если у сущности объявлена такая колонка;
+    // для составного PK компоненты обязан заполнить вызывающий код
+    if (meta.schema['uuid']) {
+      for (const e of entities) {
+        if (!(e as any).uuid) (e as any).uuid = this.generateUuid();
+      }
     }
 
     // Автоматическая простановка Timestamp колонок
@@ -949,6 +1206,10 @@ export class YdbBaseEntity {
       }
     }
 
+    for (const e of entities) {
+      this.requirePkValues(meta, e as Record<string, any>, 'insert');
+    }
+
     const provider = this.getValidationProvider();
     if (provider) {
       for (const e of entities) {
@@ -963,37 +1224,56 @@ export class YdbBaseEntity {
 
     const dataList = await Promise.all(
       entities.map((e) =>
-        this.encryptEntity({ ...(e as Record<string, any>) }, meta),
+        this.encryptEntity({ ...(e as Record<string, any>) }, meta, e),
       ),
     );
 
-    const keys = Object.keys(dbSchema);
-    const columns = keys.map(quoteIdentifier).join(', ');
+    // Батчи по 100. Внутри батча сущности группируются по набору колонок:
+    // опущенные поля (undefined) не включаются в INSERT, чтобы не затирать
+    // YDB-дефолты NULL'ами и сохранять различие «поле опущено» vs «явный NULL».
+    // Набор колонок считается ПОСЛЕ encryptEntity (шифрование/blind-index
+    // могут добавить {field}_bi колонки). На каждый уникальный набор
+    // колонок в батче — отдельный UPSERT.
     const BATCH_SIZE = 100;
 
-    for (let start = 0; start < entities.length; start += BATCH_SIZE) {
+    for (let start = 0; start < dataList.length; start += BATCH_SIZE) {
       const batch = dataList.slice(start, start + BATCH_SIZE);
-      const valueRows: string[] = [];
+      const groups = new Map<
+        string,
+        { keys: string[]; rows: Record<string, any>[] }
+      >();
 
-      for (let i = 0; i < batch.length; i++) {
-        const rowParams = keys.map((k) => `$${k}_${i}`).join(', ');
-        valueRows.push(`(${rowParams})`);
-      }
-
-      const sql = `UPSERT INTO ${quoteIdentifier(tableName)} (${columns}) VALUES ${valueRows.join(', ')}`;
-
-      const query = exec([sql] as unknown as TemplateStringsArray);
-
-      for (let i = 0; i < batch.length; i++) {
-        for (const k of keys) {
-          query.parameter(
-            `${k}_${i}`,
-            mapToYdb(dbSchema[k], batch[i][k] ?? null),
-          );
+      for (const data of batch) {
+        const keys = Object.keys(data)
+          .filter((k) => data[k] !== undefined && dbSchema[k])
+          .sort();
+        const signature = keys.join(' ');
+        const group = groups.get(signature);
+        if (group) {
+          group.rows.push(data);
+        } else {
+          groups.set(signature, { keys, rows: [data] });
         }
       }
 
-      await this.executeQuery(query, options);
+      for (const { keys, rows } of groups.values()) {
+        const columns = keys.map(quoteIdentifier).join(', ');
+        const valueRows = rows.map(
+          (_, i) => `(${keys.map((k) => `$${k}_${i}`).join(', ')})`,
+        );
+
+        const sql = `UPSERT INTO ${quoteIdentifier(tableName)} (${columns}) VALUES ${valueRows.join(', ')}`;
+
+        const query = exec([sql] as unknown as TemplateStringsArray);
+
+        rows.forEach((row, i) => {
+          for (const k of keys) {
+            query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], row[k]));
+          }
+        });
+
+        await this.executeQuery(query, options);
+      }
     }
 
     return entities;
@@ -1027,9 +1307,13 @@ export class YdbBaseEntity {
 
     await this.runValidation(entity as Record<string, any>);
 
+    // Все компоненты PK обязаны быть заполнены (uuid — автогенерацией выше)
+    this.requirePkValues(meta, entity as Record<string, any>, 'insert');
+
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
+      entity,
     );
     const keys = Object.keys(data).filter(
       (k) => data[k] !== undefined && dbSchema[k],
@@ -1051,13 +1335,14 @@ export class YdbBaseEntity {
 
   protected static async update(
     this: typeof YdbBaseEntity,
-    entity: YdbBaseEntity & { uuid: string },
+    entity: YdbBaseEntity,
     options?: QueryOptions,
   ): Promise<YdbBaseEntity> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
     const { tableName } = meta;
     const dbSchema = this.getDbSchema(meta);
+    const pkFields = this.getPkFields(meta);
 
     // Автоматическая простановка Timestamp колонки обновления
     const updateDateCol = this.getUpdateDateColumn();
@@ -1069,25 +1354,45 @@ export class YdbBaseEntity {
 
     await this.runValidation(entity as Record<string, any>);
 
+    // Проверяем наличие изменяемых полей ДО шифрования/генерации YQL:
+    // иначе получим невалидный пустой SET (или не ту ошибку из encryptEntity)
+    const rawKeys = Object.keys(entity).filter(
+      (k) =>
+        !pkFields.includes(k) &&
+        (entity as Record<string, any>)[k] !== undefined &&
+        dbSchema[k],
+    );
+    if (!rawKeys.length) {
+      throw new Error(
+        `Cannot update ${this.name}: no fields to update — ` +
+          `entity contains only primary key and/or undefined values`,
+      );
+    }
+
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
+      entity,
     );
     const keys = Object.keys(data).filter(
-      (k) => k !== 'uuid' && data[k] !== undefined && dbSchema[k],
+      (k) => !pkFields.includes(k) && data[k] !== undefined && dbSchema[k],
     );
+    const pkFilter = this.requirePkValues(meta, data, 'update');
     const setClause = keys
       .map((k) => `${quoteIdentifier(k)} = $${k}`)
       .join(', ');
+    const whereClause = pkFields
+      .map((f) => `${quoteIdentifier(f)} = $${f}`)
+      .join(' AND ');
 
     const sql = `
       UPDATE ${quoteIdentifier(tableName)}
       SET ${setClause}
-      WHERE ${quoteIdentifier('uuid')} = $uuid
+      WHERE ${whereClause}
       RETURNING *
     `;
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, data, [...keys, 'uuid'], dbSchema);
+    this.bindParams(query, data, [...keys, ...pkFields], dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1095,8 +1400,11 @@ export class YdbBaseEntity {
     );
     const raw = rows[0]?.[0] ?? null;
     if (!raw) {
+      const pkDescription = pkFields
+        .map((f) => `${f}=${String(pkFilter[f])}`)
+        .join(', ');
       throw new Error(
-        `Entity ${this.name} with uuid ${entity.uuid} not found — nothing to update`,
+        `Entity ${this.name} with ${pkDescription} not found — nothing to update`,
       );
     }
     await this.decryptResult(raw, meta);
@@ -1152,13 +1460,7 @@ export class YdbBaseEntity {
       Object.prototype.hasOwnProperty.call(data, ef.propertyKey),
     );
     if (encryptedFieldsToProcess.length) {
-      const encryptionProvider = this.getEncryptionProvider();
-      if (!encryptionProvider) {
-        throw new Error(
-          `Encryption provider is not configured for entity ${this.name} but @YdbEncrypted fields exist in patch`,
-        );
-      }
-      const blindIndexProvider = this.getBlindIndexProvider();
+      const encryptionProvider = this.requireEncryptionProvider();
       for (const ef of encryptedFieldsToProcess) {
         const value = data[ef.propertyKey];
         if (value === null || value === undefined) continue;
@@ -1188,11 +1490,7 @@ export class YdbBaseEntity {
         );
 
         if (ef.blindIndex) {
-          if (!blindIndexProvider) {
-            throw new Error(
-              `Blind index provider is not configured for entity ${this.name}`,
-            );
-          }
+          const blindIndexProvider = this.requireBlindIndexProvider();
           data[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
             String(value),
             { ...context, fieldName: ef.propertyKey },
@@ -1205,7 +1503,11 @@ export class YdbBaseEntity {
     const setKeys = Object.keys(data).filter((k) => dbSchema[k]);
     for (const k of Object.keys(data)) {
       if (!dbSchema[k]) {
-        throw new Error(`Unknown field in patch: ${k}`);
+        throw new Error(
+          `Unknown field in patch: "${k}" on entity ${this.name}. ` +
+            `Known fields: ${this.knownFields(meta)}. ` +
+            `Check for a typo in the property name.`,
+        );
       }
     }
     if (!setKeys.length) {
@@ -1222,6 +1524,12 @@ export class YdbBaseEntity {
       keys: whereKeys,
       dbSchema: whereDbSchema,
     } = await this.buildWhere(where, meta);
+    if (!whereKeys.length) {
+      throw new Error(
+        `updateBy() on ${this.name} has no effective WHERE condition ` +
+          `(all values are undefined) — refusing full-table update`,
+      );
+    }
 
     const allValues: Record<string, any> = { ...whereValues };
     for (const k of setKeys) {
@@ -1231,8 +1539,8 @@ export class YdbBaseEntity {
     const allDbSchema = { ...whereDbSchema, ...dbSchema };
 
     // RETURNING по PK: без него YDB не отдаёт result set и счётчик строк всегда 0
-    const pkColumn = quoteIdentifier(meta.primaryKeys[0] ?? 'uuid');
-    const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause} RETURNING ${pkColumn}`;
+    const pkColumns = this.getPkFields(meta).map(quoteIdentifier).join(', ');
+    const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause} RETURNING ${pkColumns}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, allValues, allKeys, allDbSchema);
 
@@ -1266,10 +1574,16 @@ export class YdbBaseEntity {
       where,
       meta,
     );
+    if (!keys.length) {
+      throw new Error(
+        `deleteBy() on ${this.name} has no effective WHERE condition ` +
+          `(all values are undefined) — refusing full-table delete`,
+      );
+    }
 
     // RETURNING по PK: без него YDB не отдаёт result set и счётчик строк всегда 0
-    const pkColumn = quoteIdentifier(meta.primaryKeys[0] ?? 'uuid');
-    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause} RETURNING ${pkColumn}`;
+    const pkColumns = this.getPkFields(meta).map(quoteIdentifier).join(', ');
+    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause} RETURNING ${pkColumns}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
 
@@ -1284,9 +1598,20 @@ export class YdbBaseEntity {
    * Сериализация в JSON: исключает synthetic {field}_bi колонки
    * (blind index) и внутренние служебные поля.
    * Возвращает расшифрованные значения — те, что хранятся в инстансе.
+   * Если у сущности есть недешифрованные lazy-поля (@YdbEncrypted({ lazy: true })),
+   * бросает ошибку: ciphertext в JSON не отдаём. Сначала вызовите
+   * await entity.decryptLazyFields().
    */
   toJSON(): Record<string, any> {
     const meta = getYdbEntityMetadata(this.constructor as typeof YdbBaseEntity);
+    const pendingLazy = lazyPendingCiphertext.get(this);
+    if (pendingLazy?.size) {
+      const names = [...pendingLazy.keys()].join(', ');
+      throw new Error(
+        `Lazy encrypted field(s) not decrypted: ${names}. ` +
+          `Call await entity.decryptLazyFields() before toJSON()/JSON.stringify()`,
+      );
+    }
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(this)) {
       if (meta && isSyntheticColumn(meta, key)) continue;
@@ -1305,7 +1630,15 @@ export class YdbBaseEntity {
 
     for (const name of relations) {
       const rel = allRelations.find((r) => r.propertyKey === name);
-      if (!rel) throw new Error(`Unknown relation: ${name}`);
+      if (!rel) {
+        const known = allRelations.map((r) => r.propertyKey).join(', ');
+        throw new Error(
+          `Unknown relation: "${name}" on entity ${constructor.name}. ` +
+            `Known relations: ${known || '(none)'}. ` +
+            `Check the property name or declare the relation ` +
+            `via @OneToMany/@ManyToOne/@OneToOne.`,
+        );
+      }
 
       const Target = rel.target();
 
