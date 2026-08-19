@@ -78,6 +78,12 @@ export type {
   YdbTtlOptions,
   YdbTtlMetadata,
 } from './decorators/ttl.decorator.js';
+export {
+  BeforeInsert,
+  AfterInsert,
+  BeforeUpdate,
+  AfterFind,
+} from './decorators/lifecycle.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
