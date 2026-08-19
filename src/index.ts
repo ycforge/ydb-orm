@@ -93,6 +93,15 @@ export { YdbBaseEntity } from './entity/base-entity.js';
 export { YdbQueryBuilder } from './query/query-builder.js';
 export type { BuiltQuery, OrderDirection } from './query/query-builder.js';
 
+// Репозитории / EntityManager (DI-вариант поверх Active Record)
+export {
+  YdbRepository,
+  YdbEntityManager,
+  getRepositoryToken,
+  InjectRepository,
+} from './repository/index.js';
+export type { YdbEntityConstructor } from './repository/index.js';
+
 // Шифрование
 export type {
   YdbEncryptionProvider,
