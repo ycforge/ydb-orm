@@ -113,7 +113,7 @@ describe('buildExpectedTableSchema', () => {
     expect(schema.columns).toEqual({
       uuid: 'Uuid',
       name: 'Utf8',
-      secret: 'Utf8',
+      secret: 'Bytes',
       is_active: 'Bool',
       secret_bi: 'Utf8',
     });
@@ -171,7 +171,7 @@ describe('generateCreateTableYql', () => {
       'CREATE TABLE `test_users` (\n' +
         '  `uuid` Uuid,\n' +
         '  `name` Utf8,\n' +
-        '  `secret` Utf8,\n' +
+        '  `secret` Bytes,\n' +
         '  `is_active` Bool,\n' +
         '  `secret_bi` Utf8,\n' +
         '  INDEX `test_users__secret_bi` GLOBAL SYNC ON (`secret_bi`),\n' +
@@ -219,7 +219,7 @@ describe('checkTableSchema', () => {
       description([
         ['uuid', Type_PrimitiveTypeId.UUID],
         ['name', Type_PrimitiveTypeId.UTF8],
-        ['secret', Type_PrimitiveTypeId.UTF8],
+        ['secret', Type_PrimitiveTypeId.STRING],
         ['is_active', Type_PrimitiveTypeId.BOOL],
         ['secret_bi', Type_PrimitiveTypeId.UTF8],
       ]),
@@ -242,7 +242,7 @@ describe('checkTableSchema', () => {
     );
 
     expect(check.missingColumns).toEqual([
-      ['secret', 'Utf8'],
+      ['secret', 'Bytes'],
       ['is_active', 'Bool'],
       ['secret_bi', 'Utf8'],
     ]);
@@ -255,7 +255,7 @@ describe('checkTableSchema', () => {
       description([
         ['uuid', Type_PrimitiveTypeId.UUID],
         ['name', Type_PrimitiveTypeId.INT32],
-        ['secret', Type_PrimitiveTypeId.UTF8],
+        ['secret', Type_PrimitiveTypeId.STRING],
         ['is_active', Type_PrimitiveTypeId.BOOL],
         ['secret_bi', Type_PrimitiveTypeId.UTF8],
       ]),
@@ -273,7 +273,7 @@ describe('checkTableSchema', () => {
         [
           ['uuid', Type_PrimitiveTypeId.UUID],
           ['name', Type_PrimitiveTypeId.UTF8],
-          ['secret', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
           ['is_active', Type_PrimitiveTypeId.BOOL],
           ['secret_bi', Type_PrimitiveTypeId.UTF8],
         ],
@@ -282,6 +282,111 @@ describe('checkTableSchema', () => {
     );
 
     expect(check.primaryKeyMatches).toBe(false);
+  });
+
+  it('reports no index issue when index columns match exactly', () => {
+    const check = checkTableSchema(
+      expected,
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: false,
+          },
+        ],
+      ),
+    );
+
+    expect(check.missingIndexes).toEqual([]);
+    expect(check.extraIndexes).toEqual([]);
+    expect(check.uniqueMismatches).toEqual([]);
+    expect(check.indexColumnsMismatches).toEqual([]);
+  });
+
+  it('detects index with same name but different columns', () => {
+    const check = checkTableSchema(
+      expected,
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['name'],
+            unique: false,
+          },
+        ],
+      ),
+    );
+
+    expect(check.indexColumnsMismatches).toEqual([
+      {
+        name: 'test_users__active_name',
+        expected: ['is_active', 'name'],
+        actual: ['name'],
+      },
+    ]);
+  });
+
+  it('detects index with same columns but different order', () => {
+    const check = checkTableSchema(
+      expected,
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['name', 'is_active'],
+            unique: false,
+          },
+        ],
+      ),
+    );
+
+    expect(check.indexColumnsMismatches).toEqual([
+      {
+        name: 'test_users__active_name',
+        expected: ['is_active', 'name'],
+        actual: ['name', 'is_active'],
+      },
+    ]);
   });
 });
 
@@ -318,7 +423,7 @@ describe('YdbSchemaSyncer', () => {
       description([
         ['uuid', Type_PrimitiveTypeId.UUID],
         ['name', Type_PrimitiveTypeId.UTF8],
-        ['secret', Type_PrimitiveTypeId.UTF8],
+        ['secret', Type_PrimitiveTypeId.STRING],
         ['is_active', Type_PrimitiveTypeId.BOOL],
       ]),
     );
@@ -338,7 +443,7 @@ describe('YdbSchemaSyncer', () => {
         [
           ['uuid', Type_PrimitiveTypeId.UUID],
           ['name', Type_PrimitiveTypeId.UTF8],
-          ['secret', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
           ['is_active', Type_PrimitiveTypeId.BOOL],
           ['secret_bi', Type_PrimitiveTypeId.UTF8],
           ['unknown_extra', Type_PrimitiveTypeId.UTF8],
@@ -369,7 +474,7 @@ describe('YdbSchemaSyncer', () => {
       description([
         ['uuid', Type_PrimitiveTypeId.UUID],
         ['name', Type_PrimitiveTypeId.INT64],
-        ['secret', Type_PrimitiveTypeId.UTF8],
+        ['secret', Type_PrimitiveTypeId.STRING],
         ['is_active', Type_PrimitiveTypeId.BOOL],
         ['secret_bi', Type_PrimitiveTypeId.UTF8],
       ]),
@@ -389,6 +494,78 @@ describe('YdbSchemaSyncer', () => {
     await expect(syncer.sync([TestUserEntity])).rejects.toThrow(
       /primary key mismatch/,
     );
+  });
+
+  it('throws on index columns mismatch', async () => {
+    mockDescribe(
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['name', 'is_active'],
+            unique: false,
+          },
+        ],
+      ),
+    );
+
+    await expect(syncer.sync([TestUserEntity])).rejects.toThrow(
+      /index columns mismatch/,
+    );
+    expect(executedSql()).toEqual([]);
+  });
+
+  it('verify reports index-columns-mismatch issue', async () => {
+    mockDescribe(
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['name'],
+            unique: false,
+          },
+        ],
+      ),
+    );
+
+    const issues = await syncer.verify([TestUserEntity]);
+
+    expect(issues).toEqual([
+      {
+        tableName: 'test_users',
+        kind: 'index-columns-mismatch',
+        message:
+          'Table "test_users" index "test_users__active_name" columns mismatch: ' +
+          'expected [is_active, name], actual [name]',
+      },
+    ]);
+    expect(executedSql()).toEqual([]);
   });
 
   it('verify reports issues without executing DDL', async () => {

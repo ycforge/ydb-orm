@@ -5,6 +5,19 @@ import type {
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { YdbBaseEntity } from './base-entity.js';
+import type { YdbRepository } from '../repository/ydb-repository.js';
+
+/**
+ * Снапшот зависимостей, использованных при создании repository.
+ * Хранится в runtime для пересоздания repository при смене deps.
+ */
+export interface RepositoryDepsSnapshot {
+  executor?: YdbExecutor;
+  encryptionProvider?: YdbEncryptionProvider;
+  blindIndexProvider?: YdbBlindIndexProvider;
+  validationProvider?: YdbValidationProvider;
+  uuidGenerator?: () => string;
+}
 
 export interface EntityRuntime {
   executor?: YdbExecutor;
@@ -13,6 +26,10 @@ export interface EntityRuntime {
   validationProvider?: YdbValidationProvider;
   /** Генератор UUID для PK (по умолчанию v7 — см. base-entity). */
   uuidGenerator?: () => string;
+  /** Готовый репозиторий сущности (создаётся лениво из deps). */
+  repository?: YdbRepository<YdbBaseEntity>;
+  /** Снапшот deps, использованных для создания repository. */
+  repositoryDeps?: RepositoryDepsSnapshot;
 }
 
 /**

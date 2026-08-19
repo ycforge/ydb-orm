@@ -148,6 +148,20 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].maskedParams.data).toBe('<bytes:3>');
   });
 
+  it('keeps logging through parameter() chaining', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    // Цепочка должна оставаться на прокси, иначе второй параметр не залогируется
+    q.parameter('a', 1).parameter('b', 2);
+    await q;
+
+    expect(logEntries).toHaveLength(1);
+    expect(logEntries[0].paramNames).toEqual(['a', 'b']);
+    expect(logEntries[0].maskedParams).toEqual({ a: 1, b: 2 });
+  });
+
   it('passes through transaction method', () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);

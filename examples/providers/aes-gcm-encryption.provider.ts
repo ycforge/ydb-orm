@@ -36,12 +36,12 @@ export class AesGcmEncryptionProvider
     this.hmacKey = Buffer.from(blindIndexKey, 'base64');
   }
 
-  /** Шифрует поле: IV (12) + auth tag (16) + ciphertext, всё — в base64. */
+  /** Шифрует поле: IV (12) + auth tag (16) + ciphertext — raw bytes (колонка `Bytes`). */
   encrypt(
     plaintext: string,
     aad: string,
     _context: YdbEncryptionContext,
-  ): Promise<string> {
+  ): Promise<Uint8Array> {
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', this.key, iv);
     cipher.setAAD(Buffer.from(aad, 'utf8'));
@@ -50,17 +50,15 @@ export class AesGcmEncryptionProvider
       cipher.final(),
     ]);
     const tag = cipher.getAuthTag();
-    return Promise.resolve(
-      Buffer.concat([iv, tag, encrypted]).toString('base64'),
-    );
+    return Promise.resolve(Buffer.concat([iv, tag, encrypted]));
   }
 
   decrypt(
-    ciphertext: string,
+    ciphertext: Uint8Array,
     aad: string,
     _context: YdbEncryptionContext,
   ): Promise<string> {
-    const data = Buffer.from(ciphertext, 'base64');
+    const data = Buffer.from(ciphertext);
     const iv = data.subarray(0, 12);
     const tag = data.subarray(12, 28);
     const encrypted = data.subarray(28);

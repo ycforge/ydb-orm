@@ -83,12 +83,31 @@ export {
   AfterInsert,
   BeforeUpdate,
   AfterFind,
+  BeforeRemove,
+  getLifecycleHooks,
 } from './decorators/lifecycle.decorator.js';
+export type { LifecycleHooks } from './decorators/lifecycle.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
 export { YdbQueryBuilder } from './query/query-builder.js';
 export type { BuiltQuery, OrderDirection } from './query/query-builder.js';
+
+// Репозитории / EntityManager (DI-вариант поверх Active Record)
+export {
+  YdbRepository,
+  YdbEntityManager,
+  getRepositoryToken,
+  InjectRepository,
+  getOrCreateRepository,
+} from './repository/index.js';
+export type { YdbEntityConstructor } from './repository/index.js';
+
+// Persistence / Relations (новое ядро ORM)
+export { YdbEntityPersistence } from './persistence/index.js';
+export { YdbEntityRelations } from './relations/index.js';
+export type { PersistenceDeps } from './persistence/index.js';
+export type { RelationsDeps } from './relations/index.js';
 
 // Шифрование
 export type {
@@ -97,11 +116,8 @@ export type {
   YdbEncryptionContext,
 } from './encryption/ydb-encryption-provider.interface.js';
 export { Base64TestEncryptionProvider } from './encryption/base64-test-encryption.provider.js';
-export {
-  KmsEncryptionProvider,
-  KmsBlindIndexProvider,
-} from './encryption/kms-encryption.provider.js';
-export type { KmsEncryptionProviderOptions } from './encryption/kms-encryption.provider.js';
+// Готовые KMS/HMAC-провайдеры шифрования и blind index — в отдельном пакете
+// @ycforge/orm-security-providers (см. README).
 
 // Валидация
 export type {
@@ -171,6 +187,7 @@ export {
   createCredentialsProvider,
   createDriver,
   createExecutor,
+  validateYdbModuleOptions,
 } from './core/driver.js';
 export { configureEntities } from './core/standalone.js';
 export type { YdbCliConfig } from './cli/config.js';

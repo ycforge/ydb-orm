@@ -55,7 +55,7 @@ describe('YdbQueryBuilder', () => {
   it('throws on unknown ORDER BY field', async () => {
     mockRuntime();
     await expect(QbPhotoEntity.query().orderBy('nope').toYql()).rejects.toThrow(
-      /Unknown field in ORDER BY: nope/,
+      /Unknown field in ORDER BY: "nope" on entity QbPhotoEntity\. Known fields:/,
     );
   });
 
@@ -63,7 +63,9 @@ describe('YdbQueryBuilder', () => {
     mockRuntime();
     await expect(
       QbPhotoEntity.query().where({ nope: 1 }).toYql(),
-    ).rejects.toThrow(/Unknown field in WHERE: nope/);
+    ).rejects.toThrow(
+      /Unknown field in WHERE: "nope" on entity QbPhotoEntity\. Known fields:/,
+    );
   });
 
   it('getMany executes through executor and returns entities', async () => {

@@ -12,6 +12,11 @@ export interface EncryptedFieldMeta {
   propertyKey: string;
   blindIndex: boolean;
   aadOverride?: string;
+  /**
+   * Ленивая дешифровка: поле не дешифруется при чтении из БД,
+   * а только по явному вызову decryptField()/decryptLazyFields().
+   */
+  lazy?: boolean;
 }
 
 export interface YdbEntityMetadata<T = any> {
@@ -67,6 +72,12 @@ export function getYdbEntityMetadata<T>(
     columnsMap.forEach((type, key) => {
       schema[key] = type;
     });
+  }
+
+  // Шифруемые поля всегда хранятся как Bytes (raw ciphertext) — формат
+  // объявленный в @YdbColumn игнорируется (раньше был base64 в Utf8).
+  for (const ef of encryptedFields) {
+    schema[ef.propertyKey] = 'Bytes';
   }
 
   const metadata: YdbEntityMetadata<T> = {

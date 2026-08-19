@@ -3,12 +3,13 @@ import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
-import type { YdbBaseEntity } from '../entity/base-entity.js';
+import { YdbBaseEntity } from '../entity/base-entity.js';
+import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
  * Конфигурация сущностей для программного использования без NestJS.
  * Устанавливает executor и (опционально) провайдеры шифрования
- * на каждую переданную сущность.
+ * на каждую переданную сущность и создаёт для неё YdbRepository.
  *
  * @example
  * ```ts
@@ -27,7 +28,23 @@ export function configureEntities(
     blindIndexProvider?: YdbBlindIndexProvider;
   },
 ): void {
+  if (!options?.executor) {
+    throw new Error(
+      'configureEntities() requires "options.executor". ' +
+        'Create it via createExecutor(driver, opts).',
+    );
+  }
   for (const entity of entities) {
+    if (
+      typeof entity !== 'function' ||
+      !(entity.prototype instanceof YdbBaseEntity)
+    ) {
+      throw new Error(
+        `configureEntities(): ${entity?.name ?? String(entity)} ` +
+          `is not a YdbBaseEntity subclass. ` +
+          `Only entities extending YdbBaseEntity can be configured.`,
+      );
+    }
     (entity as unknown as typeof YdbBaseEntity).setExecutor(options.executor);
 
     if (options.encryptionProvider) {
@@ -41,5 +58,7 @@ export function configureEntities(
         options.blindIndexProvider,
       );
     }
+
+    getOrCreateRepository(entity as unknown as typeof YdbBaseEntity);
   }
 }

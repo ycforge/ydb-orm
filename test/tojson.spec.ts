@@ -88,12 +88,12 @@ describe('toJSON()', () => {
   describe('entity with encrypted fields (UserEntity)', () => {
     it('includes decrypted encrypted fields', async () => {
       const provider = new Base64TestEncryptionProvider();
-      // encrypted fields в mock-строке должны быть base64-encoded
+      // encrypted fields в mock-строке должны быть raw bytes (Bytes)
       const userRow = {
         uuid: 'aaaa0000-0000-0000-0000-000000000001',
-        email_encrypted: Buffer.from('enc@test.com', 'utf8').toString('base64'),
+        email_encrypted: new TextEncoder().encode('enc@test.com'),
         email_encrypted_bi: 'blind-index-hash',
-        full_name: Buffer.from('Ivan Petrov', 'utf8').toString('base64'),
+        full_name: new TextEncoder().encode('Ivan Petrov'),
       };
 
       const mock = createMockExecutor([[userRow]]);
@@ -159,6 +159,16 @@ describe('toJSON()', () => {
       expect(json).toHaveProperty('uuid', 'manual-uuid');
       expect(json).toHaveProperty('title', 'Manual');
       expect(json.author_email).toBe('manual@test.com');
+    });
+
+    it('JSON.stringify не падает на bigint-полях', () => {
+      const photo = new PhotoEntity();
+      photo.uuid = 'bigint-uuid';
+      photo.file_size = BigInt(2048000);
+
+      expect(() => JSON.stringify(photo)).not.toThrow();
+      const parsed = JSON.parse(JSON.stringify(photo));
+      expect(parsed.file_size).toBe('2048000');
     });
   });
 });

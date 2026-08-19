@@ -4,6 +4,28 @@ import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { TimestampEntity } from './fixtures/timestamp/timestamp.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import {
+  YdbEntity,
+  YdbColumn,
+  YdbEncrypted,
+  YdbSecurityAAD,
+  YdbBaseEntity,
+} from '../src/index.js';
+
+/** Сущность с AAD-полем для проверки запрета updateBy по шифрованным полям. */
+@YdbEntity('aad_test')
+class AadEntity extends YdbBaseEntity {
+  @YdbColumn('Uuid')
+  declare uuid: string;
+
+  @YdbSecurityAAD()
+  @YdbColumn('Utf8')
+  tenant_id?: string;
+
+  @YdbEncrypted()
+  @YdbColumn('Utf8')
+  secret?: string;
+}
 
 const userRow = {
   uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
@@ -22,6 +44,9 @@ describe('updateBy() / deleteBy()', () => {
     TimestampEntity.setExecutor(undefined as any);
     TimestampEntity.setEncryptionProvider(undefined as any);
     TimestampEntity.setBlindIndexProvider(undefined as any);
+    AadEntity.setExecutor(undefined as any);
+    AadEntity.setEncryptionProvider(undefined as any);
+    AadEntity.setBlindIndexProvider(undefined as any);
   });
 
   describe('updateBy()', () => {
@@ -139,9 +164,47 @@ describe('updateBy() / deleteBy()', () => {
       expect(q.sql).toContain('UPDATE `users`');
       expect(q.sql).toContain('`email_encrypted` = $email_encrypted');
       const emailParam = q.params.email_encrypted;
-      expect(String((emailParam as any).value)).toBe(
-        Buffer.from('secret@example.com').toString('base64'),
+      expect((emailParam as any).value).toEqual(
+        new TextEncoder().encode('secret@example.com'),
       );
+    });
+
+    it('adds RETURNING with primary key column', async () => {
+      const mock = createMockExecutor([[]]);
+      UserRoleEntity.setExecutor(mock.executor);
+
+      await UserRoleEntity.updateBy(
+        { user_uuid: userRow.uuid },
+        { is_global: true },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('RETURNING `user_uuid`');
+    });
+
+    it('throws when the same field is in where and patch', async () => {
+      const mock = createMockExecutor([[]]);
+      UserRoleEntity.setExecutor(mock.executor);
+
+      await expect(
+        UserRoleEntity.updateBy(
+          { user_uuid: userRow.uuid },
+          { user_uuid: userRow.uuid, is_global: true },
+        ),
+      ).rejects.toThrow(/present in both where and patch/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('throws on encrypted field update when entity has AAD fields', async () => {
+      const provider = new Base64TestEncryptionProvider();
+      AadEntity.setEncryptionProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadEntity.setExecutor(mock.executor);
+
+      await expect(
+        AadEntity.updateBy({ tenant_id: 't1' }, { secret: 'new-secret' }),
+      ).rejects.toThrow(/cannot update encrypted field "secret"/);
+      expect(mock.queries).toHaveLength(0);
     });
   });
 
@@ -157,6 +220,7 @@ describe('updateBy() / deleteBy()', () => {
       const [q] = mock.queries;
       expect(q.sql).toContain('DELETE FROM `user_roles`');
       expect(q.sql).toContain('WHERE `user_uuid` = $user_uuid');
+      expect(q.sql).toContain('RETURNING `user_uuid`');
       expect(q.params.user_uuid).toBeDefined();
       expect(affected).toBe(0);
     });
