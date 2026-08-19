@@ -8,10 +8,21 @@ import type { EncryptedFieldMeta } from '../metadata/entity-metadata.js';
 export interface YdbEncryptedOptions {
   blindIndex?: boolean;
   aadOverride?: string;
+  /**
+   * Ленивая дешифровка (по умолчанию false): поле не дешифруется
+   * при чтении из БД — в инстансе остаётся ciphertext. Дешифровка
+   * выполняется явно: await entity.decryptField('field') или
+   * await entity.decryptLazyFields(). toJSON() бросает ошибку,
+   * пока lazy-поле не дешифровано. Экономит CPU на запросах,
+   * где значение поля не нужно.
+   */
+  lazy?: boolean;
 }
 
 /**
  * Помечает поле как шифруемое. Без параметров = { blindIndex: true }.
+ * Опция lazy: true откладывает дешифровку до явного вызова
+ * decryptField()/decryptLazyFields() на инстансе.
  * Метаданные клонируются перед изменением (copy-on-write), чтобы
  * наследники не портили метаданные родительского класса.
  */
@@ -26,6 +37,7 @@ export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
         propertyKey: propertyKey as string,
         blindIndex: options?.blindIndex ?? true,
         aadOverride: options?.aadOverride,
+        lazy: options?.lazy ?? false,
       },
     ];
     Reflect.defineMetadata(YDB_ENCRYPTED_KEY, list, constructor);
