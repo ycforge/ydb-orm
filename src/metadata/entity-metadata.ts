@@ -12,6 +12,11 @@ export interface EncryptedFieldMeta {
   propertyKey: string;
   blindIndex: boolean;
   aadOverride?: string;
+  /**
+   * Ленивая дешифровка: поле не дешифруется при чтении из БД,
+   * а только по явному вызову decryptField()/decryptLazyFields().
+   */
+  lazy?: boolean;
 }
 
 export interface YdbEntityMetadata<T = any> {

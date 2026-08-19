@@ -32,6 +32,13 @@ import { getEntityRuntime } from './entity-runtime.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 
+/**
+ * Состояние lazy-дешифровки инстансов: поле → ciphertext из БД.
+ * Записывается при instantiate(); снимается после decryptField().
+ * WeakMap — не мешает сборке мусора и не виден в Object.entries/toJSON.
+ */
+const lazyPendingCiphertext = new WeakMap<object, Map<string, any>>();
+
 export class YdbBaseEntity {
   static setExecutor(db: YdbExecutor): void {
     getEntityRuntime(this).executor = db;
@@ -262,10 +269,16 @@ export class YdbBaseEntity {
    * Исходный объект не мутируется: он должен хранить plaintext, иначе
    * повторный save() зашифрует ciphertext повторно.
    * Null/undefined не шифруются.
+   *
+   * Lazy-поля: если инстанс пришёл из БД и поле не менялось (в нём всё ещё
+   * ciphertext), оно прокидывается как есть — повторное шифрование и
+   * пересчёт blind index не нужны. Если пользователь присвоил новое
+   * значение, оно шифруется как обычный plaintext.
    */
   protected static async encryptEntity(
     entity: Record<string, any>,
     meta: YdbEntityMetadata,
+    source?: object,
   ): Promise<Record<string, any>> {
     if (!meta.encryptedFields.length) return entity;
 
@@ -291,10 +304,18 @@ export class YdbBaseEntity {
       if (av !== undefined && av !== null) aadFields[aadName] = String(av);
     }
 
+    const pendingLazy = source ? lazyPendingCiphertext.get(source) : undefined;
+
     const encrypted = { ...entity };
     for (const ef of meta.encryptedFields) {
       const value = entity[ef.propertyKey];
       if (value === null || value === undefined) continue;
+
+      // Нетронутое lazy-поле: ciphertext не зашифровываем повторно.
+      if (ef.lazy && pendingLazy?.get(ef.propertyKey) === value) {
+        encrypted[ef.propertyKey] = value;
+        continue;
+      }
 
       const aad = ef.aadOverride ?? this.buildAAD(entity, meta.aadFields);
       const context: YdbEncryptionContext = {
@@ -324,7 +345,7 @@ export class YdbBaseEntity {
     return encrypted;
   }
 
-  /** Дешифрует поля в результате запроса. Null/undefined пропускаются. */
+  /** Дешифрует поля в результате запроса. Null/undefined и lazy-поля пропускаются. */
   protected static async decryptResult(
     result: Record<string, any> | Record<string, any>[] | null,
     meta: YdbEntityMetadata,
@@ -345,6 +366,7 @@ export class YdbBaseEntity {
       }
 
       for (const ef of meta.encryptedFields) {
+        if (ef.lazy) continue;
         const ct = row[ef.propertyKey];
         if (ct === null || ct === undefined) continue;
 
@@ -488,7 +510,99 @@ export class YdbBaseEntity {
       const enumMeta = enums.find((e) => e.propertyKey === key);
       (instance as any)[key] = this.convertEnumIn(value, enumMeta);
     }
+    // Lazy-поля: запоминаем ciphertext, пока поле не дешифровано явно.
+    const lazyFields = meta.encryptedFields.filter((ef) => ef.lazy);
+    if (lazyFields.length) {
+      const pending = new Map<string, any>();
+      for (const ef of lazyFields) {
+        const value = (instance as any)[ef.propertyKey];
+        if (value !== null && value !== undefined) {
+          pending.set(ef.propertyKey, value);
+        }
+      }
+      if (pending.size) lazyPendingCiphertext.set(instance, pending);
+    }
     return instance;
+  }
+
+  /**
+   * Дешифрует одно lazy-поле (@YdbEncrypted({ lazy: true })) на инстансе.
+   * Идемпотентно: повторный вызов отдаёт закешированный plaintext
+   * без обращения к провайдеру. Возвращает plaintext.
+   */
+  async decryptField(name: string): Promise<any> {
+    const constructor = this.constructor as typeof YdbBaseEntity;
+    const meta = constructor.getMeta();
+    const ef = meta.encryptedFields.find(
+      (f) => f.propertyKey === name && f.lazy,
+    );
+    if (!ef) {
+      throw new Error(`Field "${name}" is not a lazy encrypted field`);
+    }
+    const pending = lazyPendingCiphertext.get(this);
+    if (!pending?.has(name)) {
+      // Уже дешифровано или значение null — отдаём текущее значение.
+      return (this as any)[name];
+    }
+
+    const ciphertext = pending.get(name);
+    if ((this as any)[name] !== ciphertext) {
+      // Пользователь присвоил новое значение — это уже plaintext.
+      pending.delete(name);
+      if (!pending.size) lazyPendingCiphertext.delete(this);
+      return (this as any)[name];
+    }
+
+    const provider = getEntityRuntime(constructor).encryptionProvider;
+    if (!provider) {
+      throw new Error(
+        `Encryption provider is not configured for entity ${constructor.name} but lazy @YdbEncrypted fields exist`,
+      );
+    }
+
+    const aadFields: Record<string, string> = {};
+    for (const aadName of meta.aadFields) {
+      const av = (this as any)[aadName];
+      if (av !== undefined && av !== null) aadFields[aadName] = String(av);
+    }
+    const pkField = meta.primaryKeys[0] ?? 'uuid';
+    const pkValue = (this as any)[pkField];
+
+    const plaintext = await provider.decrypt(
+      ciphertext as Uint8Array,
+      ef.aadOverride ?? YdbBaseEntity.buildAAD(this, meta.aadFields),
+      {
+        entityName: constructor.name,
+        tableName: meta.tableName,
+        fieldName: name,
+        primaryKeyValue:
+          pkValue !== undefined && pkValue !== null
+            ? String(pkValue)
+            : undefined,
+        aadFields,
+      },
+    );
+
+    (this as any)[name] = plaintext;
+    pending.delete(name);
+    if (!pending.size) lazyPendingCiphertext.delete(this);
+    return plaintext;
+  }
+
+  /**
+   * Дешифрует все lazy-поля инстанса. Идемпотентно.
+   * Нужен перед toJSON()/JSON.stringify(), если есть lazy-поля.
+   */
+  async decryptLazyFields(): Promise<this> {
+    const constructor = this.constructor as typeof YdbBaseEntity;
+    const meta = constructor.getMeta();
+    const pending = lazyPendingCiphertext.get(this);
+    if (!pending) return this;
+    const names = meta.encryptedFields
+      .filter((ef) => ef.lazy && pending.has(ef.propertyKey))
+      .map((ef) => ef.propertyKey);
+    await Promise.all(names.map((name) => this.decryptField(name)));
+    return this;
   }
 
   /**
@@ -1038,7 +1152,7 @@ export class YdbBaseEntity {
 
     const dataList = await Promise.all(
       entities.map((e) =>
-        this.encryptEntity({ ...(e as Record<string, any>) }, meta),
+        this.encryptEntity({ ...(e as Record<string, any>) }, meta, e),
       ),
     );
 
@@ -1127,6 +1241,7 @@ export class YdbBaseEntity {
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
+      entity,
     );
     const keys = Object.keys(data).filter(
       (k) => data[k] !== undefined && dbSchema[k],
@@ -1185,6 +1300,7 @@ export class YdbBaseEntity {
     const data = await this.encryptEntity(
       { ...(entity as Record<string, any>) },
       meta,
+      entity,
     );
     const keys = Object.keys(data).filter(
       (k) => !pkFields.includes(k) && data[k] !== undefined && dbSchema[k],
@@ -1404,9 +1520,20 @@ export class YdbBaseEntity {
    * Сериализация в JSON: исключает synthetic {field}_bi колонки
    * (blind index) и внутренние служебные поля.
    * Возвращает расшифрованные значения — те, что хранятся в инстансе.
+   * Если у сущности есть недешифрованные lazy-поля (@YdbEncrypted({ lazy: true })),
+   * бросает ошибку: ciphertext в JSON не отдаём. Сначала вызовите
+   * await entity.decryptLazyFields().
    */
   toJSON(): Record<string, any> {
     const meta = getYdbEntityMetadata(this.constructor as typeof YdbBaseEntity);
+    const pendingLazy = lazyPendingCiphertext.get(this);
+    if (pendingLazy?.size) {
+      const names = [...pendingLazy.keys()].join(', ');
+      throw new Error(
+        `Lazy encrypted field(s) not decrypted: ${names}. ` +
+          `Call await entity.decryptLazyFields() before toJSON()/JSON.stringify()`,
+      );
+    }
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(this)) {
       if (meta && isSyntheticColumn(meta, key)) continue;
