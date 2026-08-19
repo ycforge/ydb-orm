@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { loadOptionalPeer } from '../core/optional-peer.js';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionContext,
@@ -54,14 +55,11 @@ export class KmsEncryptionProvider implements YdbEncryptionProvider {
    * Динамический импорт @ycforge/kms — пакет загружается только при создании провайдера.
    */
   private async loadKmsClient(): Promise<KmsClient> {
-    // @ts-expect-error @ycforge/kms is an optional peer dependency
-    const kms = await import('@ycforge/kms').catch(() => null);
-    if (!kms) {
-      throw new Error(
-        '@ycforge/kms must be installed for KmsEncryptionProvider: npm install @ycforge/kms',
-      );
-    }
-    const KmsClientClass = (kms as KmsModule).KmsClient;
+    const kms = await loadOptionalPeer<KmsModule>(
+      '@ycforge/kms',
+      'KmsEncryptionProvider',
+    );
+    const KmsClientClass = kms.KmsClient;
     return new KmsClientClass({ endpoint: this.options.kmsEndpoint });
   }
 
@@ -116,7 +114,16 @@ export class KmsEncryptionProvider implements YdbEncryptionProvider {
  * Провайдер blind index на основе SHA-256.
  *
  * Генерирует детерминированный хеш от данных для поиска по зашифрованным полям.
- * Длина хеша — 16 символов (hex), что достаточно для уникальности盲 index.
+ * Длина хеша — 16 hex-символов (64 бита) — компромисс между компактностью
+ * индекса и устойчивостью к коллизиям.
+ *
+ * Внимание:
+ * - hash — голый SHA-256 без соли. Для низкоэнтропийных полей (телефоны,
+ *   даты, статусы) уязвим к словарной атаке: перебором можно восстановить
+ *   исходное значение. Рекомендуется использовать с высокоэнтропийными
+ *   значениями или обернуть в HMAC с секретным ключом.
+ * - Усечение до 64 бит: по парадоксу дней рождения коллизии вероятны
+ *   уже на ~4 млрд записей.
  */
 export class KmsBlindIndexProvider implements YdbBlindIndexProvider {
   /**
