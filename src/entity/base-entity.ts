@@ -307,7 +307,7 @@ export class YdbBaseEntity {
 
         const aad = ef.aadOverride ?? this.buildAAD(row, meta.aadFields);
         row[ef.propertyKey] = await encryptionProvider.decrypt(
-          String(ct),
+          ct as Uint8Array,
           aad,
           {
             entityName: this.name,

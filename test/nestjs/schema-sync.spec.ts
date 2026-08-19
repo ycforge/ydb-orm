@@ -97,9 +97,10 @@ describe('NestJS integration: schema sync on bootstrap', () => {
       true,
     );
 
-    // PK и synthetic blind index колонка на месте
+    // PK и synthetic blind index колонка на месте; шифротекст хранится как Bytes
     const usersDdl = ddl.find((sql) => sql.startsWith('CREATE TABLE `users`'))!;
     expect(usersDdl).toContain('PRIMARY KEY (`uuid`)');
+    expect(usersDdl).toContain('`email_encrypted` Bytes');
     expect(usersDdl).toContain('`email_encrypted_bi` Utf8');
 
     const rolesDdl = ddl.find((sql) =>
@@ -112,6 +113,7 @@ describe('NestJS integration: schema sync on bootstrap', () => {
     const photosDdl = ddl.find((sql) =>
       sql.startsWith('CREATE TABLE `photos`'),
     )!;
+    expect(photosDdl).toContain('`author_email` Bytes');
     expect(photosDdl).toContain('`author_email_bi` Utf8');
     expect(photosDdl).toContain('`file_size` Int64');
     expect(photosDdl).toContain('`rating` Double');

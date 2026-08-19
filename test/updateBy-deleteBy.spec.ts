@@ -164,8 +164,8 @@ describe('updateBy() / deleteBy()', () => {
       expect(q.sql).toContain('UPDATE `users`');
       expect(q.sql).toContain('`email_encrypted` = $email_encrypted');
       const emailParam = q.params.email_encrypted;
-      expect(String((emailParam as any).value)).toBe(
-        Buffer.from('secret@example.com').toString('base64'),
+      expect((emailParam as any).value).toEqual(
+        new TextEncoder().encode('secret@example.com'),
       );
     });
 

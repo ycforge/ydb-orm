@@ -93,6 +93,7 @@ export interface YdbSchemaIssue {
 const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
   Uuid: Type_PrimitiveTypeId.UUID,
   Utf8: Type_PrimitiveTypeId.UTF8,
+  Bytes: Type_PrimitiveTypeId.STRING,
   Int32: Type_PrimitiveTypeId.INT32,
   Int64: Type_PrimitiveTypeId.INT64,
   Bool: Type_PrimitiveTypeId.BOOL,
@@ -339,6 +340,96 @@ export function checkTableSchema(
 }
 
 /**
+ * Превращает результат проверки таблицы в плоский список issues.
+ * Используется и `YdbSchemaSyncer.verify`, и CLI (красивый diff).
+ */
+export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
+  const issues: YdbSchemaIssue[] = [];
+
+  if (!check.primaryKeyMatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'primary-key-mismatch',
+      message: `Table "${check.tableName}" primary key does not match entity`,
+    });
+  }
+  for (const [column] of check.missingColumns) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'missing-column',
+      message: `Table "${check.tableName}" is missing column "${column}"`,
+    });
+  }
+  for (const m of check.typeMismatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'type-mismatch',
+      message:
+        `Table "${check.tableName}" column "${m.column}" type mismatch: ` +
+        `expected ${m.expected}, actual ${m.actual}`,
+    });
+  }
+  for (const column of check.extraColumns) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'extra-column',
+      message: `Table "${check.tableName}" has extra column "${column}"`,
+    });
+  }
+  for (const idx of check.missingIndexes) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'missing-index',
+      message: `Table "${check.tableName}" is missing index "${idx.name}"`,
+    });
+  }
+  for (const idx of check.extraIndexes) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'extra-index',
+      message: `Table "${check.tableName}" has extra index "${idx.name}"`,
+    });
+  }
+  for (const m of check.indexColumnsMismatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'index-columns-mismatch',
+      message:
+        `Table "${check.tableName}" index "${m.name}" columns mismatch: ` +
+        `expected [${m.expected.join(', ')}], actual [${m.actual.join(', ')}]`,
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Чистый diff ожидаемых схем против текущего состояния БД
+ * (null — таблицы нет). Не ходит в сеть. Используется CLI для
+ * человекочитаемого вывода расхождений.
+ */
+export function diffSchemas(
+  expected: ExpectedTableSchema[],
+  existing: (YdbTableDescription | null)[],
+): YdbSchemaIssue[] {
+  const issues: YdbSchemaIssue[] = [];
+  for (let i = 0; i < expected.length; i++) {
+    const schema = expected[i];
+    const current = existing[i];
+    if (!current) {
+      issues.push({
+        tableName: schema.tableName,
+        kind: 'missing-table',
+        message: `Table "${schema.tableName}" does not exist`,
+      });
+      continue;
+    }
+    issues.push(...checkToIssues(checkTableSchema(schema, current)));
+  }
+  return issues;
+}
+
+/**
  * Синхронизатор схемы БД: создаёт недостающие таблицы и колонки
  * по метаданным сущностей. Изменение типа колонки и первичного ключа
  * в YDB невозможно — такие расхождения приводят к ошибке.
@@ -476,63 +567,7 @@ export class YdbSchemaSyncer {
   }
 
   private checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
-    const issues: YdbSchemaIssue[] = [];
-
-    if (!check.primaryKeyMatches) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'primary-key-mismatch',
-        message: `Table "${check.tableName}" primary key does not match entity`,
-      });
-    }
-    for (const [column] of check.missingColumns) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'missing-column',
-        message: `Table "${check.tableName}" is missing column "${column}"`,
-      });
-    }
-    for (const m of check.typeMismatches) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'type-mismatch',
-        message:
-          `Table "${check.tableName}" column "${m.column}" type mismatch: ` +
-          `expected ${m.expected}, actual ${m.actual}`,
-      });
-    }
-    for (const column of check.extraColumns) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'extra-column',
-        message: `Table "${check.tableName}" has extra column "${column}"`,
-      });
-    }
-    for (const idx of check.missingIndexes) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'missing-index',
-        message: `Table "${check.tableName}" is missing index "${idx.name}"`,
-      });
-    }
-    for (const idx of check.extraIndexes) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'extra-index',
-        message: `Table "${check.tableName}" has extra index "${idx.name}"`,
-      });
-    }
-    for (const m of check.indexColumnsMismatches) {
-      issues.push({
-        tableName: check.tableName,
-        kind: 'index-columns-mismatch',
-        message:
-          `Table "${check.tableName}" index "${m.name}" columns mismatch: ` +
-          `expected [${m.expected.join(', ')}], actual [${m.actual.join(', ')}]`,
-      });
-    }
-
-    return issues;
+    return checkToIssues(check);
   }
 
   private async executeDdl(yql: string): Promise<void> {

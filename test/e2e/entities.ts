@@ -39,11 +39,9 @@ export class E2eSecretEntity extends YdbBaseEntity {
   uuid!: string;
 
   @YdbEncrypted({ blindIndex: true })
-  @YdbColumn('Utf8')
   email!: string;
 
   @YdbEncrypted({ blindIndex: false })
-  @YdbColumn('Utf8')
   notes!: string;
 
   @YdbColumn('Utf8')
