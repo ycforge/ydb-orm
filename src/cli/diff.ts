@@ -22,6 +22,7 @@ const KIND_STYLE: Record<
   'missing-column': { marker: '+', color: YELLOW },
   'missing-index': { marker: '+', color: YELLOW },
   'type-mismatch': { marker: '~', color: RED },
+  'index-columns-mismatch': { marker: '~', color: RED },
   'primary-key-mismatch': { marker: '!', color: RED },
   'extra-column': { marker: '-', color: GRAY },
   'extra-index': { marker: '-', color: BLUE },
@@ -46,6 +47,9 @@ function stripTablePrefix(issue: YdbSchemaIssue): string {
  * Для type-mismatch переформатирует сообщение в «было → стало»:
  * `column "c" type mismatch: expected Utf8, actual Int32`
  * → `column "c": Int32 → Utf8`.
+ * Аналогично для index-columns-mismatch:
+ * `index "i" columns mismatch: expected [a, b], actual [b, a]`
+ * → `index "i": [b, a] → [a, b]`.
  */
 function formatIssueText(issue: YdbSchemaIssue): string {
   const text = stripTablePrefix(issue);
@@ -54,6 +58,15 @@ function formatIssueText(issue: YdbSchemaIssue): string {
       /column "(.+)" type mismatch: expected (.+), actual (.+)$/.exec(text);
     if (match) {
       return `column "${match[1]}": ${match[3]} → ${match[2]}`;
+    }
+  }
+  if (issue.kind === 'index-columns-mismatch') {
+    const match =
+      /index "(.+)" columns mismatch: expected (\[.*\]), actual (\[.*\])$/.exec(
+        text,
+      );
+    if (match) {
+      return `index "${match[1]}": ${match[3]} → ${match[2]}`;
     }
   }
   return text;

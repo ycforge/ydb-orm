@@ -66,6 +66,12 @@ export interface SchemaCheckResult {
   extraIndexes: Array<{ name: string; columns: string[]; unique: boolean }>;
   /** Индексы с несовпадающим флагом unique. */
   uniqueMismatches: { name: string; expected: boolean; actual: boolean }[];
+  /** Индексы с тем же именем, но другим списком/порядком колонок. */
+  indexColumnsMismatches: {
+    name: string;
+    expected: string[];
+    actual: string[];
+  }[];
 }
 
 /** Проблема схемы, найденная при verify. */
@@ -78,7 +84,8 @@ export interface YdbSchemaIssue {
     | 'primary-key-mismatch'
     | 'extra-column'
     | 'missing-index'
-    | 'extra-index';
+    | 'extra-index'
+    | 'index-columns-mismatch';
   message: string;
 }
 
@@ -292,13 +299,29 @@ export function checkTableSchema(
   );
 
   const uniqueMismatches: SchemaCheckResult['uniqueMismatches'] = [];
+  const indexColumnsMismatches: SchemaCheckResult['indexColumnsMismatches'] =
+    [];
   for (const idx of expected.indexes ?? []) {
     const existingIdx = existingIndexMap.get(idx.name);
-    if (existingIdx && existingIdx.unique !== idx.unique) {
+    if (!existingIdx) continue;
+    if (existingIdx.unique !== idx.unique) {
       uniqueMismatches.push({
         name: idx.name,
         expected: idx.unique,
         actual: existingIdx.unique,
+      });
+    }
+    // Колонки сравниваются с учётом порядка: в YDB порядок колонок
+    // индекса значим (префиксный поиск), а поменять его нельзя —
+    // только пересоздать индекс.
+    if (
+      existingIdx.columns.length !== idx.columns.length ||
+      existingIdx.columns.some((col, i) => col !== idx.columns[i])
+    ) {
+      indexColumnsMismatches.push({
+        name: idx.name,
+        expected: [...idx.columns],
+        actual: [...existingIdx.columns],
       });
     }
   }
@@ -312,6 +335,7 @@ export function checkTableSchema(
     missingIndexes,
     extraIndexes,
     uniqueMismatches,
+    indexColumnsMismatches,
   };
 }
 
@@ -364,6 +388,15 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
       tableName: check.tableName,
       kind: 'extra-index',
       message: `Table "${check.tableName}" has extra index "${idx.name}"`,
+    });
+  }
+  for (const m of check.indexColumnsMismatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'index-columns-mismatch',
+      message:
+        `Table "${check.tableName}" index "${m.name}" columns mismatch: ` +
+        `expected [${m.expected.join(', ')}], actual [${m.actual.join(', ')}]`,
     });
   }
 
@@ -472,6 +505,21 @@ export class YdbSchemaSyncer {
           `Schema sync failed for table "${expected.tableName}": ` +
             `column type mismatch (${details}). ` +
             `YDB cannot alter a column type — migrate the table manually.`,
+        );
+      }
+
+      if (check.indexColumnsMismatches.length) {
+        const details = check.indexColumnsMismatches
+          .map(
+            (m) =>
+              `${m.name}: expected [${m.expected.join(', ')}], ` +
+              `actual [${m.actual.join(', ')}]`,
+          )
+          .join('; ');
+        throw new Error(
+          `Schema sync failed for table "${expected.tableName}": ` +
+            `index columns mismatch (${details}). ` +
+            `YDB cannot alter index columns — drop and recreate the index manually.`,
         );
       }
 
