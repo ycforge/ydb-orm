@@ -1,7 +1,6 @@
 // user/user.entity.ts
 import {
   YdbEntity,
-  YdbColumn,
   YdbPrimaryColumn,
   YdbBaseEntity,
   OneToMany,
@@ -17,11 +16,9 @@ export class UserEntity extends YdbBaseEntity {
   uuid: string;
 
   @YdbEncrypted()
-  @YdbColumn('Utf8')
   email_encrypted: string;
 
   @YdbEncrypted({ blindIndex: false })
-  @YdbColumn('Utf8')
   full_name: string;
 
   @OneToMany(() => UserRoleEntity, (user_role) => user_role.user_uuid)

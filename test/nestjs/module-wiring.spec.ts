@@ -24,8 +24,8 @@ class TestFeatureModule {}
 
 const userRow = {
   uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
-  email_encrypted: 'enc',
-  full_name: 'Ivan',
+  email_encrypted: new TextEncoder().encode('enc'),
+  full_name: new TextEncoder().encode('Ivan'),
 };
 
 async function createTestingModule(rows: any[][]) {

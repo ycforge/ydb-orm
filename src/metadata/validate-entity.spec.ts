@@ -184,11 +184,9 @@ describe('validateEntityMetadata', () => {
     ]);
   });
 
-  it('rejects encrypted field without @YdbColumn', () => {
+  it('accepts encrypted field without @YdbColumn (Bytes implied)', () => {
     const issues = validateEntityMetadata(EncryptedNoColumn, ctx);
-    expect(issues).toEqual([
-      expect.stringContaining('encrypted field "secret" has no @YdbColumn'),
-    ]);
+    expect(issues).toEqual([]);
   });
 
   it('rejects encrypted entity without configured providers', () => {

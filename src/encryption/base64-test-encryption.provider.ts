@@ -5,8 +5,8 @@ import {
 } from './ydb-encryption-provider.interface.js';
 
 /**
- * Тестовый "шифропровайдер", который не шифрует, а просто кодирует
- * значение в base64. Подходит для проверки конвейера шифрования
+ * Тестовый "шифропровайдер", который не шифрует, а возвращает plaintext
+ * как есть (raw bytes). Подходит для проверки конвейера шифрования
  * (encrypt → DB → decrypt) без реальной криптографии.
  */
 export class Base64TestEncryptionProvider
@@ -16,16 +16,16 @@ export class Base64TestEncryptionProvider
     plaintext: string,
     _aad: string,
     _context: YdbEncryptionContext,
-  ): Promise<string> {
-    return Promise.resolve(Buffer.from(plaintext, 'utf8').toString('base64'));
+  ): Promise<Uint8Array> {
+    return Promise.resolve(new TextEncoder().encode(plaintext));
   }
 
   decrypt(
-    ciphertext: string,
+    ciphertext: Uint8Array,
     _aad: string,
     _context: YdbEncryptionContext,
   ): Promise<string> {
-    return Promise.resolve(Buffer.from(ciphertext, 'base64').toString('utf8'));
+    return Promise.resolve(new TextDecoder().decode(ciphertext));
   }
 
   hash(plaintext: string, _context: YdbEncryptionContext): Promise<string> {

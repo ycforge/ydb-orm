@@ -69,6 +69,12 @@ export function getYdbEntityMetadata<T>(
     });
   }
 
+  // Шифруемые поля всегда хранятся как Bytes (raw ciphertext) — формат
+  // объявленный в @YdbColumn игнорируется (раньше был base64 в Utf8).
+  for (const ef of encryptedFields) {
+    schema[ef.propertyKey] = 'Bytes';
+  }
+
   const metadata: YdbEntityMetadata<T> = {
     tableName,
     schema,

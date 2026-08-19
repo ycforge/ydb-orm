@@ -13,25 +13,26 @@ describe('Base64TestEncryptionProvider', () => {
   const provider = new Base64TestEncryptionProvider();
 
   describe('encrypt', () => {
-    it('encodes plaintext to base64', async () => {
+    it('returns plaintext bytes as ciphertext', async () => {
       const result = await provider.encrypt('hello world', '', context);
-      expect(result).toBe(Buffer.from('hello world').toString('base64'));
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(result).toEqual(new TextEncoder().encode('hello world'));
     });
 
     it('handles empty string', async () => {
       const result = await provider.encrypt('', '', context);
-      expect(result).toBe('');
+      expect(result).toEqual(new Uint8Array(0));
     });
 
     it('handles unicode', async () => {
       const result = await provider.encrypt('Привет 🌍', '', context);
-      expect(result).toBe(Buffer.from('Привет 🌍').toString('base64'));
+      expect(result).toEqual(new TextEncoder().encode('Привет 🌍'));
     });
   });
 
   describe('decrypt', () => {
-    it('decodes base64 ciphertext to plaintext', async () => {
-      const ciphertext = Buffer.from('hello world').toString('base64');
+    it('decodes ciphertext bytes to plaintext', async () => {
+      const ciphertext = new TextEncoder().encode('hello world');
       const result = await provider.decrypt(ciphertext, '', context);
       expect(result).toBe('hello world');
     });
@@ -44,7 +45,7 @@ describe('Base64TestEncryptionProvider', () => {
     });
 
     it('handles empty ciphertext', async () => {
-      const result = await provider.decrypt('', '', context);
+      const result = await provider.decrypt(new Uint8Array(0), '', context);
       expect(result).toBe('');
     });
   });
