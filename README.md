@@ -51,6 +51,30 @@ export class AppModule {}
 
 `forRootAsync` поддерживает `useFactory` / `useClass` / `useExisting` (как в NestJS). `forFeature([...Entity])` обязателен: без него статические методы сущности упадут с «YDB executor not set».
 
+## Репозиторий (DI-вариант)
+
+Помимо Active Record (`UserEntity.find(...)`) `YdbModule.forFeature` регистрирует инжектируемый `YdbRepository<Entity>`. Это удобнее в NestJS-сервисах и не требует глобальных статиков:
+
+```ts
+import { Injectable } from '@nestjs/common';
+import { InjectRepository, YdbRepository } from '@ycforge/ydb-orm';
+import { UserEntity } from './user.entity.js';
+
+@Injectable()
+export class UserService {
+  constructor(
+    @InjectRepository(UserEntity)
+    private readonly userRepo: YdbRepository<UserEntity>,
+  ) {}
+
+  async getByUuid(uuid: string) {
+    return this.userRepo.findOneBy({ uuid });
+  }
+}
+```
+
+Также доступен `YdbEntityManager` — фабрика репозиториев (`manager.getRepository(UserEntity)`). `YdbRepository` — ядро ORM: вся CRUD-логика живёт в нём (и в `YdbEntityPersistence`/`YdbEntityRelations` под капотом). Active Record остаётся полностью работоспособным: статические методы `UserEntity.find(...)` и т.д. — тонкий фасад, делегирующий в репозиторий.
+
 ## Active Record
 
 ```ts

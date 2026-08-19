@@ -93,6 +93,22 @@ export { YdbBaseEntity } from './entity/base-entity.js';
 export { YdbQueryBuilder } from './query/query-builder.js';
 export type { BuiltQuery, OrderDirection } from './query/query-builder.js';
 
+// Репозитории / EntityManager (DI-вариант поверх Active Record)
+export {
+  YdbRepository,
+  YdbEntityManager,
+  getRepositoryToken,
+  InjectRepository,
+  getOrCreateRepository,
+} from './repository/index.js';
+export type { YdbEntityConstructor } from './repository/index.js';
+
+// Persistence / Relations (новое ядро ORM)
+export { YdbEntityPersistence } from './persistence/index.js';
+export { YdbEntityRelations } from './relations/index.js';
+export type { PersistenceDeps } from './persistence/index.js';
+export type { RelationsDeps } from './relations/index.js';
+
 // Шифрование
 export type {
   YdbEncryptionProvider,
