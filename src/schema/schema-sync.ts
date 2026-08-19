@@ -194,7 +194,7 @@ export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   const parts = [...columnDefs, ...indexDefs, `PRIMARY KEY (${pk})`];
   if (expected.ttl) {
     parts.push(
-      `TTL = Interval("${expected.ttl.interval}") ON \`${expected.ttl.column}\``,
+      `TTL = Interval("${expected.ttl.interval}") ON ${quoteIdentifier(expected.ttl.column)}`,
     );
   }
   const body = parts.join(',\n  ');

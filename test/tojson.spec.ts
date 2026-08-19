@@ -160,5 +160,15 @@ describe('toJSON()', () => {
       expect(json).toHaveProperty('title', 'Manual');
       expect(json.author_email).toBe('manual@test.com');
     });
+
+    it('JSON.stringify не падает на bigint-полях', () => {
+      const photo = new PhotoEntity();
+      photo.uuid = 'bigint-uuid';
+      photo.file_size = BigInt(2048000);
+
+      expect(() => JSON.stringify(photo)).not.toThrow();
+      const parsed = JSON.parse(JSON.stringify(photo));
+      expect(parsed.file_size).toBe('2048000');
+    });
   });
 });

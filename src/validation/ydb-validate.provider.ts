@@ -1,3 +1,4 @@
+import { loadOptionalPeer } from '../core/optional-peer.js';
 import type {
   YdbValidationProvider,
   YdbValidationOptions,
@@ -11,25 +12,14 @@ export class ClassValidatorProvider implements YdbValidationProvider {
   }
 
   async validate(entity: any): Promise<string[]> {
-    let validateFn: (
-      object: object,
-      options?: Record<string, unknown>,
-    ) => Promise<any[]>;
-    try {
-      // class-validator — опциональный peer dependency
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval
-      const loader = new Function(
-        'return import("class-validator")',
-      ) as () => Promise<{
-        validate: typeof validateFn;
-      }>;
-      const mod = await loader();
-      validateFn = mod.validate;
-    } catch {
-      throw new Error(
-        'class-validator is not installed. Install it to use ClassValidatorProvider: npm install class-validator reflect-metadata',
-      );
-    }
+    // class-validator — опциональный peer dependency
+    const mod = await loadOptionalPeer<{
+      validate: (
+        object: object,
+        options?: Record<string, unknown>,
+      ) => Promise<any[]>;
+    }>('class-validator', 'ClassValidatorProvider');
+    const validateFn = mod.validate;
 
     const errors = await validateFn(entity, {
       groups: this.groups,

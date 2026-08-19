@@ -78,6 +78,15 @@ export type {
   YdbTtlOptions,
   YdbTtlMetadata,
 } from './decorators/ttl.decorator.js';
+export {
+  BeforeInsert,
+  AfterInsert,
+  BeforeUpdate,
+  AfterFind,
+  BeforeRemove,
+  getLifecycleHooks,
+} from './decorators/lifecycle.decorator.js';
+export type { LifecycleHooks } from './decorators/lifecycle.decorator.js';
 
 // Active Record
 export { YdbBaseEntity } from './entity/base-entity.js';
@@ -91,11 +100,8 @@ export type {
   YdbEncryptionContext,
 } from './encryption/ydb-encryption-provider.interface.js';
 export { Base64TestEncryptionProvider } from './encryption/base64-test-encryption.provider.js';
-export {
-  KmsEncryptionProvider,
-  KmsBlindIndexProvider,
-} from './encryption/kms-encryption.provider.js';
-export type { KmsEncryptionProviderOptions } from './encryption/kms-encryption.provider.js';
+// Готовые KMS/HMAC-провайдеры шифрования и blind index — в отдельном пакете
+// @ycforge/orm-security-providers (см. README).
 
 // Валидация
 export type {
