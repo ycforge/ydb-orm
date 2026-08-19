@@ -34,8 +34,7 @@ class CountingEncryptionProvider extends Base64TestEncryptionProvider {
 
 // Base64TestEncryptionProvider сейчас "identity": ciphertext = utf8-байты plaintext
 const ct = (s: string) => new TextEncoder().encode(s);
-const biHash = (s: string) =>
-  Buffer.from(`bi:${s}`, 'utf8').toString('base64');
+const biHash = (s: string) => Buffer.from(`bi:${s}`, 'utf8').toString('base64');
 
 function makeRow() {
   return {

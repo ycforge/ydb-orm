@@ -4,6 +4,7 @@ import {
   createCredentialsProvider,
   createDriver,
   createExecutor,
+  validateYdbModuleOptions,
 } from '../core/driver.js';
 import {
   YDB_DRIVER,
@@ -122,7 +123,11 @@ export class YdbCoreModule {
       return [
         {
           provide: YDB_OPTIONS,
-          useFactory: options.useFactory,
+          useFactory: async (...args: any[]) => {
+            const opts = await options.useFactory!(...args);
+            validateYdbModuleOptions(opts);
+            return opts;
+          },
           inject: options.inject || [],
         },
       ];
@@ -141,8 +146,11 @@ export class YdbCoreModule {
     return [
       {
         provide: YDB_OPTIONS,
-        useFactory: async (optionsFactory: YdbOptionsFactory) =>
-          optionsFactory.createYdbOptions(),
+        useFactory: async (optionsFactory: YdbOptionsFactory) => {
+          const opts = await optionsFactory.createYdbOptions();
+          validateYdbModuleOptions(opts);
+          return opts;
+        },
         inject,
       },
       ...(options.useClass

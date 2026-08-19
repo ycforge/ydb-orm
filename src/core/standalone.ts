@@ -3,7 +3,7 @@ import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
-import type { YdbBaseEntity } from '../entity/base-entity.js';
+import { YdbBaseEntity } from '../entity/base-entity.js';
 
 /**
  * Конфигурация сущностей для программного использования без NestJS.
@@ -27,7 +27,23 @@ export function configureEntities(
     blindIndexProvider?: YdbBlindIndexProvider;
   },
 ): void {
+  if (!options?.executor) {
+    throw new Error(
+      'configureEntities() requires "options.executor". ' +
+        'Create it via createExecutor(driver, opts).',
+    );
+  }
   for (const entity of entities) {
+    if (
+      typeof entity !== 'function' ||
+      !(entity.prototype instanceof YdbBaseEntity)
+    ) {
+      throw new Error(
+        `configureEntities(): ${entity?.name ?? String(entity)} ` +
+          `is not a YdbBaseEntity subclass. ` +
+          `Only entities extending YdbBaseEntity can be configured.`,
+      );
+    }
     (entity as unknown as typeof YdbBaseEntity).setExecutor(options.executor);
 
     if (options.encryptionProvider) {
