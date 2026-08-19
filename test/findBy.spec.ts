@@ -49,6 +49,16 @@ describe('findBy / findOneBy', () => {
     expect(mock.queries[0].params.uuid).toBeInstanceOf(Uuid);
   });
 
+  it('findBy() пробрасывает options (limit) в SQL', async () => {
+    const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Eve' }]]);
+    UserEntity.setExecutor(mock.executor);
+
+    const result = await UserEntity.findBy({ uuid: uuid1 }, { limit: 5 });
+
+    expect(result).toHaveLength(1);
+    expect(mock.queries[0].sql).toContain('LIMIT 5');
+  });
+
   it('findOneBy() возвращает сущность при нахождении', async () => {
     const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Diana' }]]);
     UserEntity.setExecutor(mock.executor);

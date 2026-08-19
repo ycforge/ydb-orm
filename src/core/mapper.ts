@@ -4,6 +4,8 @@ import {
   UuidType,
   Utf8,
   Utf8Type,
+  Bytes,
+  BytesType,
   Int32,
   Int32Type,
   Int64,
@@ -27,6 +29,7 @@ import { Optional } from '@ydbjs/value/optional';
 const nullTypeFactories = {
   Uuid: () => new UuidType(),
   Utf8: () => new Utf8Type(),
+  Bytes: () => new BytesType(),
   Int32: () => new Int32Type(),
   Int64: () => new Int64Type(),
   Bool: () => new BoolType(),
@@ -46,6 +49,7 @@ function toJsDate(value: Date | number | string): Date {
 const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   Uuid: (value: string) => new Uuid(value),
   Utf8: (value: string) => new Utf8(value),
+  Bytes: (value: Uint8Array) => new Bytes(value),
   Int32: (value: number) => new Int32(value),
   Int64: (value: bigint | number | string) => new Int64(BigInt(value)),
   Bool: (value: boolean) => new Bool(value),

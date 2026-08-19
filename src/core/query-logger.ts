@@ -104,7 +104,10 @@ export function wrapExecutorWithLogging(
       parameter(name: string, value: unknown) {
         paramNames.push(name);
         maskedParams[name] = maskValue(value);
-        return originalParameter(name, value);
+        originalParameter(name, value);
+        // Возвращаем прокси, иначе цепочка parameter().parameter() сбегает
+        // из прокси и последующие вызовы теряют логирование
+        return proxied;
       },
       timeout(ms: number) {
         query.timeout(ms);

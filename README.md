@@ -88,9 +88,9 @@ const { sql, values } = await PhotoEntity.query().where({ is_public: true }).toY
 ## Декораторы
 
 - `@YdbEntity('table')` — имя таблицы; класс попадает в глобальный реестр сущностей (используется schema sync).
-- `@YdbColumn('Uuid' | 'Utf8' | 'Int32' | 'Int64' | 'Bool' | 'Double')` — колонка.
+- `@YdbColumn('Uuid' | 'Utf8' | 'Bytes' | 'Int32' | 'Int64' | 'Bool' | 'Double' | 'Date' | 'Datetime' | 'Timestamp')` — колонка.
 - `@YdbPrimaryColumn(type)` — колонка первичного ключа (поддерживается составной PK: несколько таких колонок). Если PK не объявлен, используется `uuid`.
-- `@YdbEncrypted({ blindIndex })` — поле шифруется перед записью и дешифруется после чтения; `blindIndex: true` (по умолчанию) добавляет synthetic колонку `{field}_bi` для поиска по хешу.
+- `@YdbEncrypted({ blindIndex })` — поле шифруется перед записью и дешифруется после чтения; `blindIndex: true` (по умолчанию) добавляет synthetic колонку `{field}_bi` для поиска по хешу. Шифротекст хранится в колонке `Bytes` (raw bytes), тип из `@YdbColumn` для таких полей игнорируется.
 - `@YdbSecurityAAD()` — незашифрованное поле участвует в AAD.
 - `@OneToMany` / `@ManyToOne` / `@OneToOne` / `@ManyToMany` — relations; `@EagerLoad([...])` — batch-загрузка одним `IN (...)` запросом (без N+1). `@ManyToMany` требует `@JoinTable('join_table_name')` на владеющей стороне; join-таблица попадает в schema sync и миграции автоматически.
 - `@YdbIndex({ columns, name? })` — вторичный индекс (GLOBAL SYNC); класс-декоратор, можно несколько. Имя по умолчанию `{table}__{col1}_{col2}`. Попадает в CREATE TABLE при schema sync и в `migration:generate` для новых таблиц.
@@ -123,10 +123,14 @@ class Tag extends YdbBaseEntity {
 
 ```ts
 {
-  encryptionProvider: myEncryptionProvider,   // { encrypt(value, aad, ctx), decrypt(...) }
-  blindIndexProvider: myBlindIndexProvider,   // { hash(value, ctx) }
+  encryptionProvider: myEncryptionProvider,   // { encrypt(value, aad, ctx) → Uint8Array, decrypt(ciphertext, aad, ctx) → string }
+  blindIndexProvider: myBlindIndexProvider,   // { hash(value, ctx) → string }
 }
 ```
+
+`encrypt` возвращает raw ciphertext (`Uint8Array`), который ORM пишет в колонку `Bytes`
+(без base64-кодирования — экономия ~33% по сравнению с `Utf8`). `decrypt` принимает
+`Uint8Array` из колонки `Bytes`. Blind index (`{field}_bi`) — обычная `Utf8`-колонка.
 
 `Base64TestEncryptionProvider` из пакета — заглушка для тестов, реальной криптографии в ней нет.
 

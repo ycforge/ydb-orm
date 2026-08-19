@@ -24,7 +24,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:revert            Откатить последнюю миграцию
   ydb-orm migration:show              Показать статус миграций
   ydb-orm migration:check             Проверить, все ли миграции применены (exit 1 если нет)
-  ydb-orm schema:verify             Проверить схему БД против метаданных сущностей
+  ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
   ydb-orm entity:create <name>        Создать сущность
   ydb-orm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
 
@@ -34,11 +34,8 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
                     YDB_AUTHORIZED_KEY_PATH)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
-  --json            JSON-вывод (для migration:show)
-  --json            Machine-readable output (для migration:check)
+  --json            JSON-вывод (для migration:show и migration:check)
 
-Цветной diff расхождений (migration:generate, schema:verify) отключается
-при выводе не в TTY или переменной окружения NO_COLOR.
 `;
 
 interface ParsedArgs {
@@ -112,12 +109,7 @@ async function main(): Promise<void> {
     try {
       const syncer = new YdbSchemaSyncer(driver, executor);
       const expected = config.entities.flatMap((entity) => {
-        const meta = getYdbEntityMetadata(entity);
-        if (!meta) {
-          throw new Error(
-            `Class ${entity.name} is not decorated with @YdbEntity`,
-          );
-        }
+        const meta = requireEntityMeta(entity);
         const schemas = [buildExpectedTableSchema(meta)];
         return schemas;
       });
@@ -161,6 +153,11 @@ async function main(): Promise<void> {
     }
     const { driver, executor, close } = await connectCli(config);
     try {
+      // Проверяем декораторы заранее: syncer.verify молча пропускает
+      // недекорированные классы
+      for (const entity of config.entities) {
+        requireEntityMeta(entity);
+      }
       const syncer = new YdbSchemaSyncer(driver, executor);
       const issues = await syncer.verify(config.entities);
       if (issues.length === 0) {
@@ -267,6 +264,18 @@ function requireName(command: string, name?: string): void {
   if (!name) {
     throw new Error(`${command} requires a name argument`);
   }
+}
+
+/**
+ * Возвращает метаданные сущности или падает, если класс
+ * не декорирован @YdbEntity (иначе он молча пропускается).
+ */
+function requireEntityMeta(entity: any) {
+  const meta = getYdbEntityMetadata(entity);
+  if (!meta) {
+    throw new Error(`Class ${entity.name} is not decorated with @YdbEntity`);
+  }
+  return meta;
 }
 
 main().catch((error: unknown) => {

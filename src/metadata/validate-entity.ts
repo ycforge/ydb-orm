@@ -39,9 +39,6 @@ export function validateEntityMetadata(
   }
 
   for (const ef of meta.encryptedFields) {
-    if (!meta.schema[ef.propertyKey]) {
-      issues.push(`encrypted field "${ef.propertyKey}" has no @YdbColumn`);
-    }
     if (pkFields.includes(ef.propertyKey)) {
       issues.push(
         `primary key "${ef.propertyKey}" cannot be encrypted (@YdbEncrypted)`,

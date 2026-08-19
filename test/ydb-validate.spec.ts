@@ -76,8 +76,8 @@ describe('YdbValidate — валидация перед записью', () => {
       setupEncryption();
       const updatedRow = {
         uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
-        email_encrypted: Buffer.from('enc').toString('base64'),
-        full_name: Buffer.from('Updated').toString('base64'),
+        email_encrypted: new TextEncoder().encode('enc'),
+        full_name: new TextEncoder().encode('Updated'),
       };
       setupMock([[updatedRow]]);
 

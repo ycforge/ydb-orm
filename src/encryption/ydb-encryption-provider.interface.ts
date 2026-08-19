@@ -7,13 +7,20 @@ export interface YdbEncryptionContext {
 }
 
 export interface YdbEncryptionProvider {
+  /**
+   * Шифрует plaintext и возвращает raw ciphertext (Uint8Array).
+   * Значение хранится в YDB-колонке `Bytes` (без base64-кодирования).
+   */
   encrypt(
     plaintext: string,
     aad: string,
     context: YdbEncryptionContext,
-  ): Promise<string>;
+  ): Promise<Uint8Array>;
+  /**
+   * Дешифрует ciphertext (Uint8Array из колонки `Bytes`) и возвращает plaintext.
+   */
   decrypt(
-    ciphertext: string,
+    ciphertext: Uint8Array,
     aad: string,
     context: YdbEncryptionContext,
   ): Promise<string>;

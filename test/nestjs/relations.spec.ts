@@ -28,8 +28,8 @@ const profileRow = {
 
 const userRow = {
   uuid: '11111111-1111-1111-1111-111111111111',
-  email_encrypted: 'enc',
-  full_name: 'Ivan',
+  email_encrypted: new TextEncoder().encode('enc'),
+  full_name: new TextEncoder().encode('Ivan'),
 };
 
 const photoRow = {

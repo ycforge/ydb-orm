@@ -132,22 +132,14 @@ export class YdbBaseEntity {
     enumMeta: YdbEnumMeta | undefined,
   ): any {
     if (!enumMeta || value === null || value === undefined) return value;
-    if (enumMeta.storage === 'Int32') {
-      const index = enumMeta.values.indexOf(String(value));
-      if (index === -1) {
-        throw new Error(
-          `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
-        );
-      }
-      return index;
-    }
-    // Utf8: валидация значения
-    if (!enumMeta.values.includes(String(value))) {
+    const str = String(value);
+    if (!enumMeta.values.includes(str)) {
       throw new Error(
         `Invalid enum value "${value}" for field "${enumMeta.propertyKey}". Allowed: ${enumMeta.values.join(', ')}`,
       );
     }
-    return value;
+    // Int32: строка → порядковый индекс; Utf8: строка как есть
+    return enumMeta.storage === 'Int32' ? enumMeta.values.indexOf(str) : str;
   }
 
   /**
@@ -160,7 +152,11 @@ export class YdbBaseEntity {
     if (!enumMeta || value === null || value === undefined) return value;
     if (enumMeta.storage === 'Int32') {
       const index = Number(value);
-      if (index >= 0 && index < enumMeta.values.length) {
+      if (
+        Number.isInteger(index) &&
+        index >= 0 &&
+        index < enumMeta.values.length
+      ) {
         return enumMeta.values[index];
       }
       return value; // fallback
@@ -311,7 +307,7 @@ export class YdbBaseEntity {
 
         const aad = ef.aadOverride ?? this.buildAAD(row, meta.aadFields);
         row[ef.propertyKey] = await encryptionProvider.decrypt(
-          String(ct),
+          ct as Uint8Array,
           aad,
           {
             entityName: this.name,
@@ -769,7 +765,7 @@ export class YdbBaseEntity {
 
   /**
    * Находит первую сущность по WHERE-условию.
-   * Алиас для find() — тот же.signature, более явный интент.
+   * Алиас для find() — тот же signature, более явный интент.
    */
   static async findOneBy<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
@@ -887,6 +883,8 @@ export class YdbBaseEntity {
   /**
    * Удаляет сущность по pk.
    * Возвращает удалённую запись (RETURNING *) или null, если не найдена.
+   * Если у сущности есть хуки @BeforeRemove, запись сначала загружается
+   * (SELECT) и хуки вызываются на инстансе до удаления.
    */
   static async delete<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
@@ -898,6 +896,13 @@ export class YdbBaseEntity {
     const dbSchema = this.getDbSchema(meta);
     const pkField = meta.primaryKeys[0] ?? 'uuid';
     const pkType = dbSchema[pkField] ?? 'Uuid';
+
+    // beforeRemove-хуки работают на инстансе — загружаем запись до удаления
+    if (getLifecycleHooks(this).beforeRemove.length) {
+      const entity = await this.find<T>({ [pkField]: pkValue }, options);
+      if (!entity) return null;
+      await this.callHooks('beforeRemove', entity);
+    }
 
     const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(pkField)} = $pk RETURNING *`;
     const query = exec([sql] as unknown as TemplateStringsArray);
@@ -1101,6 +1106,7 @@ export class YdbBaseEntity {
   /**
    * Массовое обновление по условию.
    * Возвращает количество затронутых строк.
+   * Lifecycle-хуки (beforeUpdate и т.п.) не срабатывают — инстансы не загружаются.
    */
   static async updateBy(
     this: typeof YdbBaseEntity,
@@ -1116,6 +1122,16 @@ export class YdbBaseEntity {
     if (!Object.keys(patch).length) {
       throw new Error(
         `updateBy() on ${this.name} requires at least one field in patch`,
+      );
+    }
+
+    // Одно и то же поле в where и в patch приведёт к смешиванию значений параметров
+    const collision = Object.keys(patch).filter((k) =>
+      Object.prototype.hasOwnProperty.call(where, k),
+    );
+    if (collision.length) {
+      throw new Error(
+        `updateBy() on ${this.name}: field(s) ${collision.map((k) => `"${k}"`).join(', ')} present in both where and patch`,
       );
     }
 
@@ -1147,6 +1163,15 @@ export class YdbBaseEntity {
         const value = data[ef.propertyKey];
         if (value === null || value === undefined) continue;
 
+        // AAD строится из полей строки, которых у нас нет: дешифровка после
+        // такого update упадёт. Запрещаем, если нет явного aadOverride.
+        if (!ef.aadOverride && meta.aadFields.length) {
+          throw new Error(
+            `updateBy() on ${this.name} cannot update encrypted field "${ef.propertyKey}": ` +
+              `entity has @YdbSecurityAAD fields and no aadOverride is set — ` +
+              `AAD cannot be reconstructed without the full row`,
+          );
+        }
         const aad = ef.aadOverride ?? this.buildAAD({}, meta.aadFields);
         const context: YdbEncryptionContext = {
           entityName: this.name,
@@ -1205,7 +1230,9 @@ export class YdbBaseEntity {
     const allKeys = [...whereKeys, ...setKeys];
     const allDbSchema = { ...whereDbSchema, ...dbSchema };
 
-    const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause}`;
+    // RETURNING по PK: без него YDB не отдаёт result set и счётчик строк всегда 0
+    const pkColumn = quoteIdentifier(meta.primaryKeys[0] ?? 'uuid');
+    const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause} RETURNING ${pkColumn}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, allValues, allKeys, allDbSchema);
 
@@ -1219,6 +1246,7 @@ export class YdbBaseEntity {
   /**
    * Массовое удаление по условию.
    * Возвращает количество удалённых строк.
+   * Lifecycle-хуки (beforeRemove) не срабатывают — инстансы не загружаются.
    */
   static async deleteBy(
     this: typeof YdbBaseEntity,
@@ -1239,7 +1267,9 @@ export class YdbBaseEntity {
       meta,
     );
 
-    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause}`;
+    // RETURNING по PK: без него YDB не отдаёт result set и счётчик строк всегда 0
+    const pkColumn = quoteIdentifier(meta.primaryKeys[0] ?? 'uuid');
+    const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause} RETURNING ${pkColumn}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
 
@@ -1256,18 +1286,12 @@ export class YdbBaseEntity {
    * Возвращает расшифрованные значения — те, что хранятся в инстансе.
    */
   toJSON(): Record<string, any> {
-    const meta = getYdbEntityMetadata(this.constructor as any);
+    const meta = getYdbEntityMetadata(this.constructor as typeof YdbBaseEntity);
     const result: Record<string, any> = {};
     for (const [key, value] of Object.entries(this)) {
-      if (
-        key.endsWith('_bi') &&
-        meta?.encryptedFields.some(
-          (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
-        )
-      ) {
-        continue;
-      }
-      result[key] = value;
+      if (meta && isSyntheticColumn(meta, key)) continue;
+      // BigInt не поддерживается JSON.stringify — сериализуем строкой
+      result[key] = typeof value === 'bigint' ? String(value) : value;
     }
     return result;
   }
