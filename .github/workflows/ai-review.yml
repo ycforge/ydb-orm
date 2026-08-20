@@ -42,7 +42,7 @@ jobs:
           chat-token: ${{ secrets.DEEPSEEK_CHAT_TOKEN }}
           base-url: ${{ secrets.DEEPSEEK_BASE_URL }}
           model: ${{ vars.DEEPSEEK_MODEL || 'deepseek/deepseek-v4-flash' }}
-          max-length: 12000
+          max-length: 360000
           exclude-patterns: 'pnpm-lock.yaml,package-lock.json,yarn.lock,*.lock,dist/**,coverage/**,node_modules/**,*.min.js,*.min.css'
           sys-prompt: |
             Ты — внимательный ассистент по code review для TypeScript ORM-проекта.
