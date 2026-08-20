@@ -138,9 +138,11 @@ describe('JSON columns', () => {
         .getMany();
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('JSON_EXISTS(`metadata`, $metadata__jsonexists)');
-      expect(q.params.metadata__jsonexists).toBeInstanceOf(Utf8);
-      expect((q.params.metadata__jsonexists as any).value).toBe(
+      expect(q.sql).toContain(
+        'JSON_EXISTS(`metadata`, $metadata_0_jsonexists)',
+      );
+      expect(q.params.metadata_0_jsonexists).toBeInstanceOf(Utf8);
+      expect((q.params.metadata_0_jsonexists as any).value).toBe(
         '$.settings.theme',
       );
     });
@@ -155,10 +157,10 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'JSON_VALUE(`metadata`, $metadata__jsonvalue_path) = $metadata__jsonvalue_val',
+        'JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) = $metadata_0_jsonvalue_val',
       );
-      expect((q.params.metadata__jsonvalue_path as any).value).toBe('$.role');
-      expect((q.params.metadata__jsonvalue_val as any).value).toBe('admin');
+      expect((q.params.metadata_0_jsonvalue_path as any).value).toBe('$.role');
+      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
     });
   });
 });

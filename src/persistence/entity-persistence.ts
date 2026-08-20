@@ -1,7 +1,6 @@
 import type { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import {
   getYdbEntityMetadata,
-  type EncryptedFieldMeta,
   type YdbEntityMetadata,
 } from '../metadata/entity-metadata.js';
 import { mapToYdb } from '../core/mapper.js';
@@ -80,6 +79,13 @@ export function getEntityDbSchema(
     if (ef.blindIndex) schema[`${ef.propertyKey}_bi`] = 'Utf8';
   }
   return schema;
+}
+
+interface WhereBuildContext {
+  values: Record<string, any>;
+  keys: string[];
+  dbSchema: Record<string, YdbPrimitive>;
+  counter: number;
 }
 
 /**
@@ -446,60 +452,345 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Преобразует WHERE: зашифрованные поля → {field}_bi колонки через blind index hash.
+   * Проверяет, является ли ключ логическим комбинатором WHERE.
    */
-  private async processWhere(
-    where: Record<string, any>,
-    meta: YdbEntityMetadata,
-  ): Promise<{
-    processedWhere: Record<string, any>;
-    dbSchema: Record<string, YdbPrimitive>;
-  }> {
-    const encryptedByKey = new Map<
-      EncryptedFieldMeta['propertyKey'],
-      EncryptedFieldMeta
-    >(meta.encryptedFields.map((ef) => [ef.propertyKey, ef]));
-    const blindIndexProvider = this.getBlindIndexProvider();
-    const processedWhere: Record<string, any> = {};
+  private isLogicalKey(key: string): boolean {
+    return key === '$and' || key === '$or';
+  }
 
-    for (const k of Object.keys(where)) {
-      const ef = encryptedByKey.get(k);
-      if (!ef) {
-        processedWhere[k] = where[k];
-        continue;
+  /**
+   * Проверяет, является ли значение объектом-оператором (хотя бы один ключ начинается с $).
+   */
+  private isOperatorObject(value: unknown): value is Record<string, any> {
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+    const keys = Object.keys(value);
+    return keys.some((k) => k.startsWith('$'));
+  }
+
+  /**
+   * Нормализует значение для WHERE: enum-конвертация, JSON-сериализация.
+   */
+  private normalizeWhereValue(field: string, value: any): any {
+    if (value === null || value === undefined) return value;
+    const enums = getYdbEnumMetadata(this.entityClass);
+    const enumMeta = enums.find((e) => e.propertyKey === field);
+    let converted = this.convertEnumOut(value, enumMeta);
+    converted = this.convertJsonOut(field, converted);
+    return converted;
+  }
+
+  /**
+   * Возвращает хеш blind index для зашифрованного поля.
+   */
+  private async hashBlindIndexForWhere(field: string, value: string) {
+    const provider = this.getBlindIndexProvider();
+    if (!provider) {
+      throw new Error(
+        `Blind index provider is not configured for entity ${this.entityClass.name} ` +
+          `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
+          `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+          `or configureEntities().`,
+      );
+    }
+    const meta = this.getMeta();
+    return provider.hash(String(value), {
+      entityName: this.entityClass.name,
+      tableName: meta.tableName,
+      fieldName: field,
+      primaryKeyValue: undefined,
+      aadFields: {},
+    });
+  }
+
+  /**
+   * Рекурсивно строит SQL-условие для одного поля.
+   */
+  private async buildFieldCondition(
+    field: string,
+    value: any,
+    ctx: WhereBuildContext,
+    isRoot: boolean,
+  ): Promise<string | undefined> {
+    const meta = this.getMeta();
+    const dbSchema = getEntityDbSchema(meta);
+
+    if (!dbSchema[field]) {
+      throw new Error(
+        `Unknown field in WHERE: "${field}" on entity ${this.entityClass.name}. ` +
+          `Known fields: ${this.knownFields(meta)}. ` +
+          `Check for a typo in the property name.`,
+      );
+    }
+
+    const ef = meta.encryptedFields.find((e) => e.propertyKey === field);
+    const fieldType = dbSchema[field];
+
+    // Зашифрованные поля ищутся только по blind-index (равенство).
+    if (ef) {
+      const isEqOperatorObject =
+        this.isOperatorObject(value) &&
+        Object.keys(value).length === 1 &&
+        '$eq' in value;
+      if (this.isOperatorObject(value) && !isEqOperatorObject) {
+        throw new Error(
+          `Cannot use operator object on encrypted field "${field}" on entity ${this.entityClass.name}: ` +
+            `only equality is supported via blind index.`,
+        );
       }
       if (!ef.blindIndex) {
         throw new Error(
-          `Cannot search by encrypted field "${k}" on entity ${this.entityClass.name}: ` +
+          `Cannot search by encrypted field "${field}" on entity ${this.entityClass.name}: ` +
             `blind index is disabled for it. ` +
             `Use @YdbEncrypted({ blindIndex: true }) to make it searchable.`,
         );
       }
-      if (!blindIndexProvider) {
+      const operand = isEqOperatorObject ? value.$eq : value;
+      if (operand === undefined || operand === null) {
         throw new Error(
-          `Blind index provider is not configured for entity ${this.entityClass.name} ` +
-            `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
-            `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
-            `or configureEntities().`,
+          `Cannot search encrypted field "${field}" on entity ${this.entityClass.name} by null or undefined.`,
         );
       }
-      const value = where[k];
-      if (value === undefined) continue;
-      processedWhere[`${k}_bi`] = await blindIndexProvider.hash(String(value), {
-        entityName: this.entityClass.name,
-        tableName: meta.tableName,
-        fieldName: k,
-        primaryKeyValue: undefined,
-        aadFields: {},
-      });
+      const biField = `${field}_bi`;
+      const paramName = isRoot ? biField : `${biField}_${ctx.counter++}`;
+      ctx.values[paramName] = await this.hashBlindIndexForWhere(
+        field,
+        String(operand),
+      );
+      ctx.keys.push(paramName);
+      ctx.dbSchema[paramName] = 'Utf8';
+      return `${quoteIdentifier(biField)} = $${paramName}`;
     }
 
-    return { processedWhere, dbSchema: getEntityDbSchema(meta) };
+    const quotedField = quoteIdentifier(field);
+
+    if (this.isOperatorObject(value)) {
+      const opEntries = Object.entries(value).filter(([k]) =>
+        k.startsWith('$'),
+      );
+      const subConditions: string[] = [];
+      for (const [op, operand] of opEntries) {
+        const condition = this.buildSingleOperatorCondition(
+          field,
+          op,
+          operand,
+          ctx,
+          isRoot,
+        );
+        if (condition) subConditions.push(condition);
+      }
+      if (!subConditions.length) return undefined;
+      return subConditions.length === 1
+        ? subConditions[0]
+        : `(${subConditions.join(' AND ')})`;
+    }
+
+    // Обычное равенство
+    if (value === null) return `${quotedField} IS NULL`;
+    if (value === undefined) return undefined;
+    const paramName = isRoot ? field : `${field}_${ctx.counter++}_eq`;
+    // Корневое равенство оставляем "сырым": bindParams сам выполнит
+    // enum/JSON-конвертацию по имени поля (для совместимости).
+    ctx.values[paramName] = isRoot
+      ? value
+      : this.normalizeWhereValue(field, value);
+    ctx.keys.push(paramName);
+    ctx.dbSchema[paramName] = fieldType;
+    return `${quotedField} = $${paramName}`;
   }
 
   /**
-   * Общий конвейер WHERE для find/findAll/count:
-   * blind index → фильтрация undefined → валидация полей → WHERE-клауза.
+   * Строит условие для одного оператора над полем.
+   */
+  private buildSingleOperatorCondition(
+    field: string,
+    op: string,
+    operand: any,
+    ctx: WhereBuildContext,
+    isRoot: boolean,
+  ): string | undefined {
+    const meta = this.getMeta();
+    const dbSchema = getEntityDbSchema(meta);
+    const fieldType = dbSchema[field];
+    const quotedField = quoteIdentifier(field);
+    const paramName = (suffix: string) =>
+      isRoot && suffix === 'eq' ? field : `${field}_${ctx.counter++}_${suffix}`;
+    const addParam = (name: string, value: any, type: YdbPrimitive) => {
+      ctx.values[name] = value;
+      ctx.keys.push(name);
+      ctx.dbSchema[name] = type;
+    };
+
+    switch (op) {
+      case '$eq': {
+        if (operand === null) return `${quotedField} IS NULL`;
+        if (operand === undefined) return undefined;
+        const name = paramName('eq');
+        addParam(
+          name,
+          isRoot ? operand : this.normalizeWhereValue(field, operand),
+          fieldType,
+        );
+        return `${quotedField} = $${name}`;
+      }
+      case '$ne': {
+        if (operand === null) return `${quotedField} IS NOT NULL`;
+        if (operand === undefined) return undefined;
+        const name = paramName('ne');
+        addParam(name, this.normalizeWhereValue(field, operand), fieldType);
+        return `${quotedField} != $${name}`;
+      }
+      case '$gt':
+      case '$gte':
+      case '$lt':
+      case '$lte': {
+        if (operand === null || operand === undefined) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a non-null value.`,
+          );
+        }
+        const sqlOp =
+          op === '$gt' ? '>' : op === '$gte' ? '>=' : op === '$lt' ? '<' : '<=';
+        const name = paramName(op.slice(1));
+        addParam(name, this.normalizeWhereValue(field, operand), fieldType);
+        return `${quotedField} ${sqlOp} $${name}`;
+      }
+      case '$like': {
+        if (typeof operand !== 'string') {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a string value.`,
+          );
+        }
+        const name = paramName('like');
+        addParam(name, operand, fieldType);
+        return `${quotedField} LIKE $${name}`;
+      }
+      case '$in': {
+        if (!Array.isArray(operand) || operand.length === 0) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a non-empty array.`,
+          );
+        }
+        const groupIdx = ctx.counter++;
+        const placeholders: string[] = [];
+        operand.forEach((item, i) => {
+          if (item === null || item === undefined) {
+            throw new Error(
+              `Operator "${op}" on field "${field}" does not support null/undefined values.`,
+            );
+          }
+          const name = `${field}_${groupIdx}_in_${i}`;
+          addParam(name, this.normalizeWhereValue(field, item), fieldType);
+          placeholders.push(`$${name}`);
+        });
+        return `${quotedField} IN (${placeholders.join(', ')})`;
+      }
+      case '$between': {
+        if (
+          !Array.isArray(operand) ||
+          operand.length !== 2 ||
+          operand[0] === null ||
+          operand[0] === undefined ||
+          operand[1] === null ||
+          operand[1] === undefined
+        ) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires an array of two non-null values.`,
+          );
+        }
+        const groupIdx = ctx.counter++;
+        const loName = `${field}_${groupIdx}_between_lo`;
+        const hiName = `${field}_${groupIdx}_between_hi`;
+        addParam(
+          loName,
+          this.normalizeWhereValue(field, operand[0]),
+          fieldType,
+        );
+        addParam(
+          hiName,
+          this.normalizeWhereValue(field, operand[1]),
+          fieldType,
+        );
+        return `${quotedField} BETWEEN $${loName} AND $${hiName}`;
+      }
+      case '$jsonExists': {
+        if (typeof operand !== 'string') {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a string path.`,
+          );
+        }
+        const name = `${field}_${ctx.counter++}_jsonexists`;
+        addParam(name, operand, 'Utf8');
+        return `JSON_EXISTS(${quotedField}, $${name})`;
+      }
+      case '$jsonValue': {
+        const { path, equals } = operand as { path: string; equals: any };
+        if (typeof path !== 'string') {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a string path.`,
+          );
+        }
+        const groupIdx = ctx.counter++;
+        const pathName = `${field}_${groupIdx}_jsonvalue_path`;
+        const valName = `${field}_${groupIdx}_jsonvalue_val`;
+        addParam(pathName, path, 'Utf8');
+        addParam(
+          valName,
+          this.normalizeWhereValue(field, equals),
+          fieldType === 'Json' || fieldType === 'JsonDocument'
+            ? fieldType
+            : 'Utf8',
+        );
+        return `JSON_VALUE(${quotedField}, $${pathName}) = $${valName}`;
+      }
+      default:
+        throw new Error(
+          `Unsupported WHERE operator "${op}" on field "${field}" on entity ${this.entityClass.name}.`,
+        );
+    }
+  }
+
+  /**
+   * Рекурсивно строит SQL-условие из WHERE-объекта.
+   */
+  private async buildWhereNode(
+    node: Record<string, any>,
+    ctx: WhereBuildContext,
+    isRoot: boolean,
+  ): Promise<string | undefined> {
+    const parts: string[] = [];
+
+    for (const [key, value] of Object.entries(node)) {
+      if (value === undefined) continue;
+
+      if (this.isLogicalKey(key)) {
+        const combiner = key === '$or' ? 'OR' : 'AND';
+        const list = Array.isArray(value) ? value : [value];
+        const subs: string[] = [];
+        for (const sub of list) {
+          if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
+            const subSql = await this.buildWhereNode(sub, ctx, false);
+            if (subSql) subs.push(subSql);
+          }
+        }
+        if (subs.length) {
+          parts.push(`(${subs.join(` ${combiner} `)})`);
+        }
+      } else {
+        const sql = await this.buildFieldCondition(key, value, ctx, isRoot);
+        if (sql) parts.push(sql);
+      }
+    }
+
+    if (!parts.length) return undefined;
+    return parts.join(' AND ');
+  }
+
+  /**
+   * Общий конвейер WHERE для find/findAll/count/updateBy/deleteBy:
+   * рекурсивная поддержка операторов сравнения, $in, $like, $between,
+   * JSON-операторов и логических групп $and/$or.
    */
   async buildWhere(where: Record<string, any>): Promise<{
     whereClause: string;
@@ -508,67 +799,20 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     dbSchema: Record<string, YdbPrimitive>;
   }> {
     const meta = this.getMeta();
-    const { processedWhere, dbSchema } = await this.processWhere(where, meta);
-    const keys = Object.keys(processedWhere).filter(
-      (k) => processedWhere[k] !== undefined,
-    );
-    for (const k of keys) {
-      if (!dbSchema[k]) {
-        throw new Error(
-          `Unknown field in WHERE: "${k}" on entity ${this.entityClass.name}. ` +
-            `Known fields: ${this.knownFields(meta)}. ` +
-            `Check for a typo in the property name.`,
-        );
-      }
-    }
+    const ctx: WhereBuildContext = {
+      values: {},
+      keys: [],
+      dbSchema: { ...getEntityDbSchema(meta) },
+      counter: 0,
+    };
 
-    const conditions: string[] = [];
-    const values: Record<string, any> = {};
-    const paramKeys: string[] = [];
-    const effectiveDbSchema = { ...dbSchema };
-
-    for (const k of keys) {
-      const value = processedWhere[k];
-      if (
-        value !== null &&
-        typeof value === 'object' &&
-        !Array.isArray(value) &&
-        ('$jsonExists' in value || '$jsonValue' in value)
-      ) {
-        if ('$jsonExists' in value) {
-          const paramName = `${k}__jsonexists`;
-          conditions.push(`JSON_EXISTS(${quoteIdentifier(k)}, $${paramName})`);
-          values[paramName] = value.$jsonExists;
-          paramKeys.push(paramName);
-          effectiveDbSchema[paramName] = 'Utf8';
-        } else {
-          const { path, equals } = value.$jsonValue as {
-            path: string;
-            equals: any;
-          };
-          const pathParam = `${k}__jsonvalue_path`;
-          const valParam = `${k}__jsonvalue_val`;
-          conditions.push(
-            `JSON_VALUE(${quoteIdentifier(k)}, $${pathParam}) = $${valParam}`,
-          );
-          values[pathParam] = path;
-          values[valParam] = equals;
-          paramKeys.push(pathParam, valParam);
-          effectiveDbSchema[pathParam] = 'Utf8';
-          effectiveDbSchema[valParam] = 'Utf8';
-        }
-      } else {
-        conditions.push(`${quoteIdentifier(k)} = $${k}`);
-        values[k] = value;
-        paramKeys.push(k);
-      }
-    }
+    const sql = await this.buildWhereNode(where, ctx, true);
 
     return {
-      whereClause: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
-      values,
-      keys: paramKeys,
-      dbSchema: effectiveDbSchema,
+      whereClause: sql ? `WHERE ${sql}` : '',
+      values: ctx.values,
+      keys: ctx.keys,
+      dbSchema: ctx.dbSchema,
     };
   }
 
@@ -666,7 +910,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     const { whereClause, values, keys, dbSchema } =
       await this.buildWhere(where);
-    if (!keys.length) {
+    if (!whereClause) {
       throw new Error(
         `find() on ${this.entityClass.name} requires at least one condition. ` +
           `Use findAll() to query without filters.`,

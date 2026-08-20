@@ -107,7 +107,36 @@ await PhotoEntity.query().where({ is_public: true }).getCount(); // COUNT(*)
 const { sql, values } = await PhotoEntity.query().where({ is_public: true }).toYql(); // без выполнения
 ```
 
-Условия — только равенство (AND). Поля в WHERE/ORDER BY валидируются по метаданным сущности.
+WHERE поддерживает операторы сравнения, логические группы `$or`/`$and` и JSON-операторы. Поля в WHERE/ORDER BY валидируются по метаданным сущности.
+
+### WHERE-операторы
+
+```ts
+await UserEntity.findAll({
+  $or: [
+    { balance: { $gte: 100 } },
+    { is_admin: true },
+  ],
+  is_banned: false,
+});
+```
+
+Поддерживаемые операторы:
+
+- `$eq` — равенство (`=`), используется по умолчанию при `{ field: value }`.
+- `$ne` — не равно (`!=`), поддерживает `null` (`IS NOT NULL`).
+- `$gt`, `$gte`, `$lt`, `$lte` — числовые/строковые сравнения.
+- `$like` — `LIKE` (только строки).
+- `$in` — `IN (...)` (массив непустой).
+- `$between` — `BETWEEN lo AND hi` (массив из двух значений).
+- `$jsonExists` / `$jsonValue` — для JSON/JSON-document колонок.
+
+Логические группы:
+
+- `$and: [...]` — объединяет вложенные условия через `AND`.
+- `$or: [...]` — объединяет вложенные условия через `OR`.
+
+Группы можно вкладывать друг в друга.
 
 ## Декораторы
 
