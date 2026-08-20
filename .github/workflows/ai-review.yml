@@ -6,10 +6,10 @@ on:
       - opened
       - reopened
       - synchronize
+      - labeled
 
 permissions:
   pull-requests: write
-  models: read
 
 concurrency:
   group: ai-review-${{ github.event.pull_request.number }}
@@ -20,21 +20,67 @@ jobs:
     name: DeepSeek Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Защита от DoS и лишнего расхода токенов:
+    # 1. Не запускаем на draft-PR.
+    # 2. Автоматически запускаем только для OWNER/MEMBER/COLLABORATOR.
+    # 3. Внешние контрибьюторы могут получить ревью, только если мейнтейнер
+    #    повесит метку "ai review" (триггер labeled).
+    # 4. Ограничиваем размер diff (max-length) и исключаем lock/генерируемые файлы.
+    if: |
+      !github.event.pull_request.draft && (
+        contains(github.event.pull_request.labels.*.name, 'ai review') ||
+        github.event.pull_request.author_association == 'OWNER' ||
+        github.event.pull_request.author_association == 'MEMBER' ||
+        github.event.pull_request.author_association == 'COLLABORATOR'
+      )
     steps:
       - name: DeepSeek Code Review
         uses: hustcer/deepseek-review@v1
         with:
-          chat-token: ${{ secrets.GITHUB_TOKEN }}
-          model: 'azureml-deepseek/DeepSeek-R1'
-          base-url: 'https://models.github.ai/inference'
+          # Токен, endpoint и модель задаются через секреты/переменные репозитория,
+          # чтобы можно было подключить собственного агента/провайдера.
+          chat-token: ${{ secrets.DEEPSEEK_CHAT_TOKEN }}
+          base-url: ${{ secrets.DEEPSEEK_BASE_URL }}
+          model: ${{ vars.DEEPSEEK_MODEL || 'deepseek/deepseek-v4-flash' }}
           max-length: 12000
+          exclude-patterns: 'pnpm-lock.yaml,package-lock.json,yarn.lock,*.lock,dist/**,coverage/**,node_modules/**,*.min.js,*.min.css'
           sys-prompt: |
-            You are a thorough code review assistant for a TypeScript ORM project.
-            Analyze the pull request diff and provide actionable feedback:
-            - Point out bugs, logic errors, or potential regressions.
-            - Highlight security issues (especially around SQL, encryption, or auth).
-            - Note TypeScript typing problems or missing edge-case handling.
-            - Suggest improvements for readability, maintainability, and test coverage.
-            Be concise but specific. Include code snippets where helpful.
+            Ты — внимательный ассистент по code review для TypeScript ORM-проекта.
+            Анализируй изменения в pull request и давай конкретные, actionable замечания на русском языке:
+            - Указывай на баги, логические ошибки и потенциальные регрессии.
+            - Подсвечивай проблемы безопасности (особенно связанные с SQL, шифрованием или авторизацией).
+            - Отмечай проблемы TypeScript-типизации и необработанные крайние случаи.
+            - Предлагай улучшения по читаемости, поддерживаемости и покрытии тестами.
+            Будь кратким, но конкретным. При необходимости приводи короткие фрагменты кода.
+
+            В конце ответа обязательно добавь ровно одну скрытую HTML-строку:
+            - `<!-- AI_REVIEW_SEVERITY: CRITICAL -->` если есть критические или блокирующие проблемы.
+            - `<!-- AI_REVIEW_SEVERITY: OK -->` если критических проблем нет.
+            Не объясняй назначение этой строки и не показывай её как отдельный видимый элемент.
           user-prompt: |
-            Please review the following code changes. Focus on correctness, safety, and maintainability.
+            Проведи code review следующих изменений. Сфокусируйся на корректности, безопасности и поддерживаемости. Ответ давай на русском языке.
+
+      - name: Check for critical issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          echo "Waiting for the AI review to be posted..."
+          sleep 5
+
+          pr_number="${{ github.event.pull_request.number }}"
+          repo="${{ github.repository }}"
+
+          echo "Fetching PR reviews..."
+          review_bodies=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --jq '.[].body' -r)
+
+          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: CRITICAL -->'; then
+            echo "::error::AI review detected CRITICAL issues. Failing the workflow."
+            exit 1
+          fi
+
+          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: OK -->'; then
+            echo "AI review found no critical issues."
+          else
+            echo "::warning::Severity marker not found in AI review; cannot determine critical status. Continuing without failure."
+          fi
