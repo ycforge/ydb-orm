@@ -1,0 +1,8 @@
+# OWNERS defines who can approve and review changes in this repository.
+# Format follows the Kubernetes OWNERS file convention.
+
+approvers:
+  - mimbol22
+
+reviewers:
+  - mimbol22
