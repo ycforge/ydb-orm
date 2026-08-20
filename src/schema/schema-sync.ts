@@ -111,7 +111,7 @@ const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
 /**
  * Строит ожидаемую схему таблицы по метаданным сущности:
  * колонки + synthetic {field}_bi колонки blind index.
- * PK — из @YdbPrimaryColumn, иначе fallback на `uuid`.
+ * Требует явно объявленного первичного ключа через @YdbPrimaryColumn.
  */
 export function buildExpectedTableSchema(
   meta: YdbEntityMetadata,
@@ -121,7 +121,14 @@ export function buildExpectedTableSchema(
     if (ef.blindIndex) columns[`${ef.propertyKey}_bi`] = 'Utf8';
   }
 
-  const primaryKey = meta.primaryKeys.length ? [...meta.primaryKeys] : ['uuid'];
+  if (meta.primaryKeys.length === 0) {
+    throw new Error(
+      `Cannot build schema for entity ${meta.target.name}: ` +
+        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+    );
+  }
+
+  const primaryKey = [...meta.primaryKeys];
 
   for (const pk of primaryKey) {
     if (!columns[pk]) {
@@ -145,7 +152,7 @@ export function buildExpectedTableSchema(
   const ttl = ttlOptions
     ? {
         interval: ttlOptions.interval,
-        column: ttlOptions.column ?? primaryKey[0] ?? 'uuid',
+        column: ttlOptions.column ?? primaryKey[0],
       }
     : undefined;
 

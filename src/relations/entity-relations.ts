@@ -372,11 +372,13 @@ function resolveJoinColumn(
   return joinColumn(proxy);
 }
 
-/** Возвращает первый PK из метаданных или fallback на 'uuid' */
+/** Возвращает первый PK из метаданных. Бросает ошибку, если PK не объявлен. */
 function getPrimaryKey(target: typeof YdbBaseEntity): string {
   const meta = getYdbEntityMetadata(target);
-  if (meta?.primaryKeys?.length) return meta.primaryKeys[0];
-  return 'uuid';
+  if (!meta?.primaryKeys?.length) {
+    throw new Error(`Entity ${target.name} must declare a primary key`);
+  }
+  return meta.primaryKeys[0];
 }
 
 /**

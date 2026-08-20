@@ -7,6 +7,7 @@ import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encr
 import {
   YdbEntity,
   YdbColumn,
+  YdbPrimaryColumn,
   YdbEncrypted,
   YdbSecurityAAD,
   YdbBaseEntity,
@@ -15,12 +16,9 @@ import {
 /** Сущность с AAD-полем для проверки запрета updateBy по шифрованным полям. */
 @YdbEntity('aad_test')
 class AadEntity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
-  declare uuid: string;
-
   @YdbSecurityAAD()
-  @YdbColumn('Utf8')
-  tenant_id?: string;
+  @YdbPrimaryColumn('Uuid')
+  declare uuid: string;
 
   @YdbEncrypted()
   @YdbColumn('Utf8')

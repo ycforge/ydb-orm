@@ -172,10 +172,18 @@ export function getManyToManyJoinTables(
         );
       }
 
-      const ownerPk = meta.primaryKeys[0] ?? 'uuid';
-      const inversePk = inverseMeta.primaryKeys[0] ?? 'uuid';
-      void ownerPk;
-      void inversePk;
+      if (meta.primaryKeys.length === 0) {
+        throw new Error(
+          `Cannot build many-to-many join table for entity ${Entity.name}: ` +
+            `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+        );
+      }
+      if (inverseMeta.primaryKeys.length === 0) {
+        throw new Error(
+          `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
+            `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+        );
+      }
 
       const joinColumn = joinTable.joinColumn ?? `${meta.tableName}_uuid`;
       const inverseJoinColumn =

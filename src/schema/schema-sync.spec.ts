@@ -44,9 +44,9 @@ class TestUserEntity extends YdbBaseEntity {
   is_active: boolean;
 }
 
-@YdbEntity('test_fallback_pk')
-class TestFallbackPkEntity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
+@YdbEntity('test_explicit_uuid_pk')
+class TestExplicitUuidPkEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
   uuid: string;
 
   @YdbColumn('Int64')
@@ -101,7 +101,7 @@ describe('entity registry', () => {
   it('registers classes decorated with @YdbEntity', () => {
     const registered = getRegisteredYdbEntities();
     expect(registered).toContain(TestUserEntity);
-    expect(registered).toContain(TestFallbackPkEntity);
+    expect(registered).toContain(TestExplicitUuidPkEntity);
   });
 });
 
@@ -120,15 +120,15 @@ describe('buildExpectedTableSchema', () => {
     expect(schema.primaryKey).toEqual(['uuid']);
   });
 
-  it('falls back to uuid primary key when @YdbPrimaryColumn is not used', () => {
-    const schema = buildExpectedTableSchema(meta(TestFallbackPkEntity));
+  it('uses declared uuid primary key when @YdbPrimaryColumn is used', () => {
+    const schema = buildExpectedTableSchema(meta(TestExplicitUuidPkEntity));
 
     expect(schema.primaryKey).toEqual(['uuid']);
   });
 
-  it('throws when primary key column is not declared', () => {
+  it('throws when no primary key is declared', () => {
     expect(() => buildExpectedTableSchema(meta(TestNoPkEntity))).toThrow(
-      /primary key column "uuid" is not declared/,
+      /no primary key is declared/,
     );
   });
 });

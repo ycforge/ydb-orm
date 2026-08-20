@@ -3,8 +3,8 @@ import { describe, it, expect } from '@jest/globals';
 import {
   YdbEntity,
   YdbColumn,
-  YdbBaseEntity,
   YdbPrimaryColumn,
+  YdbBaseEntity,
   YdbEncrypted,
   Base64TestEncryptionProvider,
 } from '../src/index.js';
@@ -13,18 +13,27 @@ import { createMockExecutor } from './helpers/mock-executor.js';
 
 @YdbEntity('test_users')
 class TestUser extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid!: string;
+
   @YdbColumn('Utf8')
   name!: string;
 }
 
 @YdbEntity('test_posts')
 class TestPost extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid!: string;
+
   @YdbColumn('Utf8')
   title!: string;
 }
 
 @YdbEntity('test_simple')
 class TestSimple extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid!: string;
+
   @YdbColumn('Utf8')
   value!: string;
 }

@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import {
   YdbEntity,
   YdbColumn,
+  YdbPrimaryColumn,
   YdbBaseEntity,
   BeforeInsert,
   BeforeRemove,
@@ -12,7 +13,7 @@ const calls: string[] = [];
 
 @YdbEntity('hook_test')
 class HookEntity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
+  @YdbPrimaryColumn('Uuid')
   declare uuid: string;
 
   @YdbColumn('Utf8')
