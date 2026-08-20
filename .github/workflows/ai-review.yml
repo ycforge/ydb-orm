@@ -1,0 +1,40 @@
+name: AI Code Review
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+
+permissions:
+  pull-requests: write
+  models: read
+
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deepseek-review:
+    name: DeepSeek Code Review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: DeepSeek Code Review
+        uses: hustcer/deepseek-review@v1
+        with:
+          chat-token: ${{ secrets.GITHUB_TOKEN }}
+          model: 'azureml-deepseek/DeepSeek-R1'
+          base-url: 'https://models.github.ai/inference'
+          max-length: 12000
+          sys-prompt: |
+            You are a thorough code review assistant for a TypeScript ORM project.
+            Analyze the pull request diff and provide actionable feedback:
+            - Point out bugs, logic errors, or potential regressions.
+            - Highlight security issues (especially around SQL, encryption, or auth).
+            - Note TypeScript typing problems or missing edge-case handling.
+            - Suggest improvements for readability, maintainability, and test coverage.
+            Be concise but specific. Include code snippets where helpful.
+          user-prompt: |
+            Please review the following code changes. Focus on correctness, safety, and maintainability.
