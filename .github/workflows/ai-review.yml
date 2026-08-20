@@ -45,12 +45,42 @@ jobs:
           max-length: 12000
           exclude-patterns: 'pnpm-lock.yaml,package-lock.json,yarn.lock,*.lock,dist/**,coverage/**,node_modules/**,*.min.js,*.min.css'
           sys-prompt: |
-            You are a thorough code review assistant for a TypeScript ORM project.
-            Analyze the pull request diff and provide actionable feedback:
-            - Point out bugs, logic errors, or potential regressions.
-            - Highlight security issues (especially around SQL, encryption, or auth).
-            - Note TypeScript typing problems or missing edge-case handling.
-            - Suggest improvements for readability, maintainability, and test coverage.
-            Be concise but specific. Include code snippets where helpful.
+            Ты — внимательный ассистент по code review для TypeScript ORM-проекта.
+            Анализируй изменения в pull request и давай конкретные, actionable замечания на русском языке:
+            - Указывай на баги, логические ошибки и потенциальные регрессии.
+            - Подсвечивай проблемы безопасности (особенно связанные с SQL, шифрованием или авторизацией).
+            - Отмечай проблемы TypeScript-типизации и необработанные крайние случаи.
+            - Предлагай улучшения по читаемости, поддерживаемости и покрытии тестами.
+            Будь кратким, но конкретным. При необходимости приводи короткие фрагменты кода.
+
+            В конце ответа обязательно добавь ровно одну скрытую HTML-строку:
+            - `<!-- AI_REVIEW_SEVERITY: CRITICAL -->` если есть критические или блокирующие проблемы.
+            - `<!-- AI_REVIEW_SEVERITY: OK -->` если критических проблем нет.
+            Не объясняй назначение этой строки и не показывай её как отдельный видимый элемент.
           user-prompt: |
-            Please review the following code changes. Focus on correctness, safety, and maintainability.
+            Проведи code review следующих изменений. Сфокусируйся на корректности, безопасности и поддерживаемости. Ответ давай на русском языке.
+
+      - name: Check for critical issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          echo "Waiting for the AI review to be posted..."
+          sleep 5
+
+          pr_number="${{ github.event.pull_request.number }}"
+          repo="${{ github.repository }}"
+
+          echo "Fetching PR reviews..."
+          review_bodies=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --jq '.[].body' -r)
+
+          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: CRITICAL -->'; then
+            echo "::error::AI review detected CRITICAL issues. Failing the workflow."
+            exit 1
+          fi
+
+          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: OK -->'; then
+            echo "AI review found no critical issues."
+          else
+            echo "::warning::Severity marker not found in AI review; cannot determine critical status. Continuing without failure."
+          fi
