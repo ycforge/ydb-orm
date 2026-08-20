@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import {
   YdbEntity,
   YdbColumn,
+  YdbPrimaryColumn,
   YdbBaseEntity,
   YdbEnum,
   getYdbEnumMetadata,
@@ -22,7 +23,7 @@ enum Status {
 
 @YdbEntity('test_enum_utf8')
 class EnumUtf8Entity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
+  @YdbPrimaryColumn('Uuid')
   declare uuid: string;
 
   @YdbColumn('Utf8')
@@ -32,7 +33,7 @@ class EnumUtf8Entity extends YdbBaseEntity {
 
 @YdbEntity('test_enum_int32')
 class EnumInt32Entity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
+  @YdbPrimaryColumn('Uuid')
   declare uuid: string;
 
   @YdbColumn('Int32')
@@ -42,7 +43,7 @@ class EnumInt32Entity extends YdbBaseEntity {
 
 @YdbEntity('test_enum_nullable')
 class EnumNullableEntity extends YdbBaseEntity {
-  @YdbColumn('Uuid')
+  @YdbPrimaryColumn('Uuid')
   declare uuid: string;
 
   @YdbColumn('Utf8')

@@ -47,7 +47,8 @@ export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
 }
 
 /**
- * Помечает НЕзашифрованное поле как участника AAD (Additional Authenticated Data).
+ * Помечает поле первичного ключа как участника AAD (Additional Authenticated Data).
+ * Может применяться только к колонкам, объявленным через @YdbPrimaryColumn.
  */
 export function YdbSecurityAAD(): PropertyDecorator {
   return (target, propertyKey) => {

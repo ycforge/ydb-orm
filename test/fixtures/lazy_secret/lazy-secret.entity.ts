@@ -12,15 +12,15 @@ import {
  * Тестовая сущность для lazy decrypt (issue #18):
  * - secret_lazy — lazy-поле: не дешифруется при чтении из БД;
  * - secret_eager — обычное encrypted-поле: дешифруется сразу;
- * - tenant_id — AAD-поле для дешифровки.
+ * - uuid — PK и AAD-поле для дешифровки.
  * Шифруемые поля хранятся как Bytes — @YdbColumn для них не объявляется.
  */
 @YdbEntity('lazy_secrets')
 export class LazySecretEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
-  @YdbSecurityAAD()
   @YdbColumn('Utf8')
   tenant_id: string;
 

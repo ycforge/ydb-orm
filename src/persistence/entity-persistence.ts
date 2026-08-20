@@ -194,11 +194,16 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * PK-поля сущности: из метаданных (поддерживается составной PK),
-   * fallback — одиночный 'uuid'.
+   * PK-поля сущности: из метаданных (поддерживается составной PK).
+   * Бросает ошибку, если первичный ключ не объявлен через @YdbPrimaryColumn.
    */
   getPkFields(meta: YdbEntityMetadata): string[] {
-    return meta.primaryKeys.length ? meta.primaryKeys : ['uuid'];
+    if (meta.primaryKeys.length === 0) {
+      throw new Error(
+        `Entity ${this.entityClass.name} must declare at least one primary key via @YdbPrimaryColumn`,
+      );
+    }
+    return meta.primaryKeys;
   }
 
   /**
@@ -1218,7 +1223,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       const av = (instance as any)[aadName];
       if (av !== undefined && av !== null) aadFields[aadName] = String(av);
     }
-    const pkField = meta.primaryKeys[0] ?? 'uuid';
+    const pkField = this.getPkFields(meta)[0];
     const pkValue = (instance as any)[pkField];
 
     const plaintext = await provider.decrypt(

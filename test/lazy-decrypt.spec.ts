@@ -89,7 +89,7 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
 
     // AAD собран из @YdbSecurityAAD-полей инстанса
     expect(provider.decryptContexts[0].aadFields).toEqual({
-      tenant_id: 'tenant-1',
+      uuid: makeRow().uuid,
     });
     expect(provider.decryptContexts[0].primaryKeyValue).toBe(makeRow().uuid);
 

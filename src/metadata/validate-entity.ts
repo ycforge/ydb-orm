@@ -29,11 +29,25 @@ export function validateEntityMetadata(
     return [`Class ${entity.name} is not decorated with @YdbEntity`];
   }
 
-  const pkFields = meta.primaryKeys.length ? meta.primaryKeys : ['uuid'];
+  if (meta.primaryKeys.length === 0) {
+    issues.push(
+      `entity "${meta.target.name}" must declare at least one primary key via @YdbPrimaryColumn`,
+    );
+  }
+
+  const pkFields = meta.primaryKeys;
   for (const pk of pkFields) {
     if (!meta.schema[pk]) {
       issues.push(
         `primary key column "${pk}" is not declared via @YdbColumn/@YdbPrimaryColumn`,
+      );
+    }
+  }
+
+  for (const aadField of meta.aadFields) {
+    if (!pkFields.includes(aadField)) {
+      issues.push(
+        `@YdbSecurityAAD field "${aadField}" must be a primary key column`,
       );
     }
   }

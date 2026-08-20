@@ -123,7 +123,7 @@ export class YdbBaseEntity {
     return getOrCreateRepository(this).count(where, options);
   }
 
-  static async save<T extends YdbBaseEntity & { uuid?: string }>(
+  static async save<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     entity: T,
     options?: QueryOptions,

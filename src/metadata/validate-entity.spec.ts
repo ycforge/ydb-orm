@@ -1,7 +1,10 @@
 import 'reflect-metadata';
 import { YdbEntity } from '../decorators/entity.decorator.js';
 import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
-import { YdbEncrypted } from '../decorators/encryption.decorator.js';
+import {
+  YdbEncrypted,
+  YdbSecurityAAD,
+} from '../decorators/encryption.decorator.js';
 import {
   ManyToMany,
   JoinTable,
@@ -65,6 +68,16 @@ class NotAnEntity extends YdbBaseEntity {}
 class MissingPkColumn extends YdbBaseEntity {
   @YdbColumn('Utf8')
   name: string;
+}
+
+@YdbEntity('v_aad_on_non_pk')
+class AadOnNonPk extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbSecurityAAD()
+  @YdbColumn('Utf8')
+  tenant_id: string;
 }
 
 @YdbEntity('v_enc_pk')
@@ -170,10 +183,19 @@ describe('validateEntityMetadata', () => {
     ]);
   });
 
-  it('rejects entity whose fallback uuid PK column is missing', () => {
+  it('rejects entity without any primary key', () => {
     const issues = validateEntityMetadata(MissingPkColumn, ctx);
     expect(issues).toEqual([
-      expect.stringContaining('primary key column "uuid" is not declared'),
+      expect.stringContaining('must declare at least one primary key'),
+    ]);
+  });
+
+  it('rejects @YdbSecurityAAD on non-primary-key column', () => {
+    const issues = validateEntityMetadata(AadOnNonPk, ctx);
+    expect(issues).toEqual([
+      expect.stringContaining(
+        '@YdbSecurityAAD field "tenant_id" must be a primary key column',
+      ),
     ]);
   });
 

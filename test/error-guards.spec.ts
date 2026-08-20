@@ -165,7 +165,7 @@ describe('error guards: понятные fail-fast ошибки', () => {
       NoPkEntity.setExecutor(mock.executor);
 
       await expect(NoPkEntity.delete(uuid1)).rejects.toThrow(
-        /Cannot delete NoPkEntity by primary key: column "uuid" is not declared.*@YdbPrimaryColumn/s,
+        /Entity NoPkEntity must declare at least one primary key via @YdbPrimaryColumn/,
       );
       expect(mock.queries).toHaveLength(0);
     });
