@@ -200,6 +200,51 @@ describe('WHERE operators', () => {
     });
   });
 
+  describe('validation', () => {
+    it('throws on $like for non-string column', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.find({ balance: { $like: '100%' } }),
+      ).rejects.toThrow(/requires a string column/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('throws on $jsonExists for non-JSON column', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.find({ name: { $jsonExists: '$.foo' } }),
+      ).rejects.toThrow(/requires a JSON column/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('throws on empty $or / $and', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(WhereOperatorEntity.find({ $or: [] })).rejects.toThrow(
+        /requires a non-empty array/,
+      );
+      await expect(WhereOperatorEntity.find({ $and: [] })).rejects.toThrow(
+        /requires a non-empty array/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('throws on non-object items in $or', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.find({ $or: [null as any, 5 as any] }),
+      ).rejects.toThrow(/expects objects/);
+      expect(mock.queries).toHaveLength(0);
+    });
+  });
+
   describe('QueryBuilder', () => {
     it('supports orWhere()', async () => {
       const mock = createMockExecutor([[]]);
@@ -216,6 +261,20 @@ describe('WHERE operators', () => {
       expect(q.sql).toContain(
         '(`is_admin` = $is_admin_0_eq OR `balance` >= $balance_1_gte)',
       );
+    });
+
+    it('orWhere preserves existing $or object', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.query()
+        .where({ $or: { status: 'vip' } as any })
+        .orWhere({ is_admin: true })
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('`status` = $status_0_eq');
+      expect(q.sql).toContain('`is_admin` = $is_admin_1_eq');
     });
   });
 });

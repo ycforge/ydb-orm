@@ -126,10 +126,10 @@ await UserEntity.findAll({
 - `$eq` — равенство (`=`), используется по умолчанию при `{ field: value }`.
 - `$ne` — не равно (`!=`), поддерживает `null` (`IS NOT NULL`).
 - `$gt`, `$gte`, `$lt`, `$lte` — числовые/строковые сравнения.
-- `$like` — `LIKE` (только строки).
+- `$like` — `LIKE` (только `Utf8`-колонки).
 - `$in` — `IN (...)` (массив непустой).
 - `$between` — `BETWEEN lo AND hi` (массив из двух значений).
-- `$jsonExists` / `$jsonValue` — для JSON/JSON-document колонок.
+- `$jsonExists` / `$jsonValue` — для `Json` / `JsonDocument` / `@YdbJson()` колонок.
 
 Логические группы:
 

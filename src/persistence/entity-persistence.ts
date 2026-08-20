@@ -601,6 +601,21 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
+   * Проверяет, является ли колонка JSON-совместимой для JSON_EXISTS/JSON_VALUE.
+   */
+  private isJsonColumn(
+    meta: YdbEntityMetadata,
+    field: string,
+    fieldType: YdbPrimitive,
+  ): boolean {
+    return (
+      fieldType === 'Json' ||
+      fieldType === 'JsonDocument' ||
+      meta.jsonColumns.includes(field)
+    );
+  }
+
+  /**
    * Строит условие для одного оператора над полем.
    */
   private buildSingleOperatorCondition(
@@ -662,6 +677,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a string value.`,
           );
         }
+        if (fieldType !== 'Utf8') {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a string column (Utf8), got "${fieldType}".`,
+          );
+        }
         const name = paramName('like');
         addParam(name, operand, fieldType);
         return `${quotedField} LIKE $${name}`;
@@ -720,15 +740,30 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a string path.`,
           );
         }
+        if (!this.isJsonColumn(meta, field, fieldType)) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
+          );
+        }
         const name = `${field}_${ctx.counter++}_jsonexists`;
         addParam(name, operand, 'Utf8');
         return `JSON_EXISTS(${quotedField}, $${name})`;
       }
       case '$jsonValue': {
         const { path, equals } = operand as { path: string; equals: any };
-        if (typeof path !== 'string') {
+        if (typeof path !== 'string' || path.length === 0) {
           throw new Error(
-            `Operator "${op}" on field "${field}" requires a string path.`,
+            `Operator "${op}" on field "${field}" requires a non-empty string path.`,
+          );
+        }
+        if (equals === undefined) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires an "equals" value.`,
+          );
+        }
+        if (!this.isJsonColumn(meta, field, fieldType)) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
           );
         }
         const groupIdx = ctx.counter++;
@@ -767,12 +802,20 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       if (this.isLogicalKey(key)) {
         const combiner = key === '$or' ? 'OR' : 'AND';
         const list = Array.isArray(value) ? value : [value];
+        if (!list.length) {
+          throw new Error(
+            `Logical operator "${key}" on entity ${this.entityClass.name} requires a non-empty array.`,
+          );
+        }
         const subs: string[] = [];
         for (const sub of list) {
-          if (sub && typeof sub === 'object' && !Array.isArray(sub)) {
-            const subSql = await this.buildWhereNode(sub, ctx, false);
-            if (subSql) subs.push(subSql);
+          if (!sub || typeof sub !== 'object' || Array.isArray(sub)) {
+            throw new Error(
+              `Logical operator "${key}" on entity ${this.entityClass.name} expects objects, got ${typeof sub}.`,
+            );
           }
+          const subSql = await this.buildWhereNode(sub, ctx, false);
+          if (subSql) subs.push(subSql);
         }
         if (subs.length) {
           parts.push(`(${subs.join(` ${combiner} `)})`);

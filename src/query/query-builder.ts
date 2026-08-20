@@ -60,9 +60,12 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
    * Формирует объектный оператор $or, поддерживаемый buildWhere.
    */
   orWhere(criteria: Record<string, any>): this {
-    const currentOr = Array.isArray(this.whereValues.$or)
-      ? this.whereValues.$or
-      : [];
+    const existing = this.whereValues.$or;
+    const currentOr = Array.isArray(existing)
+      ? existing
+      : existing !== undefined
+        ? [existing]
+        : [];
     this.whereValues = {
       ...this.whereValues,
       $or: [...currentOr, criteria],
