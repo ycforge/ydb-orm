@@ -22,6 +22,10 @@ import {
   DatetimeType,
   Timestamp,
   TimestampType,
+  Json,
+  JsonType,
+  JsonDocument,
+  JsonDocumentType,
 } from '@ydbjs/value/primitive';
 import { Optional } from '@ydbjs/value/optional';
 
@@ -38,6 +42,8 @@ const nullTypeFactories = {
   Date: () => new DateType(),
   Datetime: () => new DatetimeType(),
   Timestamp: () => new TimestampType(),
+  Json: () => new JsonType(),
+  JsonDocument: () => new JsonDocumentType(),
 } satisfies Record<YdbPrimitive, () => unknown>;
 
 /** Нормализация JS-даты: принимает Date, число (мс) или ISO-строку. */
@@ -58,6 +64,10 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   Date: (value: Date | number | string) => new YdbDate(toJsDate(value)),
   Datetime: (value: Date | number | string) => new Datetime(toJsDate(value)),
   Timestamp: (value: Date | number | string) => new Timestamp(toJsDate(value)),
+  Json: (value: any) =>
+    new Json(typeof value === 'string' ? value : JSON.stringify(value)),
+  JsonDocument: (value: any) =>
+    new JsonDocument(typeof value === 'string' ? value : JSON.stringify(value)),
 };
 
 export function mapToYdb(type: YdbPrimitive, value: unknown) {

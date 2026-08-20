@@ -10,6 +10,8 @@ import {
   Date as YdbDate,
   Datetime,
   Timestamp,
+  Json,
+  JsonDocument,
 } from '@ydbjs/value/primitive';
 import { Optional } from '@ydbjs/value/optional';
 import { mapToYdb } from './mapper.js';
@@ -166,6 +168,44 @@ describe('mapToYdb', () => {
       expect(mapToYdb('Date', null)).toBeInstanceOf(Optional);
       expect(mapToYdb('Datetime', null)).toBeInstanceOf(Optional);
       expect(mapToYdb('Timestamp', null)).toBeInstanceOf(Optional);
+    });
+  });
+
+  describe('Json', () => {
+    it('wraps a string into Json value', () => {
+      const val = mapToYdb('Json', '{"a":1}');
+      expect(val).toBeInstanceOf(Json);
+      expect((val as any).value).toBe('{"a":1}');
+    });
+
+    it('serializes an object into Json value', () => {
+      const val = mapToYdb('Json', { a: 1 });
+      expect(val).toBeInstanceOf(Json);
+      expect((val as any).value).toBe('{"a":1}');
+    });
+
+    it('returns Optional<Json> for null', () => {
+      const val = mapToYdb('Json', null);
+      expect(val).toBeInstanceOf(Optional);
+    });
+  });
+
+  describe('JsonDocument', () => {
+    it('wraps a string into JsonDocument value', () => {
+      const val = mapToYdb('JsonDocument', '{"a":1}');
+      expect(val).toBeInstanceOf(JsonDocument);
+      expect((val as any).value).toBe('{"a":1}');
+    });
+
+    it('serializes an object into JsonDocument value', () => {
+      const val = mapToYdb('JsonDocument', { a: 1 });
+      expect(val).toBeInstanceOf(JsonDocument);
+      expect((val as any).value).toBe('{"a":1}');
+    });
+
+    it('returns Optional<JsonDocument> for null', () => {
+      const val = mapToYdb('JsonDocument', null);
+      expect(val).toBeInstanceOf(Optional);
     });
   });
 

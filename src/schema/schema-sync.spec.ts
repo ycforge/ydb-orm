@@ -4,6 +4,7 @@ import { Type_PrimitiveTypeId } from '@ydbjs/api/value';
 import { YdbEntity } from '../decorators/entity.decorator.js';
 import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
 import { YdbEncrypted } from '../decorators/encryption.decorator.js';
+import { YdbJson } from '../decorators/json.decorator.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
@@ -57,6 +58,22 @@ class TestExplicitUuidPkEntity extends YdbBaseEntity {
 class TestNoPkEntity extends YdbBaseEntity {
   @YdbColumn('Utf8')
   name: string;
+}
+
+@YdbEntity('test_json')
+class TestJsonEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbColumn('Json')
+  payload: any;
+
+  @YdbColumn('JsonDocument')
+  document: any;
+
+  @YdbJson()
+  @YdbColumn('Utf8')
+  metadata: any;
 }
 
 @YdbEntity('test_tags')
@@ -180,6 +197,22 @@ describe('generateCreateTableYql', () => {
         ')',
     );
   });
+
+  it('generates CREATE TABLE with Json and JsonDocument columns', () => {
+    const yql = generateCreateTableYql(
+      buildExpectedTableSchema(meta(TestJsonEntity)),
+    );
+
+    expect(yql).toBe(
+      'CREATE TABLE `test_json` (\n' +
+        '  `uuid` Uuid,\n' +
+        '  `payload` Json,\n' +
+        '  `document` JsonDocument,\n' +
+        '  `metadata` Utf8,\n' +
+        '  PRIMARY KEY (`uuid`)\n' +
+        ')',
+    );
+  });
 });
 
 describe('@YdbIndex metadata', () => {
@@ -222,6 +255,22 @@ describe('checkTableSchema', () => {
         ['secret', Type_PrimitiveTypeId.STRING],
         ['is_active', Type_PrimitiveTypeId.BOOL],
         ['secret_bi', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+
+    expect(check.missingColumns).toEqual([]);
+    expect(check.typeMismatches).toEqual([]);
+  });
+
+  it('passes for Json and JsonDocument columns', () => {
+    const jsonExpected = buildExpectedTableSchema(meta(TestJsonEntity));
+    const check = checkTableSchema(
+      jsonExpected,
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['payload', Type_PrimitiveTypeId.JSON],
+        ['document', Type_PrimitiveTypeId.JSON_DOCUMENT],
+        ['metadata', Type_PrimitiveTypeId.UTF8],
       ]),
     );
 
