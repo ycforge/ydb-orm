@@ -72,14 +72,15 @@ jobs:
           repo="${{ github.repository }}"
 
           echo "Fetching PR reviews..."
-          review_bodies=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --jq '.[].body' -r)
+          # gh api не поддерживает флаг -r; забираем JSON-массив тел review и ищем маркер в нём.
+          review_bodies=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --jq '[.[].body]')
 
-          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: CRITICAL -->'; then
+          if echo "$review_bodies" | grep -q 'AI_REVIEW_SEVERITY: CRITICAL'; then
             echo "::error::AI review detected CRITICAL issues. Failing the workflow."
             exit 1
           fi
 
-          if echo "$review_bodies" | grep -q '<!-- AI_REVIEW_SEVERITY: OK -->'; then
+          if echo "$review_bodies" | grep -q 'AI_REVIEW_SEVERITY: OK'; then
             echo "AI review found no critical issues."
           else
             echo "::warning::Severity marker not found in AI review; cannot determine critical status. Continuing without failure."
