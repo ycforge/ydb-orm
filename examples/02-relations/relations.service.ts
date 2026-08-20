@@ -26,7 +26,7 @@ export class RelationsService {
 
       const user = new UserEntity();
       user.name = 'Иван';
-      user.organization = 'acme'; // AAD-поле
+      user.organization = 'acme';
       user.email = 'ivan@example.com';
       user.government_id = '1234567890';
       await UserEntity.save(user, opts);

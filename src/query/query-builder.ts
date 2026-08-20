@@ -55,6 +55,31 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return this.where(criteria);
   }
 
+  /**
+   * Добавить условие JSON_EXISTS для JSON-колонки.
+   * Колонка должна быть объявлена как `@YdbColumn('Json')`, `@YdbColumn('JsonDocument')`
+   * или `@YdbJson()`.
+   */
+  andWhereJsonExists(column: string, path: string): this {
+    this.whereValues = {
+      ...this.whereValues,
+      [column]: { $jsonExists: path },
+    };
+    return this;
+  }
+
+  /**
+   * Добавить условие JSON_VALUE = значение для JSON-колонки.
+   * Значение сравнивается как строка (Utf8).
+   */
+  andWhereJsonValue(column: string, path: string, value: any): this {
+    this.whereValues = {
+      ...this.whereValues,
+      [column]: { $jsonValue: { path, equals: value } },
+    };
+    return this;
+  }
+
   orderBy(field: string, direction: OrderDirection = 'ASC'): this {
     this.orderClauses = [{ field, direction }];
     return this;

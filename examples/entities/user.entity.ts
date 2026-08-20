@@ -6,8 +6,8 @@
  *    по нему можно искать через find/findAll (hash значения).
  *  - government_id — шифруется БЕЗ blind index: хранится только ciphertext,
  *    поиск по нему невозможен.
- *  - organization — незашифрованное поле, участвует в AAD (Additional
- *    Authenticated Data) при шифровании остальных полей.
+ *  - uuid — первичный ключ; участвует в AAD (Additional Authenticated Data)
+ *    при шифровании остальных полей. @YdbSecurityAAD разрешён только на PK.
  */
 import {
   YdbEntity,
@@ -26,13 +26,13 @@ import { ProfileEntity } from './profile.entity.js';
 @YdbEntity('users')
 @EagerLoad(['posts', 'profile'])
 export class UserEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
   @YdbColumn('Utf8')
   name: string;
 
-  @YdbSecurityAAD()
   @YdbColumn('Utf8')
   organization: string;
 

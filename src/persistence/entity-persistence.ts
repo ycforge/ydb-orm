@@ -273,6 +273,36 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return value;
   }
 
+  private convertJsonOut(key: string, value: any): any {
+    if (value === null || value === undefined) return value;
+    const meta = this.getMeta();
+    const dbSchema = getEntityDbSchema(meta);
+    const dbType = dbSchema[key];
+    if (
+      meta.jsonColumns.includes(key) ||
+      dbType === 'Json' ||
+      dbType === 'JsonDocument'
+    ) {
+      return typeof value === 'string' ? value : JSON.stringify(value);
+    }
+    return value;
+  }
+
+  private convertJsonIn(key: string, value: any): any {
+    if (value === null || value === undefined) return value;
+    const meta = this.getMeta();
+    const dbSchema = getEntityDbSchema(meta);
+    const dbType = dbSchema[key];
+    if (
+      meta.jsonColumns.includes(key) ||
+      dbType === 'Json' ||
+      dbType === 'JsonDocument'
+    ) {
+      return typeof value === 'string' ? JSON.parse(value) : value;
+    }
+    return value;
+  }
+
   private bindParams(
     query: any,
     data: Record<string, any>,
@@ -288,6 +318,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       if (!type) throw new Error(`No schema for field: ${k}`);
       const enumMeta = enums.find((e) => e.propertyKey === k);
       value = this.convertEnumOut(value, enumMeta);
+      value = this.convertJsonOut(k, value);
       query.parameter(k, mapToYdb(type, value));
     }
   }
@@ -490,14 +521,54 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         );
       }
     }
-    const conditions = keys
-      .map((k) => `${quoteIdentifier(k)} = $${k}`)
-      .join(' AND ');
+
+    const conditions: string[] = [];
+    const values: Record<string, any> = {};
+    const paramKeys: string[] = [];
+    const effectiveDbSchema = { ...dbSchema };
+
+    for (const k of keys) {
+      const value = processedWhere[k];
+      if (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        ('$jsonExists' in value || '$jsonValue' in value)
+      ) {
+        if ('$jsonExists' in value) {
+          const paramName = `${k}__jsonexists`;
+          conditions.push(`JSON_EXISTS(${quoteIdentifier(k)}, $${paramName})`);
+          values[paramName] = value.$jsonExists;
+          paramKeys.push(paramName);
+          effectiveDbSchema[paramName] = 'Utf8';
+        } else {
+          const { path, equals } = value.$jsonValue as {
+            path: string;
+            equals: any;
+          };
+          const pathParam = `${k}__jsonvalue_path`;
+          const valParam = `${k}__jsonvalue_val`;
+          conditions.push(
+            `JSON_VALUE(${quoteIdentifier(k)}, $${pathParam}) = $${valParam}`,
+          );
+          values[pathParam] = path;
+          values[valParam] = equals;
+          paramKeys.push(pathParam, valParam);
+          effectiveDbSchema[pathParam] = 'Utf8';
+          effectiveDbSchema[valParam] = 'Utf8';
+        }
+      } else {
+        conditions.push(`${quoteIdentifier(k)} = $${k}`);
+        values[k] = value;
+        paramKeys.push(k);
+      }
+    }
+
     return {
-      whereClause: keys.length ? `WHERE ${conditions}` : '',
-      values: processedWhere,
-      keys,
-      dbSchema,
+      whereClause: conditions.length ? `WHERE ${conditions.join(' AND ')}` : '',
+      values,
+      keys: paramKeys,
+      dbSchema: effectiveDbSchema,
     };
   }
 
@@ -541,7 +612,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     for (const [key, value] of Object.entries(row)) {
       if (isSyntheticColumn(meta, key)) continue;
       const enumMeta = enums.find((e) => e.propertyKey === key);
-      (instance as any)[key] = this.convertEnumIn(value, enumMeta);
+      let converted = this.convertEnumIn(value, enumMeta);
+      converted = this.convertJsonIn(key, converted);
+      (instance as any)[key] = converted;
     }
 
     const lazyFields = meta.encryptedFields.filter((ef) => ef.lazy);
@@ -960,7 +1033,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         rows.forEach((row, i) => {
           for (const k of keys) {
-            query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], row[k]));
+            const value = this.convertJsonOut(k, row[k]);
+            query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], value));
           }
         });
 
@@ -1016,20 +1090,29 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const value = data[ef.propertyKey];
         if (value === null || value === undefined) continue;
 
+        let aadFields: Record<string, string> = {};
         if (!ef.aadOverride && meta.aadFields.length) {
-          throw new Error(
-            `updateBy() on ${this.entityClass.name} cannot update encrypted field "${ef.propertyKey}": ` +
-              `entity has @YdbSecurityAAD fields and no aadOverride is set — ` +
-              `AAD cannot be reconstructed without the full row`,
+          const missingAadFields = meta.aadFields.filter(
+            (f) => where[f] === undefined || where[f] === null,
+          );
+          if (missingAadFields.length) {
+            throw new Error(
+              `updateBy() on ${this.entityClass.name} cannot update encrypted field "${ef.propertyKey}": ` +
+                `AAD field(s) ${missingAadFields.map((f) => `"${f}"`).join(', ')} ` +
+                `are not fixed by the where predicate; set them in where or use aadOverride`,
+            );
+          }
+          aadFields = Object.fromEntries(
+            meta.aadFields.map((f) => [f, String(where[f])]),
           );
         }
-        const aad = ef.aadOverride ?? this.buildAAD({}, meta.aadFields);
+        const aad = ef.aadOverride ?? this.buildAAD(aadFields, meta.aadFields);
         const context: YdbEncryptionContext = {
           entityName: this.entityClass.name,
           tableName: meta.tableName,
           fieldName: ef.propertyKey,
-          primaryKeyValue: undefined,
-          aadFields: {},
+          primaryKeyValue: this.pkValueForContext(meta, where),
+          aadFields,
         };
 
         data[ef.propertyKey] = await encryptionProvider.encrypt(

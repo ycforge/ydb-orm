@@ -12,8 +12,9 @@ import {
   YdbSecurityAAD,
   YdbBaseEntity,
 } from '../src/index.js';
+import type { YdbEncryptionContext } from '../src/index.js';
 
-/** Сущность с AAD-полем для проверки запрета updateBy по шифрованным полям. */
+/** Сущность с одним AAD-полем (PK). */
 @YdbEntity('aad_test')
 class AadEntity extends YdbBaseEntity {
   @YdbSecurityAAD()
@@ -23,6 +24,51 @@ class AadEntity extends YdbBaseEntity {
   @YdbEncrypted()
   @YdbColumn('Utf8')
   secret?: string;
+}
+
+/** Сущность с несколькими AAD-полями (оба PK). */
+@YdbEntity('aad_multi_test')
+class AadMultiEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Uuid')
+  declare tenant_id: string;
+
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Uuid')
+  declare user_id: string;
+
+  @YdbEncrypted()
+  @YdbColumn('Utf8')
+  secret?: string;
+}
+
+/** Сущность со составным PK, где AAD только на части PK-колонок. */
+@YdbEntity('aad_composite_test')
+class AadCompositeEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Uuid')
+  declare user_uuid: string;
+
+  @YdbPrimaryColumn('Uuid')
+  declare role_uuid: string;
+
+  @YdbEncrypted()
+  @YdbColumn('Utf8')
+  secret?: string;
+}
+
+/** Провайдер, записывающий контекст encrypt для проверки AAD. */
+class RecordingEncryptionProvider extends Base64TestEncryptionProvider {
+  encryptContexts: YdbEncryptionContext[] = [];
+
+  override async encrypt(
+    plaintext: string,
+    aad: string,
+    context: YdbEncryptionContext,
+  ): Promise<Uint8Array> {
+    this.encryptContexts.push(context);
+    return super.encrypt(plaintext, aad, context);
+  }
 }
 
 const userRow = {
@@ -45,6 +91,12 @@ describe('updateBy() / deleteBy()', () => {
     AadEntity.setExecutor(undefined as any);
     AadEntity.setEncryptionProvider(undefined as any);
     AadEntity.setBlindIndexProvider(undefined as any);
+    AadMultiEntity.setExecutor(undefined as any);
+    AadMultiEntity.setEncryptionProvider(undefined as any);
+    AadMultiEntity.setBlindIndexProvider(undefined as any);
+    AadCompositeEntity.setExecutor(undefined as any);
+    AadCompositeEntity.setEncryptionProvider(undefined as any);
+    AadCompositeEntity.setBlindIndexProvider(undefined as any);
   });
 
   describe('updateBy()', () => {
@@ -193,15 +245,143 @@ describe('updateBy() / deleteBy()', () => {
       expect(mock.queries).toHaveLength(0);
     });
 
-    it('throws on encrypted field update when entity has AAD fields', async () => {
-      const provider = new Base64TestEncryptionProvider();
+    it('updates encrypted field when AAD field is fixed in where', async () => {
+      const provider = new RecordingEncryptionProvider();
       AadEntity.setEncryptionProvider(provider);
+      AadEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadEntity.setExecutor(mock.executor);
+
+      await AadEntity.updateBy(
+        { uuid: userRow.uuid },
+        { secret: 'new-secret' },
+      );
+
+      expect(mock.queries).toHaveLength(1);
+      const [q] = mock.queries;
+      expect(q.sql).toContain('UPDATE `aad_test`');
+      expect(q.sql).toContain('`secret` = $secret');
+
+      expect(provider.encryptContexts).toHaveLength(1);
+      expect(provider.encryptContexts[0].aadFields).toEqual({
+        uuid: userRow.uuid,
+      });
+      expect(provider.encryptContexts[0].primaryKeyValue).toBe(userRow.uuid);
+    });
+
+    it('updates encrypted field with multiple AAD fields in where', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadMultiEntity.setEncryptionProvider(provider);
+      AadMultiEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadMultiEntity.setExecutor(mock.executor);
+
+      await AadMultiEntity.updateBy(
+        {
+          tenant_id: '00000000-0000-0000-0000-000000000001',
+          user_id: '00000000-0000-0000-0000-000000000002',
+        },
+        { secret: 'new-secret' },
+      );
+
+      expect(provider.encryptContexts[0].aadFields).toEqual({
+        tenant_id: '00000000-0000-0000-0000-000000000001',
+        user_id: '00000000-0000-0000-0000-000000000002',
+      });
+    });
+
+    it('partial update of only encrypted field with AAD works', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadEntity.setEncryptionProvider(provider);
+      AadEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadEntity.setExecutor(mock.executor);
+
+      await AadEntity.updateBy(
+        { uuid: userRow.uuid },
+        { secret: 'only-secret' },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('`secret` = $secret');
+      expect(Object.keys(q.params)).toContain('secret');
+      expect(Object.keys(q.params)).toContain('uuid');
+      expect(provider.encryptContexts[0].aadFields).toEqual({
+        uuid: userRow.uuid,
+      });
+    });
+
+    it('throws on encrypted field update when AAD field is not fixed by where', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadEntity.setEncryptionProvider(provider);
+      AadEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
       AadEntity.setExecutor(mock.executor);
 
       await expect(
-        AadEntity.updateBy({ tenant_id: 't1' }, { secret: 'new-secret' }),
-      ).rejects.toThrow(/cannot update encrypted field "secret"/);
+        AadEntity.updateBy({ unknown_field: 't1' }, { secret: 'new-secret' }),
+      ).rejects.toThrow(
+        /AAD field\(s\) "uuid" are not fixed by the where predicate/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('throws when AAD field is undefined in where', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadMultiEntity.setEncryptionProvider(provider);
+      AadMultiEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadMultiEntity.setExecutor(mock.executor);
+
+      await expect(
+        AadMultiEntity.updateBy(
+          { tenant_id: 't1', user_id: undefined },
+          { secret: 'new-secret' },
+        ),
+      ).rejects.toThrow(
+        /AAD field\(s\) "user_id" are not fixed by the where predicate/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('works with composite PK when AAD field is in where', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadCompositeEntity.setEncryptionProvider(provider);
+      AadCompositeEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadCompositeEntity.setExecutor(mock.executor);
+
+      await AadCompositeEntity.updateBy(
+        {
+          user_uuid: userRow.uuid,
+          role_uuid: '00000000-0000-0000-0000-000000000002',
+        },
+        { secret: 'new-secret' },
+      );
+
+      expect(provider.encryptContexts[0].aadFields).toEqual({
+        user_uuid: userRow.uuid,
+      });
+      expect(provider.encryptContexts[0].primaryKeyValue).toBe(
+        `${userRow.uuid}:00000000-0000-0000-0000-000000000002`,
+      );
+    });
+
+    it('fails with composite PK when AAD field is missing from where', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadCompositeEntity.setEncryptionProvider(provider);
+      AadCompositeEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadCompositeEntity.setExecutor(mock.executor);
+
+      await expect(
+        AadCompositeEntity.updateBy(
+          { role_uuid: 'r1' },
+          { secret: 'new-secret' },
+        ),
+      ).rejects.toThrow(
+        /AAD field\(s\) "user_uuid" are not fixed by the where predicate/,
+      );
       expect(mock.queries).toHaveLength(0);
     });
   });

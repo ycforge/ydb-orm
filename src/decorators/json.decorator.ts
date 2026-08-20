@@ -1,6 +1,5 @@
 import 'reflect-metadata';
-
-export const YDB_JSON_COLUMNS_KEY = 'ydb:jsonColumns';
+import { YDB_JSON_COLUMNS_KEY } from '../metadata/entity-metadata.js';
 
 /**
  * Декоратор свойства: колонка хранится как JSON-строка (Utf8 в БД),

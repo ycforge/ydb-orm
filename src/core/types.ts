@@ -9,4 +9,6 @@ export type YdbPrimitive =
   | 'Float'
   | 'Date'
   | 'Datetime'
-  | 'Timestamp';
+  | 'Timestamp'
+  | 'Json'
+  | 'JsonDocument';

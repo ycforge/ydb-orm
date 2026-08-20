@@ -102,6 +102,8 @@ const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
   Date: Type_PrimitiveTypeId.DATE,
   Datetime: Type_PrimitiveTypeId.DATETIME,
   Timestamp: Type_PrimitiveTypeId.TIMESTAMP,
+  Json: Type_PrimitiveTypeId.JSON,
+  JsonDocument: Type_PrimitiveTypeId.JSON_DOCUMENT,
 };
 
 const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
