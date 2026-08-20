@@ -56,6 +56,21 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
+   * Добавить условие, объединённое с предыдущими через OR.
+   * Формирует объектный оператор $or, поддерживаемый buildWhere.
+   */
+  orWhere(criteria: Record<string, any>): this {
+    const currentOr = Array.isArray(this.whereValues.$or)
+      ? this.whereValues.$or
+      : [];
+    this.whereValues = {
+      ...this.whereValues,
+      $or: [...currentOr, criteria],
+    };
+    return this;
+  }
+
+  /**
    * Добавить условие JSON_EXISTS для JSON-колонки.
    * Колонка должна быть объявлена как `@YdbColumn('Json')`, `@YdbColumn('JsonDocument')`
    * или `@YdbJson()`.
