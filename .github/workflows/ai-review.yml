@@ -20,12 +20,13 @@ jobs:
     name: DeepSeek Code Review
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     # Защита от DoS и лишнего расхода токенов:
     # 1. Не запускаем на draft-PR.
     # 2. Автоматически запускаем только для OWNER/MEMBER/COLLABORATOR.
     # 3. Внешние контрибьюторы могут получить ревью, только если мейнтейнер
     #    повесит метку "ai review" (триггер labeled).
-    # 4. Ограничиваем размер diff (max-length) и исключаем lock/генерируемые файлы.
+    # 4. Ограничиваем размер diff и исключаем lock/генерируемые файлы.
     if: |
       !github.event.pull_request.draft && (
         contains(github.event.pull_request.labels.*.name, 'ai review') ||
@@ -33,19 +34,24 @@ jobs:
         github.event.pull_request.author_association == 'MEMBER' ||
         github.event.pull_request.author_association == 'COLLABORATOR'
       )
+
     steps:
       - name: DeepSeek Code Review
         uses: hustcer/deepseek-review@v1
         with:
-          # Токен, endpoint и модель задаются через секреты/переменные репозитория,
-          # чтобы можно было подключить собственного агента/провайдера.
           chat-token: ${{ secrets.DEEPSEEK_CHAT_TOKEN }}
           base-url: ${{ secrets.DEEPSEEK_BASE_URL }}
           model: ${{ vars.DEEPSEEK_MODEL || 'deepseek/deepseek-v4-flash' }}
           max-length: 360000
           exclude-patterns: 'pnpm-lock.yaml,package-lock.json,yarn.lock,*.lock,dist/**,coverage/**,node_modules/**,*.min.js,*.min.css'
+
           sys-prompt: |
             Ты — code reviewer для TypeScript ORM-проекта.
+
+            Отвечай ТОЛЬКО на русском языке. Названия файлов, функций,
+            классов, API, SQL-конструкций и другие технические идентификаторы
+            оставляй в оригинальном виде.
+
             Анализируй именно изменения в pull request, но при необходимости
             проверяй окружающий код, чтобы понять их фактическое поведение.
 
@@ -98,11 +104,14 @@ jobs:
             - `<!-- AI_REVIEW_SEVERITY: CRITICAL -->` если есть хотя бы одна
               critical/high проблема, способная блокировать merge;
             - `<!-- AI_REVIEW_SEVERITY: OK -->` если таких проблем нет.
-            Не объясняй назначение этой строки и не показывай её как отдельный
-            видимый элемент.
+
+            Маркер severity обязателен и должен быть написан точно в указанном
+            виде. Не переводи его и не изменяй его содержимое.
 
           user-prompt: |
             Проведи code review этих изменений.
+
+            Пиши весь review ТОЛЬКО на русском языке.
 
             Ищи только реальные, существенные проблемы. Сначала оцени
             корректность и возможные регрессии, затем безопасность,
@@ -122,80 +131,109 @@ jobs:
             Если существенных проблем нет — одна строка:
             `Существенных замечаний нет.`
 
+            В самом конце обязательно добавь ровно один marker:
+            `<!-- AI_REVIEW_SEVERITY: CRITICAL -->`
+            или
+            `<!-- AI_REVIEW_SEVERITY: OK -->`
+
       - name: Check for critical issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_STARTED_AT: ${{ github.run_started_at }}
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Checking the latest AI review for PR #${PR_NUMBER}..."
+          echo "Checking AI review for PR #${PR_NUMBER}..."
+          echo "Expected commit: ${HEAD_SHA}"
+          echo "Workflow started at: ${RUN_STARTED_AT}"
 
-          # DeepSeek action may need a moment to publish the review.
-          # Retry instead of relying on a single fixed sleep.
           for attempt in {1..12}; do
-            reviews="$(
+            echo "Checking for AI review (attempt ${attempt}/12)..."
+
+            # ------------------------------------------------------------
+            # 1. Check Pull Request Reviews.
+            #
+            # DeepSeek may submit a proper PR review. In this case we can
+            # reliably associate it with the current HEAD using commit_id.
+            # ------------------------------------------------------------
+            review_body="$(
               gh api \
                 --paginate \
                 "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
                 --jq '
                   .[]
-                  | select(.user.login | endswith("[bot]"))
+                  | select(.user.login == "github-actions[bot]")
                   | select(.body != null)
                   | select(.commit_id != null)
-                  | {
-                      id,
-                      user: .user.login,
-                      body,
-                      commit_id,
-                      submitted_at
-                    }
-                '
+                  | select(.commit_id == $sha)
+                  | .body
+                ' \
+                --arg sha "${HEAD_SHA}" |
+                tail -n 1
             )"
 
-            # The API returns reviews chronologically, so the last matching
-            # review is the newest one.
-            latest_ai_review="$(
-              printf '%s\n' "$reviews" |
-                jq -s --arg sha "$HEAD_SHA" '
-                  map(select(.commit_id == $sha))
-                  | sort_by(.submitted_at)
-                  | last
-                '
-            )"
+            if [[ -n "${review_body}" ]]; then
+              echo "Found AI PR review for the current commit."
 
-            if [[ "$latest_ai_review" != "null" ]]; then
-              break
-            fi
+              if grep -Fq 'AI_REVIEW_SEVERITY: CRITICAL' <<< "${review_body}"; then
+                echo "::error::AI review detected CRITICAL issues."
+                exit 1
+              fi
 
-            if [[ "$attempt" -eq 12 ]]; then
-              echo "::error::No AI review for the current commit (${HEAD_SHA}) was found."
+              if grep -Fq 'AI_REVIEW_SEVERITY: OK' <<< "${review_body}"; then
+                echo "AI review found no critical issues."
+                exit 0
+              fi
+
+              echo "::error::AI PR review does not contain a valid severity marker."
               exit 1
             fi
 
-            echo "AI review not found yet (attempt ${attempt}/12), retrying..."
+            # ------------------------------------------------------------
+            # 2. Check ordinary PR/issue comments.
+            #
+            # Older comments must not be accepted. The `since` parameter
+            # restricts the search to comments created/updated after this
+            # workflow started.
+            # ------------------------------------------------------------
+            comment_body="$(
+              gh api \
+                --paginate \
+                "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100&sort=created&direction=desc&since=${RUN_STARTED_AT}" \
+                --jq '
+                  .[]
+                  | select(.user.login == "github-actions[bot]")
+                  | select(.body != null)
+                  | .body
+                ' |
+                head -n 1
+            )"
+
+            if [[ -n "${comment_body}" ]]; then
+              echo "Found AI PR comment from github-actions[bot]."
+
+              if grep -Fq 'AI_REVIEW_SEVERITY: CRITICAL' <<< "${comment_body}"; then
+                echo "::error::AI review detected CRITICAL issues."
+                exit 1
+              fi
+
+              if grep -Fq 'AI_REVIEW_SEVERITY: OK' <<< "${comment_body}"; then
+                echo "AI review found no critical issues."
+                exit 0
+              fi
+
+              echo "::error::AI PR comment does not contain a valid severity marker."
+              exit 1
+            fi
+
+            if [[ "${attempt}" -eq 12 ]]; then
+              echo "::error::No AI review from github-actions[bot] was found for the current workflow run."
+              exit 1
+            fi
+
             sleep 5
           done
-
-          review_id="$(jq -r '.id' <<< "$latest_ai_review")"
-          review_user="$(jq -r '.user' <<< "$latest_ai_review")"
-          review_commit="$(jq -r '.commit_id' <<< "$latest_ai_review")"
-          review_body="$(jq -r '.body' <<< "$latest_ai_review")"
-
-          echo "Found AI review #${review_id} from ${review_user} for commit ${review_commit}."
-
-          if grep -Fq 'AI_REVIEW_SEVERITY: CRITICAL' <<< "$review_body"; then
-            echo "::error::AI review detected CRITICAL issues."
-            exit 1
-          fi
-
-          if grep -Fq 'AI_REVIEW_SEVERITY: OK' <<< "$review_body"; then
-            echo "AI review found no critical issues."
-            exit 0
-          fi
-
-          echo "::error::AI review does not contain a valid severity marker."
-          exit 1
