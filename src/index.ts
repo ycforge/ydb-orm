@@ -116,9 +116,9 @@ export type {
   YdbBlindIndexProvider,
   YdbEncryptionContext,
 } from './encryption/ydb-encryption-provider.interface.js';
-export { Base64TestEncryptionProvider } from './encryption/base64-test-encryption.provider.js';
-// Готовые KMS/HMAC-провайдеры шифрования и blind index — в отдельном пакете
-// @ycforge/orm-security-providers (см. README).
+// Тестовая заглушка шифрования вынесена в отдельный пакет
+// @ycforge/js-dev-tools (см. README). Готовые KMS/HMAC-провайдеры —
+// в @ycforge/orm-security-providers.
 
 // Валидация
 export type {

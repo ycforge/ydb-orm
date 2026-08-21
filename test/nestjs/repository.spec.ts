@@ -10,7 +10,7 @@ import {
   YDB_QUERY,
   YDB_SCHEMA_SYNC,
 } from '../../src/core/constants.js';
-import { Base64TestEncryptionProvider } from '../../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 
 @Injectable()
 class UserService {
@@ -49,8 +49,8 @@ describe('YdbRepository DI', () => {
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
             auth_type: 'anonymous',
-            encryptionProvider: new Base64TestEncryptionProvider(),
-            blindIndexProvider: new Base64TestEncryptionProvider(),
+            encryptionProvider: new TestOnlyEncryptionProvider(),
+            blindIndexProvider: new TestOnlyEncryptionProvider(),
           }),
         }),
         YdbModule.forFeature([UserEntity]),

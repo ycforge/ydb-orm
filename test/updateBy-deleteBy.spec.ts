@@ -3,7 +3,7 @@ import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { TimestampEntity } from './fixtures/timestamp/timestamp.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import {
   YdbEntity,
   YdbColumn,
@@ -58,7 +58,7 @@ class AadCompositeEntity extends YdbBaseEntity {
 }
 
 /** Провайдер, записывающий контекст encrypt для проверки AAD. */
-class RecordingEncryptionProvider extends Base64TestEncryptionProvider {
+class RecordingEncryptionProvider extends TestOnlyEncryptionProvider {
   encryptContexts: YdbEncryptionContext[] = [];
 
   override async encrypt(
@@ -199,7 +199,7 @@ describe('updateBy() / deleteBy()', () => {
     });
 
     it('works with encryption provider', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);

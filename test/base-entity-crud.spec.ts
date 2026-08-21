@@ -4,7 +4,7 @@ import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from './fixtures/photo/photo.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { getEntityRuntime } from '../src/entity/entity-runtime.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -210,7 +210,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
 
   describe('save() — insert', () => {
     it('generates uuid and runs UPSERT when entity has no uuid', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -235,7 +235,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
     });
 
     it('generates UUID v7 by default and v4 when runtime generator is set', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -267,7 +267,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
     });
 
     it('skips undefined fields in UPSERT', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -285,7 +285,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
 
   describe('save() — update', () => {
     it('runs UPDATE RETURNING * when entity has uuid', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const updatedRow = {
@@ -312,7 +312,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
     });
 
     it('throws when updating non-existent entity', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -328,7 +328,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
     });
 
     it('excludes uuid from SET clause', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([
@@ -412,7 +412,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
     });
 
     it('splits into batches of 100', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       PhotoEntity.setEncryptionProvider(provider);
       PhotoEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -442,7 +442,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
 
   describe('encrypt / decrypt pipeline', () => {
     it('encrypts on save and decrypts on find', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       UserEntity.setEncryptionProvider(provider);
       UserEntity.setBlindIndexProvider(provider);
 

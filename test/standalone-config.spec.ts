@@ -6,8 +6,8 @@ import {
   YdbPrimaryColumn,
   YdbBaseEntity,
   YdbEncrypted,
-  Base64TestEncryptionProvider,
 } from '../src/index.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { configureEntities } from '../src/core/standalone.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 
@@ -58,7 +58,7 @@ describe('configureEntities', () => {
   });
 
   it('устанавливает encryptionProvider и blindIndexProvider если переданы', async () => {
-    const provider = new Base64TestEncryptionProvider();
+    const provider = new TestOnlyEncryptionProvider();
     const mock = createMockExecutor([[]]);
 
     configureEntities([TestEncrypted], {

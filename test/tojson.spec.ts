@@ -3,7 +3,7 @@ import { PhotoEntity } from './fixtures/photo/photo.entity.js';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 
 describe('toJSON()', () => {
   afterEach(() => {
@@ -87,7 +87,7 @@ describe('toJSON()', () => {
 
   describe('entity with encrypted fields (UserEntity)', () => {
     it('includes decrypted encrypted fields', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       // encrypted fields в mock-строке должны быть raw bytes (Bytes)
       const userRow = {
         uuid: 'aaaa0000-0000-0000-0000-000000000001',

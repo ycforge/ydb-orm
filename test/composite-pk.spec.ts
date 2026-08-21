@@ -4,7 +4,7 @@ import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from './fixtures/photo/photo.entity.js';
 import { MembershipEntity } from './fixtures/membership/membership.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 
 const userRow = {
   uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
@@ -236,7 +236,7 @@ describe('Composite PK CRUD', () => {
     });
 
     it('groups by columns after encryption (blind index adds _bi column)', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       PhotoEntity.setEncryptionProvider(provider);
       PhotoEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);

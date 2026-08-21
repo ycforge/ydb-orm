@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { WhereOperatorEntity } from './fixtures/where_operator/where-operator.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 
 describe('WHERE operators', () => {
   afterEach(() => {
@@ -161,7 +161,7 @@ describe('WHERE operators', () => {
 
   describe('encrypted fields', () => {
     it('still searches encrypted field by blind index for equality', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       WhereOperatorEntity.setEncryptionProvider(provider);
       WhereOperatorEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);
@@ -177,7 +177,7 @@ describe('WHERE operators', () => {
     });
 
     it('throws on non-equality operator for encrypted field', async () => {
-      const provider = new Base64TestEncryptionProvider();
+      const provider = new TestOnlyEncryptionProvider();
       WhereOperatorEntity.setEncryptionProvider(provider);
       WhereOperatorEntity.setBlindIndexProvider(provider);
       const mock = createMockExecutor([[]]);

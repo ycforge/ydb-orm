@@ -1,13 +1,13 @@
 import 'reflect-metadata';
 import { LazySecretEntity } from './fixtures/lazy_secret/lazy-secret.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import type { YdbEncryptionContext } from '../src/index.js';
 
 /**
- * Счётчик вызовов decrypt/encrypt по полям поверх Base64TestEncryptionProvider.
+ * Счётчик вызовов decrypt/encrypt по полям поверх TestOnlyEncryptionProvider.
  */
-class CountingEncryptionProvider extends Base64TestEncryptionProvider {
+class CountingEncryptionProvider extends TestOnlyEncryptionProvider {
   decryptCalls: string[] = [];
   encryptCalls: string[] = [];
   decryptContexts: YdbEncryptionContext[] = [];
@@ -32,7 +32,7 @@ class CountingEncryptionProvider extends Base64TestEncryptionProvider {
   }
 }
 
-// Base64TestEncryptionProvider сейчас "identity": ciphertext = utf8-байты plaintext
+// TestOnlyEncryptionProvider сейчас "identity": ciphertext = utf8-байты plaintext
 const ct = (s: string) => new TextEncoder().encode(s);
 const biHash = (s: string) => Buffer.from(`bi:${s}`, 'utf8').toString('base64');
 
