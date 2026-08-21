@@ -186,7 +186,11 @@ class Tag extends YdbBaseEntity {
 (без base64-кодирования — экономия ~33% по сравнению с `Utf8`). `decrypt` принимает
 `Uint8Array` из колонки `Bytes`. Blind index (`{field}_bi`) — обычная `Utf8`-колонка.
 
-`Base64TestEncryptionProvider` из пакета — заглушка для тестов, реальной криптографии в ней нет.
+Тестовая заглушка `TestOnlyEncryptionProvider` (без реальной криптографии, с громким
+WARNING при использовании) вынесена в отдельный dev-пакет
+[`@ycforge/js-dev-tools`](https://github.com/ycforge/js-dev-tools) — подключайте её
+только в тестах через `devDependencies`. Готовые боевые провайдеры (AES-256-GCM,
+HMAC-SHA256, KMS) — в пакете `@ycforge/orm-security-providers`.
 
 При `updateBy()` для зашифрованного поля ORM собирает AAD из значений AAD-полей, зафиксированных в `where` (например, по PK). Если AAD не может быть однозначно определён из предиката, ORM бросает ошибку — для явного переопределения можно использовать `aadOverride` в `@YdbEncrypted({ aadOverride: '...' })`.
 

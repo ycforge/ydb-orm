@@ -2,11 +2,11 @@ import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import type { YdbValidationProvider } from '../src/index.js';
 
 function setupEncryption() {
-  const provider = new Base64TestEncryptionProvider();
+  const provider = new TestOnlyEncryptionProvider();
   UserEntity.setEncryptionProvider(provider);
   UserEntity.setBlindIndexProvider(provider);
 }

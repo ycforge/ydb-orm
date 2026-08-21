@@ -6,7 +6,7 @@ import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { AuthKeyCredentialsProvider } from '../../src/credentials/auth-key-credentials-provider.js';
 import type { YdbExecutor } from '../../src/core/interfaces.js';
-import { Base64TestEncryptionProvider } from '../../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import type {
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
@@ -65,7 +65,7 @@ export async function createE2eContext(): Promise<E2eContext | null> {
   await driver.ready();
 
   const executor = query(driver) as unknown as YdbExecutor;
-  const encryptionProvider = new Base64TestEncryptionProvider();
+  const encryptionProvider = new TestOnlyEncryptionProvider();
 
   // Извлекаем путь БД из endpoint (параметр database)
   const url = new URL(endpoint);

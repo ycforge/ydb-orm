@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Base64TestEncryptionProvider } from '../src/encryption/base64-test-encryption.provider.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { validateYdbModuleOptions } from '../src/core/driver.js';
 import { configureEntities } from '../src/core/standalone.js';
 import { YdbCoreModule } from '../src/module/ydb-core.module.js';
@@ -67,7 +67,7 @@ describe('error guards: понятные fail-fast ошибки', () => {
     it('save() без blindIndexProvider — ошибка с подсказкой, как настроить', async () => {
       const mock = createMockExecutor([[]]);
       UserEntity.setExecutor(mock.executor);
-      UserEntity.setEncryptionProvider(new Base64TestEncryptionProvider());
+      UserEntity.setEncryptionProvider(new TestOnlyEncryptionProvider());
 
       const user = new UserEntity();
       user.email_encrypted = 'a@b.c';
