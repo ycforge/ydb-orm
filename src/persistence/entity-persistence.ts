@@ -1287,6 +1287,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     );
 
     const BATCH_SIZE = 100;
+    const enums = getYdbEnumMetadata(this.entityClass);
 
     for (let start = 0; start < dataList.length; start += BATCH_SIZE) {
       const batch = dataList.slice(start, start + BATCH_SIZE);
@@ -1320,7 +1321,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         rows.forEach((row, i) => {
           for (const k of keys) {
-            const value = this.convertJsonOut(k, row[k]);
+            const enumMeta = enums.find((e) => e.propertyKey === k);
+            let value = this.convertEnumOut(row[k], enumMeta);
+            value = this.convertJsonOut(k, value);
             query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], value));
           }
         });
