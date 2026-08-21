@@ -4,6 +4,10 @@ import {
   RelationMetadata,
 } from '../decorators/relation.decorators.js';
 import { getYdbIndexesMetadata } from '../decorators/index.decorator.js';
+import {
+  getYdbTtlMetadata,
+  validateYdbTtlAgainstSchema,
+} from '../decorators/ttl.decorator.js';
 import { getYdbEntityMetadata } from './entity-metadata.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 
@@ -71,6 +75,13 @@ export function validateEntityMetadata(
   ) {
     issues.push(
       `entity has blind index fields, but no blindIndexProvider is configured`,
+    );
+  }
+
+  const ttl = getYdbTtlMetadata(entity);
+  if (ttl) {
+    issues.push(
+      ...validateYdbTtlAgainstSchema(meta.target.name, ttl, meta.schema),
     );
   }
 
