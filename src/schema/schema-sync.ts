@@ -23,7 +23,11 @@ import {
   getYdbIndexesMetadata,
   resolveIndexName,
 } from '../decorators/index.decorator.js';
-import { getYdbTtlMetadata } from '../decorators/ttl.decorator.js';
+import {
+  getYdbTtlMetadata,
+  validateYdbTtlAgainstSchema,
+  YdbTtlMetadata,
+} from '../decorators/ttl.decorator.js';
 
 /** Ожидаемый вторичный индекс таблицы. */
 export interface ExpectedIndex {
@@ -38,7 +42,7 @@ export interface ExpectedTableSchema {
   columns: Record<string, YdbPrimitive>;
   primaryKey: string[];
   indexes: ExpectedIndex[];
-  ttl?: { interval: string; column: string };
+  ttl?: YdbTtlMetadata;
 }
 
 /** Нормализованное описание существующей таблицы из DescribeTable. */
@@ -151,14 +155,26 @@ export function buildExpectedTableSchema(
   );
 
   const ttlOptions = getYdbTtlMetadata(meta.target);
-  const ttl = ttlOptions
-    ? {
-        interval: ttlOptions.interval,
-        column: ttlOptions.column ?? primaryKey[0],
-      }
-    : undefined;
+  if (ttlOptions) {
+    const issues = validateYdbTtlAgainstSchema(
+      meta.target.name,
+      ttlOptions,
+      columns,
+    );
+    if (issues.length) {
+      throw new Error(
+        `Cannot build schema for entity ${meta.target.name}: ${issues.join('; ')}`,
+      );
+    }
+  }
 
-  return { tableName: meta.tableName, columns, primaryKey, indexes, ttl };
+  return {
+    tableName: meta.tableName,
+    columns,
+    primaryKey,
+    indexes,
+    ttl: ttlOptions,
+  };
 }
 
 /** Ожидаемая схема join-таблицы many-to-many. */
@@ -196,6 +212,20 @@ export function buildExpectedSchemas(
   return schemas;
 }
 
+/**
+ * Генерирует TTL-секцию WITH (...) для CREATE TABLE.
+ * По синтаксису YQL TTL задаётся только в WITH, а не внутри тела таблицы:
+ *   WITH (TTL = Interval("PT2H") ON `col` [AS SECONDS])
+ */
+export function generateTtlWithClause(ttl: YdbTtlMetadata): string {
+  const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
+  return (
+    `WITH (\n` +
+    `  TTL = Interval("${ttl.interval}") ON ${quoteIdentifier(ttl.column)}` +
+    `${unitPart}\n)`
+  );
+}
+
 /** Генерирует DDL создания таблицы. */
 export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   const columnDefs = Object.entries(expected.columns).map(
@@ -208,15 +238,13 @@ export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   );
   const pk = expected.primaryKey.map(quoteIdentifier).join(', ');
   const parts = [...columnDefs, ...indexDefs, `PRIMARY KEY (${pk})`];
-  if (expected.ttl) {
-    parts.push(
-      `TTL = Interval("${expected.ttl.interval}") ON ${quoteIdentifier(expected.ttl.column)}`,
-    );
-  }
   const body = parts.join(',\n  ');
-  return (
-    `CREATE TABLE ${quoteIdentifier(expected.tableName)} (\n  ` + `${body}\n)`
-  );
+  let yql =
+    `CREATE TABLE ${quoteIdentifier(expected.tableName)} (\n  ` + `${body}\n)`;
+  if (expected.ttl) {
+    yql += `\n${generateTtlWithClause(expected.ttl)}`;
+  }
+  return yql;
 }
 
 /** Генерирует DDL добавления недостающих колонок (один ALTER на таблицу). */

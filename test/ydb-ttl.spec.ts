@@ -5,11 +5,17 @@ import {
   YdbColumn,
 } from '../src/decorators/column.decorator.js';
 import { YdbBaseEntity } from '../src/entity/base-entity.js';
-import { YdbTtl, getYdbTtlMetadata } from '../src/decorators/ttl.decorator.js';
+import {
+  YdbTtl,
+  getYdbTtlMetadata,
+  validateYdbTtlAgainstSchema,
+} from '../src/decorators/ttl.decorator.js';
 import {
   buildExpectedTableSchema,
   generateCreateTableYql,
+  generateTtlWithClause,
 } from '../src/schema/schema-sync.js';
+import { validateEntityMetadata } from '../src/metadata/validate-entity.js';
 import { getYdbEntityMetadata } from '../src/metadata/entity-metadata.js';
 
 const meta = (entity: new (...args: any[]) => any) => {
@@ -18,24 +24,32 @@ const meta = (entity: new (...args: any[]) => any) => {
   return m;
 };
 
+const validationCtx = {
+  encryptionProviderConfigured: true,
+  blindIndexProviderConfigured: true,
+};
+
 @YdbEntity('ttl_sessions')
-@YdbTtl({ interval: 'PT2H' })
+@YdbTtl({ interval: 'PT2H', column: 'expires_at' })
 class TtlSessionEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
   @YdbColumn('Utf8')
   token: string;
+
+  @YdbColumn('Datetime')
+  expires_at: string;
 }
 
-@YdbEntity('ttl_custom_col')
-@YdbTtl({ interval: 'P30D', column: 'expires_at' })
-class TtlCustomColumnEntity extends YdbBaseEntity {
+@YdbEntity('ttl_numeric_col')
+@YdbTtl({ interval: 'P30D', column: 'expires_at', unit: 'seconds' })
+class TtlNumericColumnEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
-  @YdbColumn('Timestamp')
-  expires_at: string;
+  @YdbColumn('Int64')
+  expires_at: bigint;
 }
 
 @YdbEntity('no_ttl_entity')
@@ -47,19 +61,6 @@ class NoTtlEntity extends YdbBaseEntity {
   name: string;
 }
 
-@YdbEntity('ttl_composite_pk')
-@YdbTtl({ interval: 'PT1H' })
-class TtlCompositePkEntity extends YdbBaseEntity {
-  @YdbPrimaryColumn('Utf8')
-  tenant_id: string;
-
-  @YdbPrimaryColumn('Int64')
-  id: string;
-
-  @YdbColumn('Utf8')
-  data: string;
-}
-
 class TtlDuplicateEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
@@ -68,12 +69,16 @@ class TtlDuplicateEntity extends YdbBaseEntity {
 describe('@YdbTtl', () => {
   it('stores TTL metadata on class', () => {
     const ttl = getYdbTtlMetadata(TtlSessionEntity);
-    expect(ttl).toEqual({ interval: 'PT2H' });
+    expect(ttl).toEqual({ interval: 'PT2H', column: 'expires_at' });
   });
 
-  it('stores TTL with custom column', () => {
-    const ttl = getYdbTtlMetadata(TtlCustomColumnEntity);
-    expect(ttl).toEqual({ interval: 'P30D', column: 'expires_at' });
+  it('stores TTL with unit for numeric columns', () => {
+    const ttl = getYdbTtlMetadata(TtlNumericColumnEntity);
+    expect(ttl).toEqual({
+      interval: 'P30D',
+      column: 'expires_at',
+      unit: 'seconds',
+    });
   });
 
   it('returns undefined for entity without TTL', () => {
@@ -83,55 +88,217 @@ describe('@YdbTtl', () => {
 
   it('throws when applied twice to the same class', () => {
     // Apply first @YdbTtl — should succeed
-    YdbTtl({ interval: 'PT2H' })(TtlDuplicateEntity);
-    expect(getYdbTtlMetadata(TtlDuplicateEntity)).toEqual({ interval: 'PT2H' });
+    YdbTtl({ interval: 'PT2H', column: 'uuid' })(TtlDuplicateEntity);
+    expect(getYdbTtlMetadata(TtlDuplicateEntity)).toEqual({
+      interval: 'PT2H',
+      column: 'uuid',
+    });
 
     // Apply second @YdbTtl — should throw
     expect(() => {
-      YdbTtl({ interval: 'P1D' })(TtlDuplicateEntity);
+      YdbTtl({ interval: 'P1D', column: 'uuid' })(TtlDuplicateEntity);
     }).toThrow(/can only be applied once/);
+  });
+
+  it('throws when column is not specified', () => {
+    class TtlNoColumnEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    expect(() => {
+      (YdbTtl as (options: any) => ClassDecorator)({ interval: 'PT2H' })(
+        TtlNoColumnEntity,
+      );
+    }).toThrow(/"column" is required/);
+  });
+
+  it('throws on invalid interval format', () => {
+    class TtlBadIntervalEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    expect(() => {
+      YdbTtl({ interval: '2 hours', column: 'uuid' })(TtlBadIntervalEntity);
+    }).toThrow(/ISO 8601 duration/);
+  });
+
+  it('throws on unknown unit', () => {
+    class TtlBadUnitEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    expect(() => {
+      (YdbTtl as (options: any) => ClassDecorator)({
+        interval: 'PT1H',
+        column: 'expires_at',
+        unit: 'weeks',
+      })(TtlBadUnitEntity);
+    }).toThrow(/invalid unit/);
+  });
+});
+
+describe('validateYdbTtlAgainstSchema', () => {
+  it('accepts Datetime column without unit', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'expires_at' },
+        { expires_at: 'Datetime' },
+      ),
+    ).toEqual([]);
+  });
+
+  it('rejects unknown TTL column', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'missing' },
+        { created_at: 'Datetime' },
+      ),
+    ).toEqual([expect.stringContaining('"missing" is not declared')]);
+  });
+
+  it('requires unit for numeric column', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'created_at' },
+        { created_at: 'Int64' },
+      ),
+    ).toEqual([expect.stringContaining('requires "unit"')]);
+  });
+
+  it('forbids unit for Date-like column', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'created_at', unit: 'seconds' },
+        { created_at: 'Timestamp' },
+      ),
+    ).toEqual([expect.stringContaining('unit cannot be specified')]);
+  });
+
+  it('rejects unsupported column type', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'name' },
+        { name: 'Utf8' },
+      ),
+    ).toEqual([expect.stringContaining('unsupported type Utf8')]);
   });
 });
 
 describe('ExpectedTableSchema with TTL', () => {
   it('includes TTL in schema when decorator is present', () => {
     const schema = buildExpectedTableSchema(meta(TtlSessionEntity));
-    expect(schema.ttl).toEqual({ interval: 'PT2H', column: 'uuid' });
+    expect(schema.ttl).toEqual({
+      interval: 'PT2H',
+      column: 'expires_at',
+    });
   });
 
-  it('uses custom column from TTL options', () => {
-    const schema = buildExpectedTableSchema(meta(TtlCustomColumnEntity));
-    expect(schema.ttl).toEqual({ interval: 'P30D', column: 'expires_at' });
-  });
-
-  it('defaults to first PK when column is not specified', () => {
-    const schema = buildExpectedTableSchema(meta(TtlCompositePkEntity));
-    expect(schema.ttl).toEqual({ interval: 'PT1H', column: 'tenant_id' });
+  it('includes TTL unit for numeric column', () => {
+    const schema = buildExpectedTableSchema(meta(TtlNumericColumnEntity));
+    expect(schema.ttl).toEqual({
+      interval: 'P30D',
+      column: 'expires_at',
+      unit: 'seconds',
+    });
   });
 
   it('has no TTL when decorator is absent', () => {
     const schema = buildExpectedTableSchema(meta(NoTtlEntity));
     expect(schema.ttl).toBeUndefined();
   });
+
+  it('throws when TTL column is not declared', () => {
+    @YdbEntity('ttl_unknown_col')
+    @YdbTtl({ interval: 'PT2H', column: 'missing_column' })
+    class TtlUnknownColumnEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    expect(() =>
+      buildExpectedTableSchema(meta(TtlUnknownColumnEntity)),
+    ).toThrow(/"missing_column" is not declared/);
+  });
+
+  it('throws when TTL references PK of incompatible type (no default to PK)', () => {
+    @YdbEntity('ttl_on_pk_uuid')
+    @YdbTtl({ interval: 'PT2H', column: 'uuid' })
+    class TtlOnPkUuidEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    expect(() => buildExpectedTableSchema(meta(TtlOnPkUuidEntity))).toThrow(
+      /unsupported type Uuid/,
+    );
+  });
+});
+
+describe('validateEntityMetadata with TTL', () => {
+  it('returns no issues for valid TTL entity', () => {
+    expect(validateEntityMetadata(TtlSessionEntity, validationCtx)).toEqual([]);
+  });
+
+  it('reports unknown TTL column', () => {
+    @YdbEntity('ttl_validate_unknown')
+    @YdbTtl({ interval: 'PT2H', column: 'missing_column' })
+    class TtlValidateUnknownEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+    }
+    const issues = validateEntityMetadata(
+      TtlValidateUnknownEntity,
+      validationCtx,
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('"missing_column" is not declared');
+  });
+
+  it('reports missing unit for numeric TTL column', () => {
+    @YdbEntity('ttl_validate_no_unit')
+    @YdbTtl({ interval: 'PT2H', column: 'created_ms' })
+    class TtlValidateNoUnitEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+
+      @YdbColumn('Int64')
+      created_ms: bigint;
+    }
+    const issues = validateEntityMetadata(
+      TtlValidateNoUnitEntity,
+      validationCtx,
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('requires "unit"');
+  });
 });
 
 describe('generateCreateTableYql with TTL', () => {
-  it('includes TTL clause in CREATE TABLE DDL', () => {
+  it('puts TTL into WITH clause after CREATE TABLE body', () => {
     const schema = buildExpectedTableSchema(meta(TtlSessionEntity));
     const yql = generateCreateTableYql(schema);
 
-    expect(yql).toContain('TTL = Interval("PT2H") ON `uuid`');
-    // PK идёт перед TTL
-    const pkIndex = yql.indexOf('PRIMARY KEY');
+    // Тело таблицы закрывается до WITH, TTL — внутри WITH
+    const bodyEnd = yql.indexOf('\n)');
     const ttlIndex = yql.indexOf('TTL');
-    expect(pkIndex).toBeLessThan(ttlIndex);
+    expect(bodyEnd).toBeGreaterThan(0);
+    expect(ttlIndex).toBeGreaterThan(bodyEnd);
+
+    expect(yql).toContain(
+      'WITH (\n  TTL = Interval("PT2H") ON `expires_at`\n)',
+    );
   });
 
-  it('includes TTL with custom column', () => {
-    const schema = buildExpectedTableSchema(meta(TtlCustomColumnEntity));
+  it('puts TTL with AS unit into WITH clause for numeric column', () => {
+    const schema = buildExpectedTableSchema(meta(TtlNumericColumnEntity));
     const yql = generateCreateTableYql(schema);
 
-    expect(yql).toContain('TTL = Interval("P30D") ON `expires_at`');
+    expect(yql).toContain(
+      'WITH (\n  TTL = Interval("P30D") ON `expires_at` AS SECONDS\n)',
+    );
   });
 
   it('does not include TTL clause when decorator is absent', () => {
@@ -139,9 +306,10 @@ describe('generateCreateTableYql with TTL', () => {
     const yql = generateCreateTableYql(schema);
 
     expect(yql).not.toContain('TTL');
+    expect(yql).not.toContain('WITH');
   });
 
-  it('generates valid full CREATE TABLE with TTL', () => {
+  it('generates valid full CREATE TABLE with TTL in WITH clause', () => {
     const schema = buildExpectedTableSchema(meta(TtlSessionEntity));
     const yql = generateCreateTableYql(schema);
 
@@ -149,9 +317,27 @@ describe('generateCreateTableYql with TTL', () => {
       'CREATE TABLE `ttl_sessions` (\n' +
         '  `uuid` Uuid,\n' +
         '  `token` Utf8,\n' +
-        '  PRIMARY KEY (`uuid`),\n' +
-        '  TTL = Interval("PT2H") ON `uuid`\n' +
+        '  `expires_at` Datetime,\n' +
+        '  PRIMARY KEY (`uuid`)\n' +
+        ')\n' +
+        'WITH (\n' +
+        '  TTL = Interval("PT2H") ON `expires_at`\n' +
         ')',
+    );
+  });
+
+  it('generates TTL clause via generateTtlWithClause helper', () => {
+    expect(
+      generateTtlWithClause({ interval: 'PT2H', column: 'expires_at' }),
+    ).toBe('WITH (\n  TTL = Interval("PT2H") ON `expires_at`\n)');
+    expect(
+      generateTtlWithClause({
+        interval: 'P30D',
+        column: 'expires_at',
+        unit: 'milliseconds',
+      }),
+    ).toBe(
+      'WITH (\n  TTL = Interval("P30D") ON `expires_at` AS MILLISECONDS\n)',
     );
   });
 });

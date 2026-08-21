@@ -78,6 +78,7 @@ export { YdbTtl, getYdbTtlMetadata } from './decorators/ttl.decorator.js';
 export type {
   YdbTtlOptions,
   YdbTtlMetadata,
+  YdbTtlUnit,
 } from './decorators/ttl.decorator.js';
 export {
   BeforeInsert,
@@ -130,6 +131,10 @@ export { ClassValidatorProvider } from './validation/ydb-validate.provider.js';
 // Метаданные и реестр сущностей
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
 export { validateEntityMetadata } from './metadata/validate-entity.js';
+export {
+  validateYdbTtlAgainstSchema,
+  YDB_TTL_KEY,
+} from './decorators/ttl.decorator.js';
 export type { EntityValidationContext } from './metadata/validate-entity.js';
 export type {
   YdbEntityMetadata,
@@ -149,6 +154,7 @@ export {
   YdbSchemaSyncer,
   buildExpectedTableSchema,
   generateCreateTableYql,
+  generateTtlWithClause,
   generateAddColumnsYql,
   checkTableSchema,
 } from './schema/schema-sync.js';
