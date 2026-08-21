@@ -118,6 +118,13 @@ const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
  * Строит ожидаемую схему таблицы по метаданным сущности:
  * колонки + synthetic {field}_bi колонки blind index.
  * Требует явно объявленного первичного ключа через @YdbPrimaryColumn.
+ *
+ * Бросает ошибку (fail-fast, по той же политике, что и для PK) при
+ * невалидных метаданных TTL: неизвестная колонка, несовместимый тип
+ * (YDB допускает Date/Datetime/Timestamp либо Uint32/Uint64/DyNumber
+ * с unit), unit у даты или его отсутствие у числа. Так schema sync,
+ * миграции и CLI не сгенерируют заведомо невалидный DDL; при инициализации
+ * модуля те же проблемы раньше собирает validateEntityMetadata.
  */
 export function buildExpectedTableSchema(
   meta: YdbEntityMetadata,

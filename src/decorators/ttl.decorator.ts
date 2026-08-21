@@ -24,8 +24,12 @@ const DATE_LIKE_TTL_TYPES: readonly YdbPrimitive[] = [
   'Timestamp',
 ];
 
-/** Целочисленные типы, допустимые для TTL только с AS <unit>. */
-const NUMERIC_TTL_TYPES: readonly YdbPrimitive[] = ['Int32', 'Int64'];
+/**
+ * Числовые типы TTL-колонок по ограничениям YDB (значение трактуется как
+ * Unix-время и требует указания unit). Только беззнаковые: знаковые
+ * Int32/Int64 YDB для TTL не принимает.
+ */
+const NUMERIC_TTL_TYPES: readonly string[] = ['Uint32', 'Uint64', 'DyNumber'];
 
 /** ISO 8601 duration (например, "PT2H", "P30D", "P1DT2H30M"). */
 const ISO_DURATION_RE =
@@ -35,11 +39,17 @@ export interface YdbTtlOptions {
   /** ISO 8601 duration (например, "PT2H", "P30D", "PT1H"). */
   interval: string;
   /**
-   * Колонка для TTL — должна быть объявлена через @YdbColumn и иметь
-   * тип Date/Datetime/Timestamp либо целочисленный (тогда обязателен unit).
+   * Колонка для TTL — должна быть объявлена через @YdbColumn.
+   * По ограничениям YDB тип колонки: Date/Datetime/Timestamp либо
+   * числовой Uint32/Uint64/DyNumber (трактуется как Unix-время,
+   * тогда обязателен unit). Знаковые Int32/Int64 YDB не допускает.
+   * Дефолтов нет: колонка указывается явно (см. issue #81).
    */
   column: string;
-  /** Единица измерения числовой TTL-колонки (AS <unit>), например 'seconds'. */
+  /**
+   * Единица измерения числовой TTL-колонки (AS <unit>), например 'seconds'.
+   * Обязательна для Uint32/Uint64/DyNumber, запрещена для дат.
+   */
   unit?: YdbTtlUnit;
 }
 
@@ -53,6 +63,12 @@ export interface YdbTtlMetadata {
  * Декларативный TTL таблицы (YDB table TTL).
  * Можно применить только один раз на класс.
  * Генерирует секцию WITH (TTL = Interval(...) ON column) после CREATE TABLE (...).
+ *
+ * Ошибки формата (interval, column, unit) бросаются сразу при декорировании.
+ * Ошибки относительно схемы сущности (неизвестная колонка, несовместимый тип,
+ * лишний/недостающий unit) обнаруживаются при инициализации модуля
+ * (validateEntityMetadata) и при построении схемы (buildExpectedTableSchema) —
+ * до генерации DDL, см. issue #81.
  *
  * @example
  *   @YdbEntity('sessions')
@@ -106,7 +122,11 @@ function validateYdbTtlOptions(
 }
 
 /**
- * Проверяет TTL-метаданные против схемы колонок сущности.
+ * Проверяет TTL-метаданные против схемы колонок сущности по ограничениям YDB:
+ * колонка должна существовать и иметь тип Date/Datetime/Timestamp (без unit)
+ * либо Uint32/Uint64/DyNumber (только с unit). Знаковые Int32/Int64 YDB
+ * для TTL не принимает.
+ *
  * Возвращает список проблем (пустой, если всё в порядке) — чистая функция,
  * используется validateEntityMetadata и buildExpectedTableSchema.
  */
@@ -148,7 +168,8 @@ export function validateYdbTtlAgainstSchema(
 
   issues.push(
     `entity "${entityName}": @YdbTtl column "${ttl.column}" has unsupported type ` +
-      `${type} — use Date/Datetime/Timestamp or Int32/Int64 with "unit"`,
+      `${type} — YDB TTL requires Date/Datetime/Timestamp or ` +
+      `numeric Uint32/Uint64/DyNumber with "unit"`,
   );
   return issues;
 }

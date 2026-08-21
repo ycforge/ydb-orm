@@ -14,7 +14,9 @@ import {
   buildExpectedTableSchema,
   generateCreateTableYql,
   generateTtlWithClause,
+  ExpectedTableSchema,
 } from '../src/schema/schema-sync.js';
+import { YdbPrimitive } from '../src/core/types.js';
 import { validateEntityMetadata } from '../src/metadata/validate-entity.js';
 import { getYdbEntityMetadata } from '../src/metadata/entity-metadata.js';
 
@@ -29,6 +31,13 @@ const validationCtx = {
   blindIndexProviderConfigured: true,
 };
 
+/**
+ * Uint32/Uint64/DyNumber пока не входят в YdbPrimitive (отдельная задача),
+ * поэтому для тестов числовых TTL-колонок схема колонок приводится напрямую.
+ */
+const cols = (o: Record<string, string>) =>
+  o as unknown as Record<string, YdbPrimitive>;
+
 @YdbEntity('ttl_sessions')
 @YdbTtl({ interval: 'PT2H', column: 'expires_at' })
 class TtlSessionEntity extends YdbBaseEntity {
@@ -42,9 +51,10 @@ class TtlSessionEntity extends YdbBaseEntity {
   expires_at: string;
 }
 
-@YdbEntity('ttl_numeric_col')
+// Знаковые Int64 YDB для TTL не принимает (только Uint32/Uint64/DyNumber)
+@YdbEntity('ttl_signed_numeric')
 @YdbTtl({ interval: 'P30D', column: 'expires_at', unit: 'seconds' })
-class TtlNumericColumnEntity extends YdbBaseEntity {
+class TtlSignedNumericEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
@@ -72,8 +82,8 @@ describe('@YdbTtl', () => {
     expect(ttl).toEqual({ interval: 'PT2H', column: 'expires_at' });
   });
 
-  it('stores TTL with unit for numeric columns', () => {
-    const ttl = getYdbTtlMetadata(TtlNumericColumnEntity);
+  it('stores TTL with unit as provided', () => {
+    const ttl = getYdbTtlMetadata(TtlSignedNumericEntity);
     expect(ttl).toEqual({
       interval: 'P30D',
       column: 'expires_at',
@@ -100,7 +110,7 @@ describe('@YdbTtl', () => {
     }).toThrow(/can only be applied once/);
   });
 
-  it('throws when column is not specified', () => {
+  it('throws when column is not specified (no default to PK)', () => {
     class TtlNoColumnEntity extends YdbBaseEntity {
       @YdbPrimaryColumn('Uuid')
       uuid: string;
@@ -143,9 +153,65 @@ describe('validateYdbTtlAgainstSchema', () => {
       validateYdbTtlAgainstSchema(
         'E',
         { interval: 'PT2H', column: 'expires_at' },
-        { expires_at: 'Datetime' },
+        cols({ expires_at: 'Datetime' }),
       ),
     ).toEqual([]);
+  });
+
+  it('accepts Date and Timestamp columns without unit', () => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'P1D', column: 'd' },
+        cols({ d: 'Date' }),
+      ),
+    ).toEqual([]);
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT1H', column: 'ts' },
+        cols({ ts: 'Timestamp' }),
+      ),
+    ).toEqual([]);
+  });
+
+  it.each(['Uint32', 'Uint64', 'DyNumber'])(
+    'requires unit for numeric %s column',
+    (type) => {
+      const issues = validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'created_at' },
+        cols({ created_at: type }),
+      );
+      expect(issues).toEqual([expect.stringContaining('requires "unit"')]);
+    },
+  );
+
+  it.each([
+    ['Uint32', 'seconds'],
+    ['Uint64', 'milliseconds'],
+    ['DyNumber', 'nanoseconds'],
+  ] as const)('accepts numeric %s column with unit %s', (type, unit) => {
+    expect(
+      validateYdbTtlAgainstSchema(
+        'E',
+        { interval: 'PT2H', column: 'created_at', unit },
+        cols({ created_at: type }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('rejects signed Int64 column (YDB TTL allows only unsigned numerics)', () => {
+    const issues = validateYdbTtlAgainstSchema(
+      'E',
+      { interval: 'PT2H', column: 'created_at', unit: 'seconds' },
+      cols({ created_at: 'Int64' }),
+    );
+    expect(issues).toEqual([
+      expect.stringContaining(
+        'unsupported type Int64 — YDB TTL requires Date/Datetime/Timestamp or numeric Uint32/Uint64/DyNumber',
+      ),
+    ]);
   });
 
   it('rejects unknown TTL column', () => {
@@ -153,19 +219,9 @@ describe('validateYdbTtlAgainstSchema', () => {
       validateYdbTtlAgainstSchema(
         'E',
         { interval: 'PT2H', column: 'missing' },
-        { created_at: 'Datetime' },
+        cols({ created_at: 'Datetime' }),
       ),
     ).toEqual([expect.stringContaining('"missing" is not declared')]);
-  });
-
-  it('requires unit for numeric column', () => {
-    expect(
-      validateYdbTtlAgainstSchema(
-        'E',
-        { interval: 'PT2H', column: 'created_at' },
-        { created_at: 'Int64' },
-      ),
-    ).toEqual([expect.stringContaining('requires "unit"')]);
   });
 
   it('forbids unit for Date-like column', () => {
@@ -173,7 +229,7 @@ describe('validateYdbTtlAgainstSchema', () => {
       validateYdbTtlAgainstSchema(
         'E',
         { interval: 'PT2H', column: 'created_at', unit: 'seconds' },
-        { created_at: 'Timestamp' },
+        cols({ created_at: 'Timestamp' }),
       ),
     ).toEqual([expect.stringContaining('unit cannot be specified')]);
   });
@@ -183,7 +239,7 @@ describe('validateYdbTtlAgainstSchema', () => {
       validateYdbTtlAgainstSchema(
         'E',
         { interval: 'PT2H', column: 'name' },
-        { name: 'Utf8' },
+        cols({ name: 'Utf8' }),
       ),
     ).toEqual([expect.stringContaining('unsupported type Utf8')]);
   });
@@ -195,15 +251,6 @@ describe('ExpectedTableSchema with TTL', () => {
     expect(schema.ttl).toEqual({
       interval: 'PT2H',
       column: 'expires_at',
-    });
-  });
-
-  it('includes TTL unit for numeric column', () => {
-    const schema = buildExpectedTableSchema(meta(TtlNumericColumnEntity));
-    expect(schema.ttl).toEqual({
-      interval: 'P30D',
-      column: 'expires_at',
-      unit: 'seconds',
     });
   });
 
@@ -224,7 +271,7 @@ describe('ExpectedTableSchema with TTL', () => {
     ).toThrow(/"missing_column" is not declared/);
   });
 
-  it('throws when TTL references PK of incompatible type (no default to PK)', () => {
+  it('throws when TTL references PK of unsupported type (no default to PK)', () => {
     @YdbEntity('ttl_on_pk_uuid')
     @YdbTtl({ interval: 'PT2H', column: 'uuid' })
     class TtlOnPkUuidEntity extends YdbBaseEntity {
@@ -233,6 +280,14 @@ describe('ExpectedTableSchema with TTL', () => {
     }
     expect(() => buildExpectedTableSchema(meta(TtlOnPkUuidEntity))).toThrow(
       /unsupported type Uuid/,
+    );
+  });
+
+  it('throws when TTL column has signed numeric type (Int64)', () => {
+    expect(() =>
+      buildExpectedTableSchema(meta(TtlSignedNumericEntity)),
+    ).toThrow(
+      /unsupported type Int64 — YDB TTL requires Date\/Datetime\/Timestamp or numeric Uint32\/Uint64\/DyNumber/,
     );
   });
 });
@@ -257,22 +312,13 @@ describe('validateEntityMetadata with TTL', () => {
     expect(issues[0]).toContain('"missing_column" is not declared');
   });
 
-  it('reports missing unit for numeric TTL column', () => {
-    @YdbEntity('ttl_validate_no_unit')
-    @YdbTtl({ interval: 'PT2H', column: 'created_ms' })
-    class TtlValidateNoUnitEntity extends YdbBaseEntity {
-      @YdbPrimaryColumn('Uuid')
-      uuid: string;
-
-      @YdbColumn('Int64')
-      created_ms: bigint;
-    }
+  it('reports signed numeric TTL column as unsupported type', () => {
     const issues = validateEntityMetadata(
-      TtlValidateNoUnitEntity,
+      TtlSignedNumericEntity,
       validationCtx,
     );
     expect(issues).toHaveLength(1);
-    expect(issues[0]).toContain('requires "unit"');
+    expect(issues[0]).toContain('Uint32/Uint64/DyNumber');
   });
 });
 
@@ -293,11 +339,25 @@ describe('generateCreateTableYql with TTL', () => {
   });
 
   it('puts TTL with AS unit into WITH clause for numeric column', () => {
-    const schema = buildExpectedTableSchema(meta(TtlNumericColumnEntity));
+    // Uint64-колонку нельзя объявить через @YdbPrimitive, поэтому схема собирается вручную
+    const schema: ExpectedTableSchema = {
+      tableName: 'ttl_numeric',
+      columns: cols({ id: 'Utf8', expires_at: 'Uint64' }),
+      primaryKey: ['id'],
+      indexes: [],
+      ttl: { interval: 'P30D', column: 'expires_at', unit: 'seconds' },
+    };
     const yql = generateCreateTableYql(schema);
 
-    expect(yql).toContain(
-      'WITH (\n  TTL = Interval("P30D") ON `expires_at` AS SECONDS\n)',
+    expect(yql).toBe(
+      'CREATE TABLE `ttl_numeric` (\n' +
+        '  `id` Utf8,\n' +
+        '  `expires_at` Uint64,\n' +
+        '  PRIMARY KEY (`id`)\n' +
+        ')\n' +
+        'WITH (\n' +
+        '  TTL = Interval("P30D") ON `expires_at` AS SECONDS\n' +
+        ')',
     );
   });
 
