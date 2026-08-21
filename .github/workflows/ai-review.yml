@@ -45,43 +45,157 @@ jobs:
           max-length: 360000
           exclude-patterns: 'pnpm-lock.yaml,package-lock.json,yarn.lock,*.lock,dist/**,coverage/**,node_modules/**,*.min.js,*.min.css'
           sys-prompt: |
-            Ты — внимательный ассистент по code review для TypeScript ORM-проекта.
-            Анализируй изменения в pull request и давай конкретные, actionable замечания на русском языке:
-            - Указывай на баги, логические ошибки и потенциальные регрессии.
-            - Подсвечивай проблемы безопасности (особенно связанные с SQL, шифрованием или авторизацией).
-            - Отмечай проблемы TypeScript-типизации и необработанные крайние случаи.
-            - Предлагай улучшения по читаемости, поддерживаемости и покрытии тестами.
-            Будь кратким, но конкретным. При необходимости приводи короткие фрагменты кода.
+            Ты — code reviewer для TypeScript ORM-проекта.
+            Анализируй именно изменения в pull request, но при необходимости
+            проверяй окружающий код, чтобы понять их фактическое поведение.
+
+            Сообщай только о существенных и обоснованных проблемах, которые
+            действительно могут привести к:
+            - багу, неверному результату или логической ошибке;
+            - регрессии существующего поведения;
+            - проблеме безопасности, особенно в SQL, авторизации,
+              обработке данных или криптографии;
+            - ошибке TypeScript-типизации, способной повлиять на runtime или API;
+            - необработанному важному edge case;
+            - проблеме с транзакциями, async-поведением, соединениями,
+              ORM-маппингом или формированием запросов;
+            - отсутствию теста только тогда, когда без него высок риск
+              незаметной регрессии новой нетривиальной логики.
+
+            Не придирайся к стилю, именованию, форматированию, архитектурным
+            предпочтениям и субъективным улучшениям. Не предлагай рефакторинг
+            сам по себе, если текущий код корректен.
+
+            Не сообщай о проблеме без конкретного основания.
+            Для каждого замечания должна быть понятна причинно-следственная
+            связь: что именно в изменении не так, при каком сценарии это
+            проявится и какое минимальное исправление требуется.
+
+            Приоритет замечаний:
+            1. critical/high — баги, безопасность, потеря данных, неверные
+               транзакции, поломка публичного поведения;
+            2. medium — существенные edge cases и регрессии;
+            3. low — только если проблема объективна и практически значима.
+
+            Максимум 5 замечаний. Выбирай самые важные; не разбивай одну
+            проблему на несколько пунктов и не повторяй одну и ту же мысль.
+
+            Формат каждого замечания:
+            `file:line — проблема`
+            Далее 1–2 коротких предложения с причиной/сценарием и
+            конкретным способом исправления.
+
+            Не пересказывай PR, не пиши вступлений, заключений, похвалы
+            или общего резюме. Не цитируй большие фрагменты кода.
+
+            Общий ответ должен быть компактным: ориентир — не более 300 слов
+            без скрытого служебного маркера.
+
+            Если существенных проблем нет — ответь ровно одной строкой:
+            `Существенных замечаний нет.`
 
             В конце ответа обязательно добавь ровно одну скрытую HTML-строку:
-            - `<!-- AI_REVIEW_SEVERITY: CRITICAL -->` если есть критические или блокирующие проблемы.
-            - `<!-- AI_REVIEW_SEVERITY: OK -->` если критических проблем нет.
-            Не объясняй назначение этой строки и не показывай её как отдельный видимый элемент.
+            - `<!-- AI_REVIEW_SEVERITY: CRITICAL -->` если есть хотя бы одна
+              critical/high проблема, способная блокировать merge;
+            - `<!-- AI_REVIEW_SEVERITY: OK -->` если таких проблем нет.
+            Не объясняй назначение этой строки и не показывай её как отдельный
+            видимый элемент.
+
           user-prompt: |
-            Проведи code review следующих изменений. Сфокусируйся на корректности, безопасности и поддерживаемости. Ответ давай на русском языке.
+            Проведи code review этих изменений.
+
+            Ищи только реальные, существенные проблемы. Сначала оцени
+            корректность и возможные регрессии, затем безопасность,
+            TypeScript/типизацию, edge cases, ORM/SQL/транзакционное
+            поведение и, только при наличии существенного риска, тестовое
+            покрытие.
+
+            Для каждого найденного дефекта укажи:
+            `file:line — проблема`
+            и 1–2 коротких предложения: почему это проблема и как её
+            исправить.
+
+            Не пересказывай изменения и не добавляй общих рекомендаций.
+            Максимум 5 наиболее важных замечаний, общий объём — не более
+            300 слов.
+
+            Если существенных проблем нет — одна строка:
+            `Существенных замечаний нет.`
 
       - name: Check for critical issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
-          echo "Waiting for the AI review to be posted..."
-          sleep 5
+          set -euo pipefail
 
-          pr_number="${{ github.event.pull_request.number }}"
-          repo="${{ github.repository }}"
+          echo "Checking the latest AI review for PR #${PR_NUMBER}..."
 
-          echo "Fetching PR reviews..."
-          # gh api не поддерживает флаг -r; забираем JSON-массив тел review и ищем маркер в нём.
-          review_bodies=$(gh api "repos/${repo}/pulls/${pr_number}/reviews" --jq '[.[].body]')
+          # DeepSeek action may need a moment to publish the review.
+          # Retry instead of relying on a single fixed sleep.
+          for attempt in {1..12}; do
+            reviews="$(
+              gh api \
+                --paginate \
+                "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+                --jq '
+                  .[]
+                  | select(.user.login | endswith("[bot]"))
+                  | select(.body != null)
+                  | select(.commit_id != null)
+                  | {
+                      id,
+                      user: .user.login,
+                      body,
+                      commit_id,
+                      submitted_at
+                    }
+                '
+            )"
 
-          if echo "$review_bodies" | grep -q 'AI_REVIEW_SEVERITY: CRITICAL'; then
-            echo "::error::AI review detected CRITICAL issues. Failing the workflow."
+            # The API returns reviews chronologically, so the last matching
+            # review is the newest one.
+            latest_ai_review="$(
+              printf '%s\n' "$reviews" |
+                jq -s --arg sha "$HEAD_SHA" '
+                  map(select(.commit_id == $sha))
+                  | sort_by(.submitted_at)
+                  | last
+                '
+            )"
+
+            if [[ "$latest_ai_review" != "null" ]]; then
+              break
+            fi
+
+            if [[ "$attempt" -eq 12 ]]; then
+              echo "::error::No AI review for the current commit (${HEAD_SHA}) was found."
+              exit 1
+            fi
+
+            echo "AI review not found yet (attempt ${attempt}/12), retrying..."
+            sleep 5
+          done
+
+          review_id="$(jq -r '.id' <<< "$latest_ai_review")"
+          review_user="$(jq -r '.user' <<< "$latest_ai_review")"
+          review_commit="$(jq -r '.commit_id' <<< "$latest_ai_review")"
+          review_body="$(jq -r '.body' <<< "$latest_ai_review")"
+
+          echo "Found AI review #${review_id} from ${review_user} for commit ${review_commit}."
+
+          if grep -Fq 'AI_REVIEW_SEVERITY: CRITICAL' <<< "$review_body"; then
+            echo "::error::AI review detected CRITICAL issues."
             exit 1
           fi
 
-          if echo "$review_bodies" | grep -q 'AI_REVIEW_SEVERITY: OK'; then
+          if grep -Fq 'AI_REVIEW_SEVERITY: OK' <<< "$review_body"; then
             echo "AI review found no critical issues."
-          else
-            echo "::warning::Severity marker not found in AI review; cannot determine critical status. Continuing without failure."
+            exit 0
           fi
+
+          echo "::error::AI review does not contain a valid severity marker."
+          exit 1
