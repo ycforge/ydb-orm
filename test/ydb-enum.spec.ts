@@ -218,6 +218,72 @@ describe('@YdbEnum', () => {
     });
   });
 
+  describe('insertMany with enum', () => {
+    const UUIDS = [
+      '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
+      '6ad91505-d4f6-4a81-ab65-9dbc68cf4ed6',
+      '7ad91505-d4f6-4a81-ab65-9dbc68cf4ed7',
+    ];
+
+    it('converts Int32 enum to ordinal indices for all rows', async () => {
+      const mock = createMockExecutor([[]]);
+      EnumInt32Entity.setExecutor(mock.executor);
+
+      const e1 = new EnumInt32Entity();
+      e1.uuid = UUIDS[0];
+      e1.status = Status.ACTIVE;
+      const e2 = new EnumInt32Entity();
+      e2.uuid = UUIDS[1];
+      e2.status = Status.INACTIVE;
+      const e3 = new EnumInt32Entity();
+      e3.uuid = UUIDS[2];
+      e3.status = Status.PENDING;
+
+      await EnumInt32Entity.insertMany([e1, e2, e3]);
+
+      expect(mock.queries).toHaveLength(1);
+      const [q] = mock.queries;
+      expect(q.sql).toContain('UPSERT INTO `test_enum_int32`');
+      // ACTIVE = index 0, INACTIVE = index 1, PENDING = index 2
+      expect(rawValue(q.params['status_0'])).toBe(0);
+      expect(rawValue(q.params['status_1'])).toBe(1);
+      expect(rawValue(q.params['status_2'])).toBe(2);
+    });
+
+    it('passes Utf8 enum string through for all rows', async () => {
+      const mock = createMockExecutor([[]]);
+      EnumUtf8Entity.setExecutor(mock.executor);
+
+      const e1 = new EnumUtf8Entity();
+      e1.uuid = UUIDS[0];
+      e1.status = Status.ACTIVE;
+      const e2 = new EnumUtf8Entity();
+      e2.uuid = UUIDS[1];
+      e2.status = Status.PENDING;
+
+      await EnumUtf8Entity.insertMany([e1, e2]);
+
+      expect(mock.queries).toHaveLength(1);
+      const [q] = mock.queries;
+      expect(q.sql).toContain('UPSERT INTO `test_enum_utf8`');
+      expect(rawValue(q.params['status_0'])).toBe('active');
+      expect(rawValue(q.params['status_1'])).toBe('pending');
+    });
+
+    it('throws on invalid enum value', async () => {
+      const mock = createMockExecutor([[]]);
+      EnumInt32Entity.setExecutor(mock.executor);
+
+      const entity = new EnumInt32Entity();
+      entity.uuid = UUIDS[0];
+      (entity as any).status = 'deleted';
+
+      await expect(EnumInt32Entity.insertMany([entity])).rejects.toThrow(
+        /Invalid enum value "deleted" for field "status"/,
+      );
+    });
+  });
+
   describe('metadata', () => {
     it('stores enum metadata correctly', () => {
       const meta = getYdbEnumMetadata(EnumUtf8Entity);
