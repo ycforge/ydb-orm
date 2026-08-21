@@ -19,14 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # file:-зависимость @ycforge/js-dev-tools живёт в отдельном репозитории,
-      # чекаутим её в путь из file:../dev-tools/js до yarn install.
-      # SHA пиннут для воспроизводимости; при обновлении js-dev-tools — бампнуть.
-      - uses: actions/checkout@v4
-        with:
-          repository: ycforge/js-dev-tools
-          ref: 4485d8e84f9525ed88b41f7d1769f2fee9e0c476
-          path: dev-tools/js
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -39,14 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # file:-зависимость @ycforge/js-dev-tools живёт в отдельном репозитории,
-      # чекаутим её в путь из file:../dev-tools/js до yarn install.
-      # SHA пиннут для воспроизводимости; при обновлении js-dev-tools — бампнуть.
-      - uses: actions/checkout@v4
-        with:
-          repository: ycforge/js-dev-tools
-          ref: 4485d8e84f9525ed88b41f7d1769f2fee9e0c476
-          path: dev-tools/js
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -59,14 +43,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # file:-зависимость @ycforge/js-dev-tools живёт в отдельном репозитории,
-      # чекаутим её в путь из file:../dev-tools/js до yarn install.
-      # SHA пиннут для воспроизводимости; при обновлении js-dev-tools — бампнуть.
-      - uses: actions/checkout@v4
-        with:
-          repository: ycforge/js-dev-tools
-          ref: 4485d8e84f9525ed88b41f7d1769f2fee9e0c476
-          path: dev-tools/js
       - uses: actions/setup-node@v4
         with:
           node-version: 22
