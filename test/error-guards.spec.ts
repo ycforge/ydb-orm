@@ -24,8 +24,8 @@ const uuid1 = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';
 describe('error guards: понятные fail-fast ошибки', () => {
   afterEach(() => {
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
     UserRoleEntity.setExecutor(undefined as any);
     NoPkEntity.setExecutor(undefined as any);
     UndecoratedEntity.setExecutor(undefined as any);

@@ -4,12 +4,19 @@ import type {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
+import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
+import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 
 /**
  * Конфигурация сущностей для программного использования без NestJS.
- * Устанавливает executor и (опционально) провайдеры шифрования
- * на каждую переданную сущность и создаёт для неё YdbRepository.
+ * Валидирует метаданные каждой сущности, устанавливает executor,
+ * генератор UUID (uuidVersion) и провайдеры шифрования на каждую
+ * переданную сущность и создаёт для неё YdbRepository.
+ *
+ * Повторный вызов полностью заменяет конфигурацию: если провайдеры
+ * не переданы, прошлые сбрасываются (актуально для тестов и hot-restart).
  *
  * @example
  * ```ts
@@ -26,6 +33,8 @@ export function configureEntities(
     executor: YdbExecutor;
     encryptionProvider?: YdbEncryptionProvider;
     blindIndexProvider?: YdbBlindIndexProvider;
+    /** Версия генерируемых UUID для PK: v7 (по умолчанию) или v4. */
+    uuidVersion?: 'v4' | 'v7';
   },
 ): void {
   if (!options?.executor) {
@@ -34,31 +43,50 @@ export function configureEntities(
         'Create it via createExecutor(driver, opts).',
     );
   }
+
+  // Сначала валидируем все сущности: невалидная сущность не должна
+  // получить executor/провайдеры и падать позже с малопонятной ошибкой.
   for (const entity of entities) {
-    if (
-      typeof entity !== 'function' ||
-      !(entity.prototype instanceof YdbBaseEntity)
-    ) {
+    assertEntityClass(entity);
+    const issues = validateEntityMetadata(
+      entity as unknown as typeof YdbBaseEntity,
+      {
+        encryptionProviderConfigured: Boolean(options.encryptionProvider),
+        blindIndexProviderConfigured: Boolean(options.blindIndexProvider),
+      },
+    );
+    if (issues.length) {
       throw new Error(
-        `configureEntities(): ${entity?.name ?? String(entity)} ` +
-          `is not a YdbBaseEntity subclass. ` +
-          `Only entities extending YdbBaseEntity can be configured.`,
+        `configureEntities(): metadata validation failed for ${entity.name}:\n` +
+          issues.map((i) => `  - ${i}`).join('\n'),
       );
     }
-    (entity as unknown as typeof YdbBaseEntity).setExecutor(options.executor);
+  }
 
-    if (options.encryptionProvider) {
-      (entity as unknown as typeof YdbBaseEntity).setEncryptionProvider(
-        options.encryptionProvider,
-      );
-    }
+  // Затем применяем конфигурацию. Провайдеры перезаписываются безусловно:
+  // undefined сбрасывает провайдеры прошлой конфигурации при re-bootstrap.
+  for (const entity of entities) {
+    const entityClass = entity as unknown as typeof YdbBaseEntity;
+    getEntityRuntime(entityClass).uuidGenerator =
+      options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
 
-    if (options.blindIndexProvider) {
-      (entity as unknown as typeof YdbBaseEntity).setBlindIndexProvider(
-        options.blindIndexProvider,
-      );
-    }
+    entityClass.setExecutor(options.executor);
+    entityClass.setEncryptionProvider(options.encryptionProvider);
+    entityClass.setBlindIndexProvider(options.blindIndexProvider);
 
-    getOrCreateRepository(entity as unknown as typeof YdbBaseEntity);
+    getOrCreateRepository(entityClass);
+  }
+}
+
+function assertEntityClass(entity: unknown): void {
+  if (
+    typeof entity !== 'function' ||
+    !(entity.prototype instanceof YdbBaseEntity)
+  ) {
+    throw new Error(
+      `configureEntities(): ${(entity as any)?.name ?? String(entity)} ` +
+        `is not a YdbBaseEntity subclass. ` +
+        `Only entities extending YdbBaseEntity can be configured.`,
+    );
   }
 }

@@ -27,22 +27,34 @@ import {
 export class YdbBaseEntity {
   // ---- Runtime setters (публичный API для тестов и standalone-конфигурации) ----
 
-  static setExecutor(this: typeof YdbBaseEntity, db: YdbExecutor): void {
+  /**
+   * Устанавливает executor. Передача undefined сбрасывает executor
+   * (нужно при повторном бутстрапе и очистке состояния в тестах).
+   */
+  static setExecutor(this: typeof YdbBaseEntity, db?: YdbExecutor): void {
     getEntityRuntime(this).executor = db;
     this.clearRepository();
   }
 
+  /**
+   * Устанавливает encryption-провайдер. Передача undefined сбрасывает
+   * провайдер (нужно при повторном бутстрапе без шифрования).
+   */
   static setEncryptionProvider(
     this: typeof YdbBaseEntity,
-    provider: YdbEncryptionProvider,
+    provider?: YdbEncryptionProvider,
   ): void {
     getEntityRuntime(this).encryptionProvider = provider;
     this.clearRepository();
   }
 
+  /**
+   * Устанавливает blind-index-провайдер. Передача undefined сбрасывает
+   * провайдер (нужно при повторном бутстрапе без шифрования).
+   */
   static setBlindIndexProvider(
     this: typeof YdbBaseEntity,
-    provider: YdbBlindIndexProvider,
+    provider?: YdbBlindIndexProvider,
   ): void {
     getEntityRuntime(this).blindIndexProvider = provider;
     this.clearRepository();

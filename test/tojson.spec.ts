@@ -8,11 +8,11 @@ import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 describe('toJSON()', () => {
   afterEach(() => {
     PhotoEntity.setExecutor(undefined as any);
-    PhotoEntity.setEncryptionProvider(undefined as any);
-    PhotoEntity.setBlindIndexProvider(undefined as any);
+    PhotoEntity.setEncryptionProvider(undefined);
+    PhotoEntity.setBlindIndexProvider(undefined);
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
     UserRoleEntity.setExecutor(undefined as any);
   });
 

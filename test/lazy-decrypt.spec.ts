@@ -57,8 +57,8 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
 
   afterEach(() => {
     LazySecretEntity.setExecutor(undefined as any);
-    LazySecretEntity.setEncryptionProvider(undefined as any);
-    LazySecretEntity.setBlindIndexProvider(undefined as any);
+    LazySecretEntity.setEncryptionProvider(undefined);
+    LazySecretEntity.setBlindIndexProvider(undefined);
   });
 
   it('не дешифрует lazy-поле при find, обычные поля дешифруются сразу', async () => {
