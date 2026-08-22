@@ -156,12 +156,16 @@ await UserEntity.findAll({
 
 - `@YdbEntity('table')` — имя таблицы; класс попадает в глобальный реестр сущностей (используется schema sync).
 - `@YdbColumn('Uuid' | 'Utf8' | 'Bytes' | 'Int32' | 'Int64' | 'Bool' | 'Double' | 'Float' | 'Date' | 'Datetime' | 'Timestamp' | 'Json' | 'JsonDocument')` — колонка. Дата-типы принимают `Date`, число (мс от эпохи) или ISO-строку; **точность `Timestamp` ограничена миллисекундами**: JS `Date` хранит только мс, поэтому субмиллисекундные значения (микро-/наносекунды) не сохраняются — при чтении младшие разряды YDB-микросекунд теряются.
-- `@YdbPrimaryColumn(type)` — колонка первичного ключа (поддерживается составной PK: несколько таких колонок). Если PK не объявлен, используется `uuid`.
+- `@YdbPrimaryColumn(type)` — колонка первичного ключа (поддерживается составной PK: несколько таких колонок). **PK обязателен**: без `@YdbPrimaryColumn` сущность нельзя инициализировать — `validateEntityMetadata` (при старте модуля), schema sync и runtime-операции бросают ошибку `must declare at least one primary key via @YdbPrimaryColumn`. «Дефолтного `uuid`-PK» не существует. Если среди PK-колонок объявлена колонка `uuid` типа `Uuid`, её значение генерируется автоматически при вставке (по умолчанию UUID v7, настраивается опцией `uuidVersion`).
 - `@YdbEncrypted({ blindIndex, lazy })` — поле шифруется перед записью и дешифруется после чтения; `blindIndex: true` (по умолчанию) добавляет synthetic колонку `{field}_bi` для поиска по хешу. Шифротекст хранится в колонке `Bytes` (raw bytes), тип из `@YdbColumn` для таких полей игнорируется. Опция `lazy: true` откладывает дешифровку: поле не дешифруется при SELECT (экономия CPU), plaintext возвращают `await entity.decryptField('field')` / `await entity.decryptLazyFields()` (результат кешируется в инстансе); `toJSON()`/`JSON.stringify()` бросают ошибку, пока lazy-поля не дешифрованы.
 - `@YdbSecurityAAD()` — незашифрованное поле участвует в AAD (может применяться только к PK-колонкам).
 - `@YdbJson()` — поле хранится как JSON-строка в `Utf8`; ORM автоматически сериализует/парсит значения. Нативные `Json`/`JsonDocument` доступны через `@YdbColumn('Json')` / `@YdbColumn('JsonDocument')`.
 - `@OneToMany` / `@ManyToOne` / `@OneToOne` / `@ManyToMany` — relations; `@EagerLoad([...])` — batch-загрузка одним `IN (...)` запросом (без N+1). `@ManyToMany` требует `@JoinTable('join_table_name')` на владеющей стороне; join-таблица попадает в schema sync и миграции автоматически.
 - `@YdbIndex({ columns, name? })` — вторичный индекс (GLOBAL SYNC); класс-декоратор, можно несколько. Имя по умолчанию `{table}__{col1}_{col2}`. Попадает в CREATE TABLE при schema sync и в `migration:generate` для новых таблиц.
+- `@YdbEnum({ values, storage? })` — enum-колонка. `storage: 'Utf8'` (по умолчанию) хранит строковое значение enum; `storage: 'Int32'` — порядковый номер значения в `values`. Навешивается на свойство вместе с `@YdbColumn` соответствующего типа (`Utf8` или `Int32`).
+- `@YdbCreateDateColumn()` / `@YdbUpdateDateColumn()` — колонка автоматически заполняется `new Date()`: `@YdbCreateDateColumn` — на вставке (при значении `undefined` → если задано явно, не перезаписывается); `@YdbUpdateDateColumn` — на вставке и на обновлении: `save()` существующей записи перезаписывает поле всегда, `updateBy` и `insertMany` заполняют только если значение не задано. Объявляется на свойстве вместе с `@YdbColumn('Timestamp')`.
+- `@YdbTtl({ interval, column, unit? })` — декларативный TTL таблицы (класс-декоратор, один раз на класс). `interval` — ISO 8601 duration (`"PT2H"`, `"P30D"`); `column` — обязательная колонка, объявленная через `@YdbColumn` (типы `Date`/`Datetime`/`Timestamp` без `unit`, либо числовые `Uint32`/`Uint64`/`DyNumber` — тогда обязателен `unit`); `unit` — единица для числовой колонки (`seconds` | `milliseconds` | `microseconds` | `nanoseconds`). Генерирует секцию `WITH (TTL = Interval(...) ON column)` в CREATE TABLE. Ошибки формата бросаются сразу при декорировании, несовместимость со схемой сущности — при инициализации модуля.
+- `@BeforeInsert` / `@AfterInsert` / `@BeforeUpdate` / `@AfterFind` / `@BeforeRemove` — lifecycle-хуки (метод-декораторы без скобок). Подробности и гарантии вызовов — в разделе [Lifecycle hooks](#lifecycle-hooks).
 
 ```ts
 @YdbEntity('photos')
@@ -378,6 +382,26 @@ await this.txManager.runInTransaction(async (trx) => {
   await UserEntity.save(from, { trx });
 });
 ```
+
+## Логирование запросов
+
+Опция `logQueries` в `forRootAsync` (`YdbModuleOptions`) включает логирование всех запросов:
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: '...',
+    auth_type: 'auth_key',
+    authOptions: { authorized_key_path: './authorized_key.json' },
+    logQueries: true, // консольный логгер по умолчанию
+    // logQueries: myLogger, // или свой экземпляр QueryLogger
+  }),
+})
+```
+
+- `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (значения секретов и длинных строк маскируются), `durationMs` и опциональную `error`.
+- Аналогично работает standalone `createExecutor(driver, opts)` (учитывает `poolOptions` и `logQueries`). Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную.
 
 ## Аутентификация (`auth_type`)
 
