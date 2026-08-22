@@ -75,6 +75,13 @@ export interface YdbTableDescription {
    * Сравнивается с метаданными @YdbTtl при verify/миграциях (#88).
    */
   ttl?: YdbTableTtl;
+  /**
+   * Колонки БД с не-примитивными типами (Decimal/List/Pg и т.п.), которые
+   * нельзя выразить typeId (#91): имя → человекочитаемое описание типа.
+   * Такие колонки всегда считаются расхождением типов — но с честным
+   * описанием фактического типа вместо бессмысленного «typeId=0».
+   */
+  unsupportedColumns?: Map<string, string>;
 }
 
 /** Результат проверки существующей таблицы против ожидаемой схемы. */
@@ -164,6 +171,14 @@ for (const [name, typeId] of Object.entries(TTL_NUMERIC_TYPE_IDS)) {
     TYPE_ID_TO_PRIMITIVE.set(typeId, name as YdbPrimitive);
   }
 }
+
+/**
+ * Текст issues, однозначно говорящий, что путь/таблица не существует (#91).
+ * Только такой SCHEME_ERROR трактуется как «таблицы нет»; остальные
+ * (права доступа, битый путь и т.п.) пробрасываются наружу. Реальные
+ * сообщения YDB: «path '/db/tbl' does not exist», «Path ... not found».
+ */
+const NOT_FOUND_ISSUE_RE = /does not exist|not found/i;
 
 /** Enum Unit из TtlSettings → YdbTtlUnit (см. @YdbTtl). */
 const TTL_UNIT_BY_PROTO: Record<
@@ -418,8 +433,21 @@ export function checkTableSchema(
 ): SchemaCheckResult {
   const missingColumns: [string, YdbPrimitive][] = [];
   const typeMismatches: SchemaCheckResult['typeMismatches'] = [];
+  const unsupportedColumns = existing.unsupportedColumns;
 
   for (const [name, type] of Object.entries(expected.columns)) {
+    // Не-примитивный тип в БД (#91): по typeId сравнивать нельзя —
+    // сообщаем расхождение с фактическим типом (decimal(22,9), list<...>),
+    // а не с бессмысленным typeId=0.
+    const actualUnsupported = unsupportedColumns?.get(name);
+    if (actualUnsupported !== undefined) {
+      typeMismatches.push({
+        column: name,
+        expected: type,
+        actual: actualUnsupported,
+      });
+      continue;
+    }
     const actualTypeId = existing.columns.get(name);
     if (actualTypeId === undefined) {
       missingColumns.push([name, type]);
@@ -440,9 +468,13 @@ export function checkTableSchema(
   }
 
   const expectedColumns = new Set(Object.keys(expected.columns));
-  const extraColumns = [...existing.columns.keys()].filter(
-    (name) => !expectedColumns.has(name),
-  );
+  // Колонка БД живёт либо в columns, либо в unsupportedColumns — но
+  // описания могут прийти и из внешнего кода, поэтому дедуплицируем.
+  const extraColumns = [
+    ...existing.columns.keys(),
+    ...(unsupportedColumns?.keys() ?? []),
+  ].filter((name) => !expectedColumns.has(name));
+  const uniqueExtraColumns = [...new Set(extraColumns)];
 
   const primaryKeyMatches =
     expected.primaryKey.length === existing.primaryKey.length &&
@@ -515,7 +547,7 @@ export function checkTableSchema(
     tableName: expected.tableName,
     missingColumns,
     typeMismatches,
-    extraColumns,
+    extraColumns: uniqueExtraColumns,
     primaryKeyMatches,
     missingIndexes,
     extraIndexes,
@@ -836,7 +868,13 @@ export class YdbSchemaSyncer {
   /**
    * DescribeTable через Table service (query service не отдаёт метаданные
    * колонок). Сессия создаётся на один вызов и сразу закрывается.
-   * Возвращает null, если таблицы не существует.
+   *
+   * Возвращает null только если таблицы действительно нет (#91): отдельный
+   * статус NOT_FOUND либо SCHEME_ERROR, в issues которого явно сказано, что
+   * путь/таблица не существует. Любой другой SCHEME_ERROR (нет прав,
+   * битый путь и т.п.) пробрасывается наружу с контекстом — раньше он
+   * тоже превращался в null, из-за чего sync делал CREATE TABLE уже
+   * существующей таблицы, а verify докладывал ложный missing-table.
    * Публичный: используется также генератором миграций (migration:generate).
    */
   async describeTable(tableName: string): Promise<YdbTableDescription | null> {
@@ -857,13 +895,20 @@ export class YdbSchemaSyncer {
       const operation = response.operation;
 
       if (!operation || operation.status !== StatusIds_StatusCode.SUCCESS) {
-        if (operation?.status === StatusIds_StatusCode.SCHEME_ERROR) {
-          return null;
-        }
+        const issueText = this.formatIssues(operation?.issues);
+        const notFound =
+          operation?.status === StatusIds_StatusCode.NOT_FOUND ||
+          (operation?.status === StatusIds_StatusCode.SCHEME_ERROR &&
+            NOT_FOUND_ISSUE_RE.test(issueText));
+        if (notFound) return null;
+
+        const statusName = operation
+          ? (StatusIds_StatusCode[operation.status] ?? operation.status)
+          : 'unknown';
         throw new Error(
           `DescribeTable failed for "${path}": ` +
-            `status=${operation?.status ?? 'unknown'} ` +
-            this.formatIssues(operation?.issues),
+            `status=${statusName}` +
+            (issueText ? `; ${issueText}` : ' (no issues reported)'),
         );
       }
 
@@ -874,9 +919,18 @@ export class YdbSchemaSyncer {
         throw new Error(`DescribeTable returned no result for "${path}"`);
       }
 
+      // Колонки с не-примитивными типами (Decimal/List/Pg и т.п.) нельзя
+      // выразить typeId — они уходят в unsupportedColumns с честным
+      // описанием типа, а не с бессмысленным typeId=0 (#91).
       const columns = new Map<string, Type_PrimitiveTypeId>();
+      const unsupportedColumns = new Map<string, string>();
       for (const column of result.columns) {
-        columns.set(column.name, this.extractPrimitiveTypeId(column.type));
+        const typeId = this.extractPrimitiveTypeId(column.type);
+        if (typeId === null) {
+          unsupportedColumns.set(column.name, this.formatYdbType(column.type));
+          continue;
+        }
+        columns.set(column.name, typeId);
       }
 
       const indexes = result.indexes.map((idx) => ({
@@ -890,6 +944,7 @@ export class YdbSchemaSyncer {
         primaryKey: [...result.primaryKey],
         indexes,
         ttl: this.extractTtl(result.ttlSettings),
+        ...(unsupportedColumns.size ? { unsupportedColumns } : {}),
       };
     } finally {
       await client.deleteSession({ sessionId }).catch((error: unknown) => {
@@ -900,8 +955,13 @@ export class YdbSchemaSyncer {
     }
   }
 
-  /** Снимает Optional-обёртки и возвращает примитивный typeId. */
-  private extractPrimitiveTypeId(type?: Type): Type_PrimitiveTypeId {
+  /**
+   * Снимает Optional-обёртки и возвращает примитивный typeId.
+   * null — тип не-примитивный (Decimal/List/Pg/…): сравнивать его по typeId
+   * нельзя, фактическое описание кладётся в unsupportedColumns (#91),
+   * а не подставляется бессмысленный PRIMITIVE_TYPE_ID_UNSPECIFIED (=0).
+   */
+  private extractPrimitiveTypeId(type?: Type): Type_PrimitiveTypeId | null {
     let current = type;
     while (current?.type.case === 'optionalType') {
       current = current.type.value.item;
@@ -909,7 +969,58 @@ export class YdbSchemaSyncer {
     if (current?.type.case === 'typeId') {
       return current.type.value;
     }
-    return Type_PrimitiveTypeId.PRIMITIVE_TYPE_ID_UNSPECIFIED;
+    return null;
+  }
+
+  /**
+   * Компактное человекочитаемое описание типа из DescribeTable (#91):
+   * decimal(22,9), list<utf8>, pg<int4> и т.п. Используется в сообщениях
+   * о расхождении типов вместо бессмысленного «typeId=0».
+   */
+  private formatYdbType(type?: Type): string {
+    let current = type;
+    let optional = false;
+    while (current?.type.case === 'optionalType') {
+      current = current.type.value.item;
+      optional = true;
+    }
+
+    const inner = this.formatNonOptionalYdbType(current);
+    return optional ? `${inner}?` : inner;
+  }
+
+  private formatNonOptionalYdbType(type?: Type): string {
+    const t = type?.type;
+    switch (t?.case) {
+      case 'typeId': {
+        const name =
+          TYPE_ID_TO_PRIMITIVE.get(t.value) ?? Type_PrimitiveTypeId[t.value];
+        return name ? name.toLowerCase() : `typeId=${t.value}`;
+      }
+      case 'decimalType':
+        return `decimal(${t.value.precision},${t.value.scale})`;
+      case 'listType':
+        return `list<${this.formatYdbType(t.value.item)}>`;
+      case 'tupleType':
+        return `tuple<${t.value.elements.map((i) => this.formatYdbType(i)).join(', ')}>`;
+      case 'dictType':
+        return (
+          `dict<${this.formatYdbType(t.value.key)}, ` +
+          `${this.formatYdbType(t.value.payload)}>`
+        );
+      case 'structType':
+        return `struct<${t.value.members
+          .map((m) => `${m.name}: ${this.formatYdbType(m.type)}`)
+          .join(', ')}>`;
+      case 'pgType':
+        return t.value.typeName
+          ? `pg<${t.value.typeName}>`
+          : `pg(oid=${t.value.oid})`;
+      default:
+        // variantType/taggedType/voidType/… — имя proto-case уже содержит
+        // фактическую информацию о типе.
+        return t?.case ?? 'unknown';
+    }
   }
 
   /**

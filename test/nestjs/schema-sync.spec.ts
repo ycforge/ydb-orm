@@ -8,7 +8,7 @@ import {
   CreateSessionResultSchema,
   TableServiceDefinition,
 } from '@ydbjs/api/table';
-import { StatusIds_StatusCode } from '@ydbjs/api/operation';
+import { StatusIds_StatusCode, IssueMessageSchema } from '@ydbjs/api/operation';
 import {
   YdbCoreModule,
   YdbModule,
@@ -27,8 +27,9 @@ import { createMockExecutor } from '../helpers/mock-executor.js';
 class TestFeatureModule {}
 
 /**
- * Фейковый драйвер: DescribeTable всегда отвечает SCHEME_ERROR
- * (таблицы не существует) → sync должен создать все таблицы.
+ * Фейковый драйвер: DescribeTable отвечает «таблица не существует» —
+ * SCHEME_ERROR с явным текстом в issues (#91: только такой SCHEME_ERROR
+ * трактуется как not-found) → sync должен создать все таблицы.
  */
 function createFakeDriver() {
   const sessionResult = anyPack(
@@ -44,7 +45,15 @@ function createFakeDriver() {
     ),
     describeTable: jest.fn(() =>
       Promise.resolve({
-        operation: { status: StatusIds_StatusCode.SCHEME_ERROR },
+        operation: {
+          status: StatusIds_StatusCode.SCHEME_ERROR,
+          issues: [
+            create(IssueMessageSchema, {
+              message: "path '/local/<table>' does not exist",
+              severity: 1,
+            }),
+          ],
+        },
       }),
     ),
     deleteSession: jest.fn(() => Promise.resolve({})),

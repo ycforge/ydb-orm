@@ -8,7 +8,7 @@ import {
   DescribeTableResultSchema,
   ValueSinceUnixEpochModeSettings_Unit,
 } from '@ydbjs/api/table';
-import { StatusIds_StatusCode } from '@ydbjs/api/operation';
+import { IssueMessageSchema, StatusIds_StatusCode } from '@ydbjs/api/operation';
 import { YdbEntity } from '../decorators/entity.decorator.js';
 import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
 import { YdbEncrypted } from '../decorators/encryption.decorator.js';
@@ -123,6 +123,16 @@ class TestNumericTtlEntity extends YdbBaseEntity {
   // Uint32 нет в YdbPrimitive — числовые TTL-типы проверяются отдельно
   @YdbColumn('Uint32' as never)
   expires_at: number;
+}
+
+// Сущность для проверки не-примитивных типов в БД (#91)
+@YdbEntity('test_unsupported_types')
+class TestUnsupportedTypesEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbColumn('Utf8')
+  price: string;
 }
 
 @YdbEntity('test_photos')
@@ -1352,5 +1362,415 @@ describe('YdbSchemaSyncer.describeTable TTL parsing (#88)', () => {
     const desc = await syncer.describeTable('test_sessions');
 
     expect(desc?.ttl).toBeUndefined();
+  });
+});
+
+// Регресс-тесты #91: describeTable различает «таблицы нет» и другие
+// SCHEME_ERROR, а не-примитивные типы не деградируют до «typeId=0».
+describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () => {
+  const sessionResult = anyPack(
+    CreateSessionResultSchema,
+    create(CreateSessionResultSchema, { sessionId: 'session-nf-1' }),
+  );
+
+  const issueMsg = (
+    message: string,
+    children?: ReturnType<typeof issueMsg>[],
+  ) =>
+    create(IssueMessageSchema, {
+      message,
+      severity: 1,
+      ...(children?.length ? { issues: children } : {}),
+    });
+
+  function makeDescribeTableSyncer(describeResponse: unknown): {
+    syncer: YdbSchemaSyncer;
+    executedSql: () => string[];
+  } {
+    const tableClient = {
+      createSession: jest.fn(() =>
+        Promise.resolve({ operation: { result: sessionResult } }),
+      ),
+      describeTable: jest.fn(() => Promise.resolve(describeResponse)),
+      deleteSession: jest.fn(() => Promise.resolve({})),
+    };
+    const driver = {
+      database: '/local',
+      createClient: jest.fn(() => tableClient),
+    };
+    const executor = jest.fn(() => Promise.resolve([]));
+    return {
+      syncer: new YdbSchemaSyncer(
+        driver as never,
+        executor as unknown as YdbExecutor,
+      ),
+      executedSql: () =>
+        (executor as unknown as jest.Mock).mock.calls.map((c: any) =>
+          String(c[0]?.[0] ?? ''),
+        ),
+    };
+  }
+
+  it('returns null on NOT_FOUND status', async () => {
+    const { syncer } = makeDescribeTableSyncer({
+      operation: { status: StatusIds_StatusCode.NOT_FOUND },
+    });
+
+    await expect(syncer.describeTable('missing_table')).resolves.toBeNull();
+  });
+
+  it('returns null when SCHEME_ERROR reports that the path does not exist', async () => {
+    const { syncer } = makeDescribeTableSyncer({
+      operation: {
+        status: StatusIds_StatusCode.SCHEME_ERROR,
+        issues: [issueMsg("path '/local/missing_table' does not exist")],
+      },
+    });
+
+    await expect(syncer.describeTable('missing_table')).resolves.toBeNull();
+  });
+
+  it('returns null for «not found» nested inside issue tree', async () => {
+    const { syncer } = makeDescribeTableSyncer({
+      operation: {
+        status: StatusIds_StatusCode.SCHEME_ERROR,
+        issues: [
+          issueMsg('Scheme error', [
+            issueMsg("Path '/local/missing_table' not found"),
+          ]),
+        ],
+      },
+    });
+
+    await expect(syncer.describeTable('missing_table')).resolves.toBeNull();
+  });
+
+  it('propagates permission-style SCHEME_ERROR with context instead of returning null', async () => {
+    const { syncer } = makeDescribeTableSyncer({
+      operation: {
+        status: StatusIds_StatusCode.SCHEME_ERROR,
+        issues: [issueMsg('Access denied: no permissions for path')],
+      },
+    });
+
+    await expect(syncer.describeTable('secret_table')).rejects.toThrow(
+      'DescribeTable failed for "/local/secret_table": ' +
+        'status=SCHEME_ERROR; Access denied: no permissions for path',
+    );
+  });
+
+  it('treats issues-less SCHEME_ERROR as an error, not as missing table', async () => {
+    // ydb-platform/ydb#7791: DescribeTable может не прислать issues вовсе.
+    // Без текста «не существует» это нельзя считать not-found (#91).
+    const { syncer } = makeDescribeTableSyncer({
+      operation: { status: StatusIds_StatusCode.SCHEME_ERROR },
+    });
+
+    await expect(syncer.describeTable('maybe_table')).rejects.toThrow(
+      'status=SCHEME_ERROR (no issues reported)',
+    );
+  });
+
+  it('propagates non-scheme failures with readable status name', async () => {
+    const { syncer } = makeDescribeTableSyncer({
+      operation: {
+        status: StatusIds_StatusCode.UNAUTHORIZED,
+        issues: [issueMsg('Token expired')],
+      },
+    });
+
+    await expect(syncer.describeTable('users')).rejects.toThrow(
+      'DescribeTable failed for "/local/users": status=UNAUTHORIZED; Token expired',
+    );
+  });
+
+  it('does not attempt CREATE TABLE when DescribeTable failed for a reason other than not-found (#91)', async () => {
+    const { syncer, executedSql } = makeDescribeTableSyncer({
+      operation: {
+        status: StatusIds_StatusCode.SCHEME_ERROR,
+        issues: [issueMsg("path '/local/test_users': Access denied")],
+      },
+    });
+
+    await expect(syncer.sync([TestUserEntity])).rejects.toThrow(
+      /Access denied/,
+    );
+
+    // Ни CREATE TABLE, ни какого-либо другого DDL
+    expect(executedSql()).toEqual([]);
+  });
+
+  it('still creates table on a genuine NOT_FOUND (#91)', async () => {
+    const { syncer, executedSql } = makeDescribeTableSyncer({
+      operation: { status: StatusIds_StatusCode.NOT_FOUND },
+    });
+
+    await syncer.sync([TestUserEntity]);
+
+    expect(executedSql()).toEqual([
+      generateCreateTableYql(buildExpectedTableSchema(meta(TestUserEntity))),
+    ]);
+  });
+});
+
+describe('DescribeTable non-primitive column types (#91)', () => {
+  const sessionResult = anyPack(
+    CreateSessionResultSchema,
+    create(CreateSessionResultSchema, { sessionId: 'session-types-1' }),
+  );
+
+  function makeTypeSyncer(
+    columns: Array<{
+      name: string;
+      type: unknown;
+    }>,
+  ): YdbSchemaSyncer {
+    const tableClient = {
+      createSession: jest.fn(() =>
+        Promise.resolve({ operation: { result: sessionResult } }),
+      ),
+      describeTable: jest.fn(() =>
+        Promise.resolve({
+          operation: {
+            status: StatusIds_StatusCode.SUCCESS,
+            result: anyPack(
+              DescribeTableResultSchema,
+              create(DescribeTableResultSchema, {
+                columns: columns as never,
+                primaryKey: ['uuid'],
+                indexes: [],
+              }),
+            ),
+          },
+        }),
+      ),
+      deleteSession: jest.fn(() => Promise.resolve({})),
+    };
+    const driver = {
+      database: '/local',
+      createClient: jest.fn(() => tableClient),
+    };
+    return new YdbSchemaSyncer(driver as never, {} as YdbExecutor);
+  }
+
+  it('collects decimal/list/pg columns into unsupportedColumns instead of typeId=0', async () => {
+    const syncer = makeTypeSyncer([
+      {
+        name: 'uuid',
+        type: { type: { case: 'typeId', value: Type_PrimitiveTypeId.UUID } },
+      },
+      {
+        name: 'price',
+        type: {
+          type: { case: 'decimalType', value: { precision: 22, scale: 9 } },
+        },
+      },
+      {
+        name: 'tags',
+        type: {
+          type: {
+            case: 'listType',
+            value: {
+              item: {
+                type: { case: 'typeId', value: Type_PrimitiveTypeId.UTF8 },
+              },
+            },
+          },
+        },
+      },
+      {
+        name: 'ext_id',
+        type: {
+          type: {
+            case: 'pgType',
+            value: { typeName: 'int4', oid: 23, typeModifier: '' },
+          },
+        },
+      },
+    ]);
+
+    const desc = await syncer.describeTable('mixed_table');
+
+    // Примитивная колонка осталась в columns…
+    expect(desc?.columns.get('uuid')).toBe(Type_PrimitiveTypeId.UUID);
+    // …а не-примитивные ушли в unsupportedColumns с фактическим типом
+    expect(desc?.columns.has('price')).toBe(false);
+    expect(desc?.unsupportedColumns).toEqual(
+      new Map([
+        ['price', 'decimal(22,9)'],
+        ['tags', 'list<utf8>'],
+        ['ext_id', 'pg<int4>'],
+      ]),
+    );
+  });
+
+  it('keeps Optional wrapper in the rendered type description', async () => {
+    const syncer = makeTypeSyncer([
+      {
+        name: 'amount',
+        type: {
+          type: {
+            case: 'optionalType',
+            value: {
+              item: {
+                type: {
+                  case: 'decimalType',
+                  value: { precision: 22, scale: 9 },
+                },
+              },
+            },
+          },
+        },
+      },
+    ]);
+
+    const desc = await syncer.describeTable('optional_decimal');
+
+    expect(desc?.unsupportedColumns?.get('amount')).toBe('decimal(22,9)?');
+  });
+
+  it('checkTableSchema treats unsupported declared column as type mismatch with actual type', () => {
+    const expected = buildExpectedTableSchema(meta(TestUnsupportedTypesEntity));
+    const existing: YdbTableDescription = {
+      columns: new Map([['uuid', Type_PrimitiveTypeId.UUID]]),
+      primaryKey: ['uuid'],
+      indexes: [],
+      unsupportedColumns: new Map([['price', 'decimal(22,9)']]),
+    };
+
+    const check = checkTableSchema(expected, existing);
+
+    expect(check.missingColumns).toEqual([]);
+    expect(check.typeMismatches).toEqual([
+      { column: 'price', expected: 'Utf8', actual: 'decimal(22,9)' },
+    ]);
+    expect(checkToIssues(check)).toEqual([
+      {
+        tableName: 'test_unsupported_types',
+        kind: 'type-mismatch',
+        message:
+          'Table "test_unsupported_types" column "price" type mismatch: ' +
+          'expected Utf8, actual decimal(22,9)',
+      },
+    ]);
+  });
+
+  it('reports undeclared non-primitive columns as extra columns', () => {
+    const existing: YdbTableDescription = {
+      ...description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: false,
+          },
+        ],
+      ),
+      unsupportedColumns: new Map([['legacy_amount', 'list<utf8>?']]),
+    };
+
+    const check = checkTableSchema(
+      buildExpectedTableSchema(meta(TestUserEntity)),
+      existing,
+    );
+
+    expect(check.extraColumns).toEqual(['legacy_amount']);
+  });
+
+  it('verify reports unsupported column type with actual type info, not typeId=0', async () => {
+    const syncer = makeTypeSyncer([
+      {
+        name: 'uuid',
+        type: { type: { case: 'typeId', value: Type_PrimitiveTypeId.UUID } },
+      },
+      {
+        name: 'price',
+        type: {
+          type: { case: 'decimalType', value: { precision: 22, scale: 9 } },
+        },
+      },
+    ]);
+
+    const issues = await syncer.verify([TestUnsupportedTypesEntity]);
+
+    expect(issues).toEqual([
+      {
+        tableName: 'test_unsupported_types',
+        kind: 'type-mismatch',
+        message:
+          'Table "test_unsupported_types" column "price" type mismatch: ' +
+          'expected Utf8, actual decimal(22,9)',
+      },
+    ]);
+  });
+
+  it('sync throws on unsupported column type and executes no DDL', async () => {
+    const tableClient = {
+      createSession: jest.fn(() =>
+        Promise.resolve({ operation: { result: sessionResult } }),
+      ),
+      describeTable: jest.fn(() =>
+        Promise.resolve({
+          operation: {
+            status: StatusIds_StatusCode.SUCCESS,
+            result: anyPack(
+              DescribeTableResultSchema,
+              create(DescribeTableResultSchema, {
+                columns: [
+                  {
+                    name: 'uuid',
+                    type: {
+                      type: {
+                        case: 'typeId',
+                        value: Type_PrimitiveTypeId.UUID,
+                      },
+                    },
+                  },
+                  {
+                    name: 'price',
+                    type: {
+                      type: {
+                        case: 'decimalType',
+                        value: { precision: 22, scale: 9 },
+                      },
+                    },
+                  },
+                ] as never,
+                primaryKey: ['uuid'],
+                indexes: [],
+              }),
+            ),
+          },
+        }),
+      ),
+      deleteSession: jest.fn(() => Promise.resolve({})),
+    };
+    const driver = {
+      database: '/local',
+      createClient: jest.fn(() => tableClient),
+    };
+    const executor = jest.fn(() => Promise.resolve([]));
+    const syncer = new YdbSchemaSyncer(
+      driver as never,
+      executor as unknown as YdbExecutor,
+    );
+
+    await expect(syncer.sync([TestUnsupportedTypesEntity])).rejects.toThrow(
+      /column type mismatch \(price: expected Utf8, actual decimal\(22,9\)\)/,
+    );
+    expect((executor as unknown as jest.Mock).mock.calls).toEqual([]);
   });
 });
