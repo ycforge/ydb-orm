@@ -154,11 +154,11 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
    *
    * Явная семантика (без молчаливого clamp в диапазон 1..1000):
    * - `limit(0)` — `LIMIT 0`: гарантированно пустой результат `[]`;
-   * - положительное значение `n` — до `n` строк, сверху обрезается до
+   * - положительное целое значение `n` — до `n` строк, сверху обрезается до
    *   MAX_RETRIEVE_LIMIT (защитный потолок);
    * - лимит вообще не задан — действует защитный дефолт
    *   DEFAULT_RETRIEVE_LIMIT (см. resolveLimit);
-   * - отрицательное / нечисловое значение — ошибка.
+   * - отрицательное, дробное или неконечное значение — ошибка.
    *
    * Значение сохраняется в билдере и не меняется при выполнении:
    * getOne()/getMany()/toYql() его читают, но не перезаписывают.
@@ -316,20 +316,20 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
    * - лимит не задан (limit() и queryOptions.limit отсутствуют) —
    *   защитный дефолт DEFAULT_RETRIEVE_LIMIT;
    * - limit(0) — `0` (пустой результат), НЕ клампится в 1;
-   * - положительное значение — до MAX_RETRIEVE_LIMIT (потолок);
-   * - отрицательное или неконечное — ошибка.
+   * - положительное целое значение — до MAX_RETRIEVE_LIMIT (потолок);
+   * - отрицательное, дробное или неконечное значение — ошибка.
    */
   private resolveLimit(): number {
     const value = this.limitValue ?? this.queryOptions?.limit;
     if (value === undefined) {
       return DEFAULT_RETRIEVE_LIMIT;
     }
-    if (!Number.isFinite(value) || value < 0) {
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
       throw new Error(
-        `Invalid LIMIT: ${String(value)}. LIMIT must be a finite non-negative number.`,
+        `Invalid LIMIT: ${String(value)}. LIMIT must be a finite non-negative integer.`,
       );
     }
-    const num = Math.floor(value);
+    const num = value;
     if (num === 0) {
       return 0;
     }

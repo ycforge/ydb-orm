@@ -119,7 +119,7 @@ const { sql, values } = await PhotoEntity.query().where({ is_public: true }).toY
 | `limit(0)` | `0` — гарантированно пустой результат |
 | `limit(n)`, 1 ≤ n ≤ 1000 | `n` |
 | `limit(n)`, n > 1000 | `1000` — защитный потолок (`MAX_RETRIEVE_LIMIT`) |
-| `limit(отрицательное)` | ошибка `Invalid LIMIT` |
+| `limit(отрицательное / дробное / неконечное)` | ошибка `Invalid LIMIT` |
 
 WHERE поддерживает операторы сравнения, логические группы `$or`/`$and` и JSON-операторы. Поля в WHERE/ORDER BY валидируются по метаданным сущности.
 

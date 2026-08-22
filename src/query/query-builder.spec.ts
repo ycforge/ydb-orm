@@ -234,11 +234,40 @@ describe('YdbQueryBuilder', () => {
   it('rejects negative limit explicitly instead of clamping it', async () => {
     mockRuntime();
     await expect(QbPhotoEntity.query().limit(-1).toYql()).rejects.toThrow(
-      /Invalid LIMIT: -1\. LIMIT must be a finite non-negative number\./,
+      /Invalid LIMIT: -1\. LIMIT must be a finite non-negative integer\./,
     );
     await expect(QbPhotoEntity.query().limit(-100).getMany()).rejects.toThrow(
       /Invalid LIMIT/,
     );
+  });
+
+  it('rejects fractional positive limit instead of flooring it', async () => {
+    mockRuntime();
+    await expect(QbPhotoEntity.query().limit(1.9).toYql()).rejects.toThrow(
+      /Invalid LIMIT: 1\.9\. LIMIT must be a finite non-negative integer\./,
+    );
+    await expect(QbPhotoEntity.query().limit(0.5).getMany()).rejects.toThrow(
+      /Invalid LIMIT/,
+    );
+  });
+
+  it('rejects fractional negative limit', async () => {
+    mockRuntime();
+    await expect(QbPhotoEntity.query().limit(-1.9).toYql()).rejects.toThrow(
+      /Invalid LIMIT: -1\.9\. LIMIT must be a finite non-negative integer\./,
+    );
+    await expect(QbPhotoEntity.query().limit(-0.5).getMany()).rejects.toThrow(
+      /Invalid LIMIT/,
+    );
+  });
+
+  it('rejects non-finite limits', async () => {
+    mockRuntime();
+    for (const bad of [Infinity, -Infinity, NaN]) {
+      await expect(QbPhotoEntity.query().limit(bad).toYql()).rejects.toThrow(
+        /Invalid LIMIT: (Infinity|-Infinity|NaN)\. LIMIT must be a finite non-negative integer\./,
+      );
+    }
   });
 
   it('getCount builds COUNT query without LIMIT', async () => {
