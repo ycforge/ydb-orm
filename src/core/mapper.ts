@@ -160,6 +160,13 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
     return new Int32(value);
   },
   Int64: (value: bigint | number | string) => {
+    if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+      // JS number небезопасен выше Number.MAX_SAFE_INTEGER (2^53 - 1):
+      // BigInt(value) превратит уже округлённое число в другой BigInt.
+      throw new TypeError(
+        `Int64 value must be a safe integer, got ${valuePreview(value)} (use bigint or string for exact values above 2^53 - 1)`,
+      );
+    }
     let asBigInt: bigint;
     try {
       asBigInt = BigInt(value);

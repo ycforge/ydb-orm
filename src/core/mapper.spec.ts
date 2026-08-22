@@ -156,6 +156,37 @@ describe('mapToYdb', () => {
     it('rejects NaN as Int64', () => {
       expect(() => mapToYdb('Int64', Number.NaN)).toThrow(/Failed to convert/);
     });
+
+    it('accepts Number.MAX_SAFE_INTEGER as a number', () => {
+      const val = mapToYdb('Int64', Number.MAX_SAFE_INTEGER);
+      expect(val).toBeInstanceOf(Int64);
+      expect((val as any).value).toBe(9007199254740991n);
+    });
+
+    it('rejects MAX_SAFE_INTEGER + 1 as a number (unsafe)', () => {
+      expect(() => mapToYdb('Int64', Number.MAX_SAFE_INTEGER + 1)).toThrow(
+        /safe integer/,
+      );
+    });
+
+    it('rejects an unsafe number that would otherwise pass Int64 range', () => {
+      const unsafe = 9007199254740994; // 2^53 + 2, внутри Int64, но number округляет
+      expect(Number.isSafeInteger(unsafe)).toBe(false);
+      expect(BigInt(unsafe)).toBeLessThan(9223372036854775807n);
+      expect(() => mapToYdb('Int64', unsafe)).toThrow(/safe integer/);
+    });
+
+    it('accepts exact bigint values above MAX_SAFE_INTEGER', () => {
+      const val = mapToYdb('Int64', 9007199254740992n);
+      expect(val).toBeInstanceOf(Int64);
+      expect((val as any).value).toBe(9007199254740992n);
+    });
+
+    it('accepts exact string values above MAX_SAFE_INTEGER', () => {
+      const val = mapToYdb('Int64', '9007199254740992');
+      expect(val).toBeInstanceOf(Int64);
+      expect((val as any).value).toBe(9007199254740992n);
+    });
   });
 
   describe('Bool', () => {
