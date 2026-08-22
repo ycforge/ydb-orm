@@ -162,6 +162,85 @@ describe('YdbQueryBuilder', () => {
     expect(none).toBeNull();
   });
 
+  it('getOne does not mutate the builder: getMany after it keeps the original limit', async () => {
+    const sunset = {
+      uuid: '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5',
+      title: 'Sunset',
+      is_public: true,
+      rating: 4.5,
+    };
+    const dawn = {
+      uuid: 'a1e1d4b2-0000-4000-8000-0f0c0e0d0c0b',
+      title: 'Dawn',
+      is_public: true,
+      rating: 3.0,
+    };
+    const mock = mockRuntime([[sunset, dawn]]);
+
+    const builder = QbPhotoEntity.query()
+      .where({ is_public: true })
+      .orderBy('rating', 'DESC')
+      .limit(10);
+
+    const one = await builder.getOne();
+    expect(one).toBeInstanceOf(QbPhotoEntity);
+    expect(one?.title).toBe('Sunset');
+    expect(mock.queries[0].sql).toContain('LIMIT 1 OFFSET 0');
+
+    const many = await builder.getMany();
+    expect(mock.queries[1].sql).toContain('LIMIT 10 OFFSET 0');
+    expect(mock.queries[1].sql).toContain('ORDER BY `rating` DESC');
+    expect(many).toHaveLength(2);
+
+    const { sql } = await builder.toYql();
+    expect(sql).toContain('LIMIT 10 OFFSET 0');
+  });
+
+  it('limit(0) yields an empty result (LIMIT 0), not clamped to 1', async () => {
+    const mock = mockRuntime([[]]);
+
+    const result = await QbPhotoEntity.query()
+      .where({ is_public: true })
+      .limit(0)
+      .getMany();
+    expect(result).toEqual([]);
+    expect(mock.queries[0].sql).toContain('LIMIT 0 OFFSET 0');
+  });
+
+  it('getOne with limit(0) returns null and leaves the builder at limit(0)', async () => {
+    const mock = mockRuntime([[]]);
+    const builder = QbPhotoEntity.query().limit(0);
+
+    const one = await builder.getOne();
+    expect(one).toBeNull();
+    expect(mock.queries[0].sql).toContain('LIMIT 1 OFFSET 0');
+
+    const { sql } = await builder.toYql();
+    expect(sql).toContain('LIMIT 0 OFFSET 0');
+  });
+
+  it('omitted limit keeps the default safety limit of 100', async () => {
+    mockRuntime();
+    const { sql } = await QbPhotoEntity.query().toYql();
+    expect(sql).toContain('LIMIT 100 OFFSET 0');
+  });
+
+  it('normal positive limit passes through unchanged', async () => {
+    mockRuntime();
+    const { sql } = await QbPhotoEntity.query().limit(5).toYql();
+    expect(sql).toContain('LIMIT 5 OFFSET 0');
+  });
+
+  it('rejects negative limit explicitly instead of clamping it', async () => {
+    mockRuntime();
+    await expect(QbPhotoEntity.query().limit(-1).toYql()).rejects.toThrow(
+      /Invalid LIMIT: -1\. LIMIT must be a finite non-negative number\./,
+    );
+    await expect(QbPhotoEntity.query().limit(-100).getMany()).rejects.toThrow(
+      /Invalid LIMIT/,
+    );
+  });
+
   it('getCount builds COUNT query without LIMIT', async () => {
     const mock = mockRuntime([[{ cnt: 7 }]]);
 

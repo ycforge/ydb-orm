@@ -107,6 +107,20 @@ await PhotoEntity.query().where({ is_public: true }).getCount(); // COUNT(*)
 const { sql, values } = await PhotoEntity.query().where({ is_public: true }).toYql(); // без выполнения
 ```
 
+Билдер переиспользуем: `getOne()`/`getMany()`/`toYql()` не меняют его состояние,
+один и тот же builder можно выполнять несколько раз (например, `getOne()`, затем
+`getMany()` с сохранённым лимитом).
+
+Явная семантика `limit()` (без молчаливого clamp в 1..1000):
+
+| вызов | итоговый `LIMIT` |
+| --- | --- |
+| лимит не задан | `100` — защитный дефолт (константа `DEFAULT_RETRIEVE_LIMIT`) |
+| `limit(0)` | `0` — гарантированно пустой результат |
+| `limit(n)`, 1 ≤ n ≤ 1000 | `n` |
+| `limit(n)`, n > 1000 | `1000` — защитный потолок (`MAX_RETRIEVE_LIMIT`) |
+| `limit(отрицательное)` | ошибка `Invalid LIMIT` |
+
 WHERE поддерживает операторы сравнения, логические группы `$or`/`$and` и JSON-операторы. Поля в WHERE/ORDER BY валидируются по метаданным сущности.
 
 ### WHERE-операторы
