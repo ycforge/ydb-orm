@@ -57,7 +57,7 @@ export type {
   JoinTableMetadata,
   ManyToManyJoinTable,
 } from './decorators/relation.decorators.js';
-export { EagerLoad } from './decorators/eager.decorator.js';
+export { EagerLoad, getEagerRelations } from './decorators/eager.decorator.js';
 export { YdbJson, getJsonColumns } from './decorators/json.decorator.js';
 export {
   YdbCreateDateColumn,

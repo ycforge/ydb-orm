@@ -49,12 +49,17 @@ export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
 /**
  * Помечает поле первичного ключа как участника AAD (Additional Authenticated Data).
  * Может применяться только к колонкам, объявленным через @YdbPrimaryColumn.
+ *
+ * Семантика наследования и повторного применения: дедупликация по имени поля
+ * (как у @YdbPrimaryColumn) — повторное объявление на наследнике или на том же
+ * классе не создаёт дублей в AAD-строке.
  */
 export function YdbSecurityAAD(): PropertyDecorator {
   return (target, propertyKey) => {
     const constructor = target.constructor;
     const inherited: string[] =
       Reflect.getMetadata(YDB_SECURITY_AAD_KEY, constructor) || [];
+    if (inherited.includes(propertyKey as string)) return;
     Reflect.defineMetadata(
       YDB_SECURITY_AAD_KEY,
       [...inherited, propertyKey as string],
