@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { YdbMigration } from './migration.interface.js';
 
@@ -82,6 +83,10 @@ function collectCandidates(mod: Record<string, any>): MigrationCandidate[] {
  * сортировка — по имени файла. Файлы с одинаковым именем миграции
  * (например, исходник `.ts` рядом со скомпилированной копией `.js`)
  * приводят к ошибке, а не к молчаливому пропуску.
+ *
+ * Каждой миграции присваивается стабильная идентичность (#101): SHA-256
+ * содержимого файла (`migration.hash`). Переименование файла идентичность
+ * не меняет, поэтому применённая миграция не выполнится повторно.
  */
 export async function loadMigrationsFromDir(
   dir: string,
@@ -92,11 +97,30 @@ export async function loadMigrationsFromDir(
 
   const migrations: YdbMigration[] = [];
   const fileByName = new Map<string, string>();
+  const fileByHash = new Map<string, string>();
 
   for (const file of files) {
-    const mod = (await import(
-      pathToFileURL(path.join(dir, file)).href
-    )) as Record<string, any>;
+    const filePath = path.join(dir, file);
+    const contentHash = createHash('sha256')
+      .update(fs.readFileSync(filePath))
+      .digest('hex');
+
+    // Два файла с одинаковым содержимым — почти наверняка копия (#101):
+    // обе миграции применятся «успешно», но вторая упадёт на уже
+    // выполненном DDL. Раньше это всплывало только в рантайме БД.
+    const duplicateHashFile = fileByHash.get(contentHash);
+    if (duplicateHashFile) {
+      throw new Error(
+        `Files ${duplicateHashFile} and ${file} have identical content ` +
+          `(hash "${contentHash}"). Keep exactly one of them.`,
+      );
+    }
+    fileByHash.set(contentHash, file);
+
+    const mod = (await import(pathToFileURL(filePath).href)) as Record<
+      string,
+      any
+    >;
 
     const candidates = collectCandidates(mod);
     if (candidates.length === 0) {
@@ -120,6 +144,8 @@ export async function loadMigrationsFromDir(
 
     const migration = candidates[0].create();
     migration.name ??= file.replace(MIGRATION_FILE_RE, '');
+    // Стабильная идентичность (#101); явно заданный hash не перезаписываем.
+    migration.hash ??= contentHash;
 
     // Дубли имени (в т.ч. `.ts` + скомпилированный `.js` рядом) —
     // раньше второй файл молча skip-ался или дважды применялся в раннере (#100).

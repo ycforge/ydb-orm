@@ -278,6 +278,13 @@ await EventEntity.query()
 
 По аналогии с TypeORM: миграция — класс с `up`/`down`, получающий `YdbExecutor`. Применённые миграции хранятся в таблице `ydb_migrations` (создаётся автоматически). Файлы миграций — `<timestamp>-<Name>.ts` в директории `./migrations`, порядок выполнения — по имени файла. Node ≥ 22.18 импортирует `.ts` напрямую, отдельный ts-node не нужен. Из-за нативного стриппинга типов типы (`YdbMigration`, `YdbExecutor`) импортируйте через `import type` — обычный именованный импорт типа упадёт в рантайме.
 
+Надёжность выполнения (#101):
+
+- **Стабильная идентичность**: каждая миграция получает SHA-256 содержимого файла (`migration.hash`). Сопоставление с `ydb_migrations` идёт по хешу, поэтому переименование файла не приводит к повторному применению; изменение содержимого уже применённой миграции — ошибка (нужен явный reconcile). Дубликаты имён/содержимого во входном списке завершаются понятной ошибкой.
+- **Частичное применение**: DDL в YDB не транзакционен, поэтому перед `up()`/`down()` пишется маркер `state='started'`, который заменяется на `'applied'` только после успеха. Падение посреди миграции оставляет маркер: повторный `run()` не начнёт её заново вслепую, а `revert()` откажется откатывать такую запись, пока её состояние не разрешат явно — `runner.markMigrationApplied(name)` (изменения дозаведены вручную) или `runner.removeMigrationRecord(name)` (изменения откачены вручную). В CLI то же самое: `ydb-orm migration:repair <name> --as-applied|--as-reverted`.
+- **Параллельные запуски**: claim на применение — INSERT строки с id, детерминированным из хеша миграции. Два процесса, стартовавшие одну миграцию, сталкиваются на PRIMARY KEY: второй падает с понятной ошибкой до выполнения `up()` — двойное применение невозможно без внутрипроцессных локов.
+- **`migration:show`** показывает orphan-записи (`[!]` — применена, но файла миграции больше нет) и прерванные (`[~]`).
+
 ```ts
 import type { YdbMigration, YdbExecutor } from '@ycforge/ydb-orm';
 import { executeSql } from '@ycforge/ydb-orm';
@@ -305,6 +312,7 @@ ydb-orm migration:generate AddPhotos      # миграция по diff сущн�
 ydb-orm migration:run                     # применить все новые миграции
 ydb-orm migration:revert                  # откатить последнюю
 ydb-orm migration:show                    # статус миграций
+ydb-orm migration:repair 1755000000000-CreateUsers --as-applied   # прерванная миграция дозаведена вручную
 ydb-orm entity:create UserProfile         # сущность ./src/user-profile.entity.ts
 ydb-orm completion bash                   # скрипт shell-автодополнения (bash|zsh|fish)
 ```
@@ -344,7 +352,7 @@ export default {
 
 ### Программный API
 
-`YdbMigrationRunner` (run/revert/status), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.
+`YdbMigrationRunner` (run/revert/status, восстановление после сбоев — `markMigrationApplied`/`removeMigrationRecord`), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.
 
 ## Транзакции
 
