@@ -1,12 +1,17 @@
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
-import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
+  getYdbEntityMetadata,
+  type YdbEntityMetadata,
+} from '../metadata/entity-metadata.js';
+import {
+  defaultJoinColumnName,
   getYdbJoinTableMetadata,
   getYdbRelationsMetadata,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbPrimitive } from '../core/types.js';
 import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -98,10 +103,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     }
 
     const inParams = ownerPks.map((_, i) => `$p${i}`).join(', ');
-    const ownerPkField = getPrimaryKey(joinTable.ownerEntity);
-    const ownerPkType =
-      getYdbEntityMetadata(joinTable.ownerEntity)?.schema[ownerPkField] ??
-      'Uuid';
+    const ownerPkType = joinTable.ownerColumnType;
 
     const sql =
       `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
@@ -111,7 +113,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
     const joinQuery = exec([sql] as unknown as TemplateStringsArray);
     ownerPks.forEach((value, i) => {
-      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerPkField));
+      joinQuery.parameter(
+        `p${i}`,
+        mapToYdb(ownerPkType, value, joinTable.ownerColumn),
+      );
     });
 
     const joinRows = await this.executeQuery(joinQuery, options);
@@ -396,6 +401,12 @@ interface ResolvedJoinTable {
   tableName: string;
   ownerColumn: string;
   inverseColumn: string;
+  /**
+   * YDB-тип owner-колонки join-таблицы (#90): тип PK owner-сущности.
+   * Схема join-таблицы (schema sync) выводит те же имена и типы, поэтому
+   * чтение всегда совместимо со сгенерированной таблицей.
+   */
+  ownerColumnType: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
   inverseEntity: typeof YdbBaseEntity;
 }
@@ -409,6 +420,12 @@ function resolveManyToManyJoinTable(
   const inverseMeta = getYdbEntityMetadata(inverseEntity);
   if (!ownerMeta || !inverseMeta) return undefined;
 
+  // Рантайм-модель many-to-many поддерживает только одно-колоночные PK —
+  // тот же контракт, что требует schema sync при генерации join-таблицы (#90).
+  const ownerPk = m2mPrimaryKey(ownerMeta, 'owner');
+  const inversePk = m2mPrimaryKey(inverseMeta, 'inverse');
+  const ownerColumnType = m2mPrimaryKeyType(ownerMeta, 'owner');
+
   const ownJoinTables = getYdbJoinTableMetadata(owner);
   const own = ownJoinTables.find(
     (jt) => jt.propertyKey === relation.propertyKey,
@@ -417,8 +434,12 @@ function resolveManyToManyJoinTable(
   if (own) {
     return {
       tableName: own.tableName,
-      ownerColumn: own.joinColumn ?? `${ownerMeta.tableName}_uuid`,
-      inverseColumn: own.inverseJoinColumn ?? `${inverseMeta.tableName}_uuid`,
+      ownerColumn:
+        own.joinColumn ?? defaultJoinColumnName(ownerMeta.tableName, ownerPk),
+      inverseColumn:
+        own.inverseJoinColumn ??
+        defaultJoinColumnName(inverseMeta.tableName, inversePk),
+      ownerColumnType,
       ownerEntity: owner,
       inverseEntity,
     };
@@ -435,8 +456,13 @@ function resolveManyToManyJoinTable(
     if (inv) {
       return {
         tableName: inv.tableName,
-        ownerColumn: inv.inverseJoinColumn ?? `${ownerMeta.tableName}_uuid`,
-        inverseColumn: inv.joinColumn ?? `${inverseMeta.tableName}_uuid`,
+        ownerColumn:
+          inv.inverseJoinColumn ??
+          defaultJoinColumnName(ownerMeta.tableName, ownerPk),
+        inverseColumn:
+          inv.joinColumn ??
+          defaultJoinColumnName(inverseMeta.tableName, inversePk),
+        ownerColumnType,
         ownerEntity: owner,
         inverseEntity,
       };
@@ -444,4 +470,40 @@ function resolveManyToManyJoinTable(
   }
 
   return undefined;
+}
+
+/** Единственный PK сущности; составной или отсутствующий — явная ошибка (#90). */
+function m2mPrimaryKey(
+  meta: YdbEntityMetadata,
+  side: 'owner' | 'inverse',
+): string {
+  if (!meta.primaryKeys?.length) {
+    throw new Error(
+      `Cannot resolve many-to-many ${side} side for entity ${meta.target.name}: ` +
+        `no primary key is declared`,
+    );
+  }
+  if (meta.primaryKeys.length > 1) {
+    throw new Error(
+      `Cannot resolve many-to-many relation for entity ${meta.target.name}: ` +
+        `composite primary keys (${meta.primaryKeys.join(', ')}) are not supported ` +
+        `in many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
+    );
+  }
+  return meta.primaryKeys[0];
+}
+
+function m2mPrimaryKeyType(
+  meta: YdbEntityMetadata,
+  side: 'owner' | 'inverse',
+): YdbPrimitive {
+  const pk = m2mPrimaryKey(meta, side);
+  const type = meta.schema[pk];
+  if (!type) {
+    throw new Error(
+      `Primary key column "${pk}" of entity ${meta.target.name} ` +
+        `is not declared via @YdbColumn`,
+    );
+  }
+  return type;
 }

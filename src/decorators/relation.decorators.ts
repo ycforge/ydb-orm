@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { YdbPrimitive } from '../core/types.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 
@@ -32,11 +33,31 @@ export interface ManyToManyJoinTable {
   tableName: string;
   joinColumn: string;
   inverseJoinColumn: string;
+  /**
+   * YDB-тип колонки, ссылающейся на владельца (#90): выводится из
+   * фактического PK owner-сущности, а не жёстко Uuid.
+   */
+  joinColumnType?: YdbPrimitive;
+  /** YDB-тип колонки, ссылающейся на inverse-сущность (аналогично #90). */
+  inverseJoinColumnType?: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
   ownerTableName: string;
   ownerProperty: string;
   inverseEntity: typeof YdbBaseEntity;
   inverseTableName: string;
+}
+
+/**
+ * Имя join-колонки по умолчанию: `{tableName}_{pkProperty}` (#90).
+ * Для PK с именем `uuid` это историческое `{tableName}_uuid` — существующие
+ * связи сохраняют имена; для не-uuid PK имя выводится из реального свойства
+ * PK вместо молчаливого предположения о `_uuid`.
+ */
+export function defaultJoinColumnName(
+  tableName: string,
+  pkProperty: string,
+): string {
+  return `${tableName}_${pkProperty}`;
 }
 
 function defineRelation(prototype: object, metadata: RelationMetadata): void {
@@ -185,9 +206,53 @@ export function getManyToManyJoinTables(
         );
       }
 
-      const joinColumn = joinTable.joinColumn ?? `${meta.tableName}_uuid`;
+      // Рантайм-модель many-to-many связывает строки ровно по одному
+      // значению PK с каждой стороны; составной PK породил бы join-таблицу,
+      // не совпадающую с тем, что читает relations-код, — отказываем явно (#90).
+      if (meta.primaryKeys.length > 1) {
+        throw new Error(
+          `Cannot build many-to-many join table "${joinTable.tableName}" ` +
+            `for entity ${Entity.name}: composite primary keys ` +
+            `(${meta.primaryKeys.join(', ')}) are not supported in ` +
+            `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
+        );
+      }
+      if (inverseMeta.primaryKeys.length > 1) {
+        throw new Error(
+          `Cannot build many-to-many join table "${joinTable.tableName}" ` +
+            `for entity ${InverseEntity.name}: composite primary keys ` +
+            `(${inverseMeta.primaryKeys.join(', ')}) are not supported in ` +
+            `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
+        );
+      }
+
+      const ownerPk = meta.primaryKeys[0];
+      const inversePk = inverseMeta.primaryKeys[0];
+
+      const ownerPkType = meta.schema[ownerPk];
+      if (!ownerPkType) {
+        throw new Error(
+          `Cannot build many-to-many join table for entity ${Entity.name}: ` +
+            `primary key column "${ownerPk}" is not declared via @YdbColumn. ` +
+            `Declare it or mark another column with @YdbPrimaryColumn.`,
+        );
+      }
+      const inversePkType = inverseMeta.schema[inversePk];
+      if (!inversePkType) {
+        throw new Error(
+          `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
+            `primary key column "${inversePk}" is not declared via @YdbColumn. ` +
+            `Declare it or mark another column with @YdbPrimaryColumn.`,
+        );
+      }
+
+      // Имена по умолчанию выводятся из фактических PK-колонок (#90):
+      // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
+      const joinColumn =
+        joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk);
       const inverseJoinColumn =
-        joinTable.inverseJoinColumn ?? `${inverseMeta.tableName}_uuid`;
+        joinTable.inverseJoinColumn ??
+        defaultJoinColumnName(inverseMeta.tableName, inversePk);
 
       if (seen.has(joinTable.tableName)) continue;
       seen.add(joinTable.tableName);
@@ -196,6 +261,8 @@ export function getManyToManyJoinTables(
         tableName: joinTable.tableName,
         joinColumn,
         inverseJoinColumn,
+        joinColumnType: ownerPkType,
+        inverseJoinColumnType: inversePkType,
         ownerEntity: Entity as typeof YdbBaseEntity,
         ownerTableName: meta.tableName,
         ownerProperty: relation.propertyKey,

@@ -16,13 +16,26 @@ export interface MockExecutor {
  * Мок YdbExecutor: записывает SQL и параметры, резолвится заданными строками.
  * transaction().execute(fn) вызывает fn с тем же моком в роли trx.
  * Сети нет — используется в тестах NestJS-интеграции через overrideProvider.
+ *
+ * options.sequential — каждый запрос получает СВОЙ набор result sets
+ * (rows[0] — первый запрос, rows[1] — второй и т.д.; последний элемент
+ * повторяется для лишних запросов). По умолчанию все запросы получают
+ * один и тот же массив result sets.
  */
-export function createMockExecutor(rows: any[][] = [[]]): MockExecutor {
+export function createMockExecutor(
+  rows: any[][] = [[]],
+  options?: { sequential?: boolean },
+): MockExecutor {
   const queries: RecordedQuery[] = [];
+  let callIndex = 0;
 
   const executor: any = jest.fn((strings: TemplateStringsArray) => {
     const recorded: RecordedQuery = { sql: strings[0], params: {} };
     queries.push(recorded);
+
+    const resultRows = options?.sequential
+      ? (rows[Math.min(callIndex++, rows.length - 1)] ?? [])
+      : rows;
 
     const query: any = {
       parameter(name: string, value: unknown) {
@@ -39,7 +52,7 @@ export function createMockExecutor(rows: any[][] = [[]]): MockExecutor {
         return query;
       },
       then(onFulfilled: any, onRejected: any) {
-        return Promise.resolve(rows).then(onFulfilled, onRejected);
+        return Promise.resolve(resultRows).then(onFulfilled, onRejected);
       },
     };
     return query;

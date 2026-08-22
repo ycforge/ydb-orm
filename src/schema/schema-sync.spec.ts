@@ -149,6 +149,90 @@ class TestPhotoEntity extends YdbBaseEntity {
   tags?: TestTagEntity[];
 }
 
+// #90: many-to-many с не-uuid PK (кастомные имена свойств)
+@YdbEntity('test_articles')
+class TestArticleEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  article_id: string;
+
+  @YdbColumn('Utf8')
+  title: string;
+
+  @ManyToMany(() => TestAuthorEntity, (author) => author.articles)
+  @JoinTable('test_article_author')
+  authors?: TestAuthorEntity[];
+}
+
+@YdbEntity('test_authors')
+class TestAuthorEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  author_id: string;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestArticleEntity, (article) => article.authors)
+  articles?: TestArticleEntity[];
+}
+
+// #90: разные PK-типы на сторонах связи (Int64 ↔ Utf8) + явные имена колонок
+@YdbEntity('test_orders')
+class TestOrderEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  order_id: bigint;
+
+  @YdbColumn('Utf8')
+  title: string;
+
+  @ManyToMany(() => TestSkuEntity, (sku) => sku.orders)
+  @JoinTable('test_order_sku', {
+    joinColumn: 'order_ref',
+    inverseJoinColumn: 'sku_code',
+  })
+  skus?: TestSkuEntity[];
+}
+
+@YdbEntity('test_skus')
+class TestSkuEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  sku: string;
+
+  @YdbColumn('Utf8')
+  label: string;
+
+  @ManyToMany(() => TestOrderEntity, (order) => order.skus)
+  orders?: TestOrderEntity[];
+}
+
+// #90: составной PK на стороне owner — явный отказ
+@YdbEntity('test_m2m_comp_users')
+class TestCompositeUserEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  tenant_id: string;
+
+  @YdbPrimaryColumn('Uuid')
+  user_uuid: string;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestCompositeRoleEntity, (role) => role.users)
+  @JoinTable('test_composite_user_role')
+  roles?: TestCompositeRoleEntity[];
+}
+
+@YdbEntity('test_m2m_comp_roles')
+class TestCompositeRoleEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  role_uuid: string;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestCompositeUserEntity, (user) => user.roles)
+  users?: TestCompositeUserEntity[];
+}
+
 const meta = (entity: new (...args: any[]) => any) => {
   const m = getYdbEntityMetadata(entity);
   if (!m) throw new Error('no metadata');
@@ -218,6 +302,97 @@ describe('buildExpectedJoinTableSchema', () => {
       test_tags_uuid: 'Uuid',
     });
     expect(schema.primaryKey).toEqual(['test_photos_uuid', 'test_tags_uuid']);
+  });
+
+  it('derives column names from actual PK property names, not {table}_uuid (#90)', () => {
+    const joinTables = getManyToManyJoinTables([
+      TestArticleEntity,
+      TestAuthorEntity,
+    ]);
+    expect(joinTables).toHaveLength(1);
+
+    const [jt] = joinTables;
+    // PK называются article_id/author_id — дефолтные имена выводятся из них
+    expect(jt.joinColumn).toBe('test_articles_article_id');
+    expect(jt.inverseJoinColumn).toBe('test_authors_author_id');
+
+    const schema = buildExpectedJoinTableSchema(jt);
+    expect(schema.columns).toEqual({
+      test_articles_article_id: 'Uuid',
+      test_authors_author_id: 'Uuid',
+    });
+    expect(schema.primaryKey).toEqual([
+      'test_articles_article_id',
+      'test_authors_author_id',
+    ]);
+  });
+
+  it('derives non-uuid PK types (Int64 owner, Utf8 inverse) and keeps explicit column names (#90)', () => {
+    const joinTables = getManyToManyJoinTables([
+      TestOrderEntity,
+      TestSkuEntity,
+    ]);
+    expect(joinTables).toHaveLength(1);
+
+    const [jt] = joinTables;
+    expect(jt.joinColumn).toBe('order_ref');
+    expect(jt.inverseJoinColumn).toBe('sku_code');
+    expect(jt.joinColumnType).toBe('Int64');
+    expect(jt.inverseJoinColumnType).toBe('Utf8');
+
+    const schema = buildExpectedJoinTableSchema(jt);
+    expect(schema.columns).toEqual({
+      order_ref: 'Int64',
+      sku_code: 'Utf8',
+    });
+    expect(schema.primaryKey).toEqual(['order_ref', 'sku_code']);
+  });
+
+  it('derives types from entity metadata when join-table struct carries none (#90)', () => {
+    const [jt] = getManyToManyJoinTables([TestOrderEntity, TestSkuEntity]);
+    const bare = {
+      ...jt,
+      joinColumnType: undefined,
+      inverseJoinColumnType: undefined,
+    };
+    const schema = buildExpectedJoinTableSchema(bare);
+
+    expect(schema.columns).toEqual({ order_ref: 'Int64', sku_code: 'Utf8' });
+  });
+
+  it('rejects composite primary keys with a clear error instead of a broken schema (#90)', () => {
+    expect(() =>
+      getManyToManyJoinTables([
+        TestCompositeUserEntity,
+        TestCompositeRoleEntity,
+      ]),
+    ).toThrow(/composite primary keys.*not supported in.*many-to-many/s);
+  });
+});
+
+describe('buildExpectedJoinTableSchema DDL compatibility (#90)', () => {
+  it('generates CREATE TABLE matching the columns the relations code reads', () => {
+    const schemas = buildExpectedSchemas([TestOrderEntity, TestSkuEntity]);
+    const jt = schemas.find((s) => s.tableName === 'test_order_sku');
+    expect(jt).toBeDefined();
+
+    const yql = generateCreateTableYql(jt!);
+    expect(yql).toBe(
+      'CREATE TABLE `test_order_sku` (\n' +
+        '  `order_ref` Int64,\n' +
+        '  `sku_code` Utf8,\n' +
+        '  PRIMARY KEY (`order_ref`, `sku_code`)\n' +
+        ')',
+    );
+  });
+
+  it('keeps default uuid-based names for uuid-PK entities (backward compatibility)', () => {
+    const schemas = buildExpectedSchemas([TestPhotoEntity, TestTagEntity]);
+    const jt = schemas.find((s) => s.tableName === 'test_photo_tag');
+    expect(jt?.columns).toEqual({
+      test_photos_uuid: 'Uuid',
+      test_tags_uuid: 'Uuid',
+    });
   });
 });
 
