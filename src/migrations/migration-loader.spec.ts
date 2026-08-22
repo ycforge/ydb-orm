@@ -16,6 +16,12 @@ afterEach(() => {
 const writeMigration = (fileName: string, body: string) =>
   fs.writeFileSync(path.join(dir, fileName), body, 'utf-8');
 
+const upDownClass = (name: string) => `
+  export class ${name} {
+    async up() {}
+    async down() {}
+  }`;
+
 describe('loadMigrationsFromDir', () => {
   it('loads migration classes sorted by file name', async () => {
     writeMigration(
@@ -71,5 +77,120 @@ describe('loadMigrationsFromDir', () => {
     await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
       /does not export a migration class/,
     );
+  });
+
+  describe('#100 regression: deterministic discovery', () => {
+    it('ignores *.spec.* and *.test.* files even when they export no migration', async () => {
+      // Раньше такой файл жёстко ронял migration:run/show/check
+      writeMigration(
+        '1000-Ok.mjs',
+        `export default class Ok {
+        async up() {}
+        async down() {}
+      }`,
+      );
+      writeMigration('2000-Suite.spec.mjs', `export const x = 1;`);
+      writeMigration('3000-Suite.test.mjs', `const broken = ;`);
+      writeMigration('4000-Suite.spec.ts', `export const x: number = 1;`);
+
+      const migrations = await loadMigrationsFromDir(dir);
+
+      expect(migrations.map((m) => m.name)).toEqual(['1000-Ok']);
+    });
+
+    it('ignores declaration files and source maps', async () => {
+      writeMigration(
+        '1000-Ok.mjs',
+        `export default class Ok {
+        async up() {}
+        async down() {}
+      }`,
+      );
+      writeMigration('2000-Types.d.ts', `export type X = {};`);
+      writeMigration('3000-Bundle.map', `{}`);
+
+      const migrations = await loadMigrationsFromDir(dir);
+
+      expect(migrations.map((m) => m.name)).toEqual(['1000-Ok']);
+    });
+
+    it('throws a clear error when a file exports several migration classes', async () => {
+      // Раньше молча брался только первый подошедший класс
+      writeMigration(
+        '1000-Multi.mjs',
+        `${upDownClass('CreateUsers')}
+         ${upDownClass('CreateRoles')}`,
+      );
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /1000-Multi\.mjs exports multiple migration implementations \((CreateRoles, CreateUsers|CreateUsers, CreateRoles)\)/,
+      );
+    });
+
+    it('treats default and named export of the same class as a single migration', async () => {
+      writeMigration(
+        '1000-Single.mjs',
+        `${upDownClass('Single')}
+         export default Single;`,
+      );
+
+      const migrations = await loadMigrationsFromDir(dir);
+
+      expect(migrations.map((m) => m.name)).toEqual(['1000-Single']);
+    });
+
+    it('throws when a helper class with up/down sits next to a real migration', async () => {
+      // Раньше эвристика могла взять helper вместо миграции или наоборот
+      writeMigration(
+        '1000-Mixed.mjs',
+        `${upDownClass('SomeHelper')}
+         ${upDownClass('RealMigration')}`,
+      );
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /multiple migration implementations/,
+      );
+    });
+
+    it('throws on duplicate names from a .ts source and its compiled .js copy', async () => {
+      // Раньше второй файл с тем же именем молча skip-ался в раннере
+      fs.writeFileSync(
+        path.join(dir, 'package.json'),
+        JSON.stringify({ type: 'module' }),
+      );
+      const body = `export default class Dup {
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('5000-Dup.ts', body);
+      writeMigration('5000-Dup.js', body);
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /Duplicate migration name "5000-Dup" from files 5000-Dup\.(ts|js) and 5000-Dup\.(ts|js)/,
+      );
+    });
+
+    it('throws on duplicate explicit migration names across files', async () => {
+      writeMigration(
+        '6000-A.mjs',
+        `export default class A {
+          name = 'shared';
+          async up() {}
+          async down() {}
+        }`,
+      );
+      writeMigration(
+        '6000-B.mjs',
+        `export default class B {
+          name = 'shared';
+          async up() {}
+          async down() {}
+        }`,
+      );
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /Duplicate migration name "shared" from files/,
+      );
+    });
   });
 });
