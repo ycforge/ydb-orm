@@ -8,7 +8,7 @@ TypeORM-like ORM для [YDB (Yandex Database)](https://ydb.tech/) на TypeScri
 
 Принципы: удобство, минимализм (по памяти и CPU) и функционал.
 
-Runtime — Node.js ≥ 22, ESM (`"type": "module"`, `module: nodenext`). Драйвер — [`@ydbjs/*`](https://github.com/ydb-platform/ydb-js-sdk) (новое поколение SDK).
+Runtime — Node.js ≥ 22.18 (нативный импорт `.ts` через type stripping), ESM (`"type": "module"`, `module: nodenext`). Драйвер — [`@ydbjs/*`](https://github.com/ydb-platform/ydb-js-sdk) (новое поколение SDK).
 
 ## Установка
 
