@@ -27,8 +27,88 @@ export interface QueryLogger {
 /** Максимальная длина замаскированного значения параметра. */
 const MAX_PARAM_LENGTH = 64;
 
-/** Маскирование значения параметра: секреты скрыты, длинные строки обрезаны. */
-function maskValue(value: unknown): unknown {
+/** Плейсхолдер вместо значения секретного/PII параметра в логах. */
+const REDACTED = '<redacted>';
+
+/**
+ * Токены, по которым имя параметра признаётся чувствительным (секреты/PII).
+ * Матчинг по токенам имени (password, token, secret, email, authorization и
+ * т.п.) — короткие значения не должны попадать в лог открыто только потому,
+ * что не длиннее MAX_PARAM_LENGTH.
+ */
+const SENSITIVE_TOKENS = new Set([
+  'password',
+  'passwd',
+  'passphrase',
+  'pwd',
+  'token',
+  'tokens',
+  'secret',
+  'secrets',
+  'authorization',
+  'credential',
+  'credentials',
+  'apikey',
+  'accesskey',
+  'secretkey',
+  'privatekey',
+  'clientsecret',
+  'email',
+  'emails',
+  'phone',
+  'phone_number',
+  'telephone',
+  'mobile',
+  'cellphone',
+  'ssn',
+  'passport',
+  'cvv',
+  'cvc',
+  'card',
+  'cardnumber',
+  'pin',
+  'first_name',
+  'last_name',
+  'full_name',
+  'username',
+  'login',
+  'cookie',
+  'session',
+  'bearer',
+]);
+
+/**
+ * Чувствителен ли параметр по имени.
+ *
+ * Кроме явных токенов секретов/PII маскируются synthetic-колонки blind index
+ * (`{field}_bi`): их хеш детерминирован по plaintext, и по логам можно
+ * коррелировать значения/подбирать их частотным анализом.
+ */
+function isSensitiveParam(name: string): boolean {
+  const lower = name.toLowerCase();
+  if (/[-_]bi$/.test(lower)) return true;
+  const tokens = lower.split(/[^a-z0-9]+/).filter((t) => t.length > 0);
+  return tokens.some((t) => SENSITIVE_TOKENS.has(t));
+}
+
+/**
+ * Маскирование скалярного значения: ciphertext/бинарные данные — только длиной,
+ * чувствительные параметры — целиком, длинные строки обрезаются.
+ */
+function maskScalarValue(name: string, value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    // Бинарные/зашифрованные данные никогда не логируем дословно.
+    return `<bytes:${value.length}>`;
+  }
+  if (isSensitiveParam(name)) return REDACTED;
+  if (typeof value === 'string' && value.length > MAX_PARAM_LENGTH) {
+    return value.slice(0, MAX_PARAM_LENGTH) + '...';
+  }
+  return value;
+}
+
+/** Маскирование значения параметра по имени параметра. */
+function maskValue(name: string, value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (
     typeof value === 'object' &&
@@ -38,25 +118,9 @@ function maskValue(value: unknown): unknown {
     // YDB typed value { type: ..., value: ... }
     const inner = (value as any).value;
     if (inner === null || inner === undefined) return inner;
-    if (typeof inner === 'string') {
-      return inner.length > MAX_PARAM_LENGTH
-        ? inner.slice(0, MAX_PARAM_LENGTH) + '...'
-        : inner;
-    }
-    if (inner instanceof Uint8Array) {
-      return `<bytes:${inner.length}>`;
-    }
-    return inner;
+    return maskScalarValue(name, inner);
   }
-  if (value instanceof Uint8Array) {
-    return `<bytes:${value.length}>`;
-  }
-  if (typeof value === 'string') {
-    return value.length > MAX_PARAM_LENGTH
-      ? value.slice(0, MAX_PARAM_LENGTH) + '...'
-      : value;
-  }
-  return value;
+  return maskScalarValue(name, value);
 }
 
 /**
@@ -103,7 +167,7 @@ export function wrapExecutorWithLogging(
     const proxied: any = {
       parameter(name: string, value: unknown) {
         paramNames.push(name);
-        maskedParams[name] = maskValue(value);
+        maskedParams[name] = maskValue(name, value);
         originalParameter(name, value);
         // Возвращаем прокси, иначе цепочка parameter().parameter() сбегает
         // из прокси и последующие вызовы теряют логирование
@@ -146,7 +210,20 @@ export function wrapExecutorWithLogging(
     return proxied;
   };
 
-  wrapped.transaction = executor.transaction.bind(executor);
+  wrapped.transaction = () => {
+    const tx = executor.transaction();
+    return {
+      execute: (
+        fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<unknown>,
+      ) =>
+        tx.execute((trx: YdbExecutor, signal?: AbortSignal) => {
+          // Транзакционный executor оборачивается тем же логгером: каждый
+          // запрос внутри runInTransaction (и вложенных транзакций) логируется
+          // с той же семантикой, что и обычные запросы.
+          return fn(wrapExecutorWithLogging(trx, logger), signal);
+        }),
+    };
+  };
 
   return wrapped as YdbExecutor;
 }

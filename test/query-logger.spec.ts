@@ -131,10 +131,79 @@ describe('wrapExecutorWithLogging', () => {
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
     const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
-    q.parameter('secret', 'a'.repeat(200));
+    q.parameter('description', 'a'.repeat(200));
     await q;
 
-    expect(logEntries[0].maskedParams.secret).toBe('a'.repeat(64) + '...');
+    expect(logEntries[0].maskedParams.description).toBe('a'.repeat(64) + '...');
+  });
+
+  it('redacts short sensitive parameter values', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('password', 'hunter2');
+    q.parameter('api_token', 'abc123');
+    q.parameter('authorization', 'Bearer x');
+    q.parameter('email_encrypted', 'ivan@example.com');
+    await q;
+
+    expect(logEntries[0].maskedParams.password).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.api_token).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.authorization).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.email_encrypted).toBe('<redacted>');
+  });
+
+  it('redacts long sensitive parameter values', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('secret', 'k'.repeat(500));
+    q.parameter('access_token', 't'.repeat(500));
+    await q;
+
+    expect(logEntries[0].maskedParams.secret).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.access_token).toBe('<redacted>');
+  });
+
+  it('redacts blind index columns by suffix', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('email_encrypted_bi', 'hash-of-plaintext');
+    q.parameter('author_email_bi', 'another-hash');
+    await q;
+
+    expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.author_email_bi).toBe('<redacted>');
+  });
+
+  it('redacts non-string sensitive values', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('pin', 1234);
+    await q;
+
+    expect(logEntries[0].maskedParams.pin).toBe('<redacted>');
+  });
+
+  it('keeps non-sensitive short and long values unmasked/truncated', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('title', 'Hello');
+    q.parameter('table_name', 't'.repeat(100));
+    q.parameter('hash', 'sha256hash');
+    await q;
+
+    expect(logEntries[0].maskedParams.title).toBe('Hello');
+    expect(logEntries[0].maskedParams.table_name).toBe('t'.repeat(64) + '...');
+    expect(logEntries[0].maskedParams.hash).toBe('sha256hash');
   });
 
   it('masks Uint8Array parameters', async () => {
@@ -167,5 +236,89 @@ describe('wrapExecutorWithLogging', () => {
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
     expect(typeof (logging as any).transaction).toBe('function');
+  });
+
+  it('logs queries inside a transaction', async () => {
+    const mock = createMockExecutor([[{ cnt: 1 }]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    await (logging as any).transaction().execute(async (trx: any) => {
+      const q = trx(['SELECT COUNT(*) FROM t'] as unknown);
+      q.parameter('flag', 1);
+      await q;
+    });
+
+    expect(logEntries).toHaveLength(1);
+    expect(logEntries[0].sql).toBe('SELECT COUNT(*) FROM t');
+    expect(logEntries[0].paramNames).toEqual(['flag']);
+    expect(logEntries[0].maskedParams).toEqual({ flag: 1 });
+    expect(logEntries[0].error).toBeUndefined();
+  });
+
+  it('logs queries across nested transactions', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    await (logging as any).transaction().execute(async (trx: any) => {
+      await trx(['SELECT 1'] as unknown);
+      await trx.transaction().execute(async (trx2: any) => {
+        await trx2(['SELECT 2'] as unknown);
+      });
+    });
+
+    expect(logEntries).toHaveLength(2);
+    expect(logEntries.map((e) => e.sql)).toEqual(['SELECT 1', 'SELECT 2']);
+  });
+
+  it('logs transaction queries that fail with the query error', async () => {
+    const failExecutor: any = jest.fn(() => ({
+      parameter: jest.fn().mockReturnThis(),
+      timeout: jest.fn().mockReturnThis(),
+      signal: jest.fn().mockReturnThis(),
+      cancel: jest.fn().mockReturnThis(),
+      then: (_onFulfilled: any, onRejected: any) =>
+        Promise.reject(new Error('tx query rejected')).then(
+          _onFulfilled,
+          onRejected,
+        ),
+    }));
+    failExecutor.transaction = () => ({
+      execute: (fn: any) => fn(failExecutor),
+    });
+
+    const logging = wrapExecutorWithLogging(failExecutor, mockLogger);
+
+    await expect(
+      (logging as any).transaction().execute(async (trx: any) => {
+        const q = trx(['SELECT 1'] as unknown);
+        q.parameter('p', 'v');
+        await q;
+      }),
+    ).rejects.toThrow('tx query rejected');
+
+    expect(logEntries).toHaveLength(1);
+    expect(logEntries[0].sql).toBe('SELECT 1');
+    expect(logEntries[0].error?.message).toBe('tx query rejected');
+  });
+
+  it('logs queries whose transaction body later fails (rollback)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    await expect(
+      (logging as any).transaction().execute(async (trx: any) => {
+        const q = trx(['UPDATE t SET x = 1'] as unknown);
+        q.parameter('v', 2);
+        await q;
+        throw new Error('tx rollback');
+      }),
+    ).rejects.toThrow('tx rollback');
+
+    // Сам запрос прошёл успешно — он залогирован без ошибки, несмотря на
+    // последующий откат транзакции.
+    expect(logEntries).toHaveLength(1);
+    expect(logEntries[0].sql).toBe('UPDATE t SET x = 1');
+    expect(logEntries[0].maskedParams).toEqual({ v: 2 });
+    expect(logEntries[0].error).toBeUndefined();
   });
 });
