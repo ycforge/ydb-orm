@@ -12,6 +12,7 @@ import type {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbEntityPersistence } from '../persistence/entity-persistence.js';
+import type { HydrationContext } from '../persistence/entity-persistence.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import { mapToYdb } from '../core/mapper.js';
@@ -22,6 +23,12 @@ import { mapToYdb } from '../core/mapper.js';
 export interface RelationsDeps {
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  /**
+   * @internal Общий контекст гидратации одной операции чтения.
+   * Передаётся в persistence связанных сущностей при batch-фетче,
+   * чтобы afterFind сработал ровно один раз на инстанс (см. #83).
+   */
+  hydrationContext?: HydrationContext;
 }
 
 /**

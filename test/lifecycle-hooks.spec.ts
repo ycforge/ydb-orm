@@ -8,6 +8,8 @@ import {
   AfterInsert,
   AfterFind,
   BeforeRemove,
+  ManyToOne,
+  EagerLoad,
 } from '../src/index.js';
 import {
   createMockExecutor,
@@ -54,6 +56,41 @@ class HookEntity extends YdbBaseEntity {
 const UUID_A = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';
 const UUID_B = '6bd91505-d4f6-4a81-ab65-9dbc68cf4ed6';
 
+// Self-referencing сущность с циклической eager-связью на саму себя:
+// регрессия #83 — hydrate → loadEagerRelations → fetchByColumnIn → hydrate
+// не должен рекурсировать бесконечно.
+@YdbEntity('lifecycle_tree_nodes')
+@EagerLoad(['parent'])
+class TreeNodeEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  declare uuid: string;
+
+  @YdbColumn('Utf8')
+  name?: string;
+
+  @YdbColumn('Uuid')
+  parentUuid?: string;
+
+  @ManyToOne(() => TreeNodeEntity, (e) => e.parentUuid)
+  declare parent?: TreeNodeEntity;
+
+  @AfterFind
+  onFound() {
+    calls.push(`afterFind:${this.name}:parent=${this.parent?.name ?? '-'}`);
+  }
+}
+
+const NODE_C = '11111111-1111-4111-8111-111111111111';
+const NODE_P = '22222222-2222-4222-8222-222222222222';
+
+function treeRows() {
+  // Цикл в данных: C → P → C
+  return [
+    { uuid: NODE_C, name: 'C', parentUuid: NODE_P },
+    { uuid: NODE_P, name: 'P', parentUuid: NODE_C },
+  ];
+}
+
 function row(name: string, uuid: string) {
   return { uuid, name };
 }
@@ -64,6 +101,7 @@ describe('lifecycle hooks', () => {
     queryCountAtHook.length = 0;
     currentMock = undefined;
     HookEntity.setExecutor(undefined as any);
+    TreeNodeEntity.setExecutor(undefined as any);
   });
 
   it('beforeRemove вызывается при delete()', async () => {
@@ -234,5 +272,64 @@ describe('lifecycle hooks', () => {
     expect(deleted).toBe(1);
     expect(calls).toEqual([]);
     expect(mock.queries[0].sql).toContain('DELETE FROM `hook_test`');
+  });
+
+  describe('eager relations и рекурсия гидратации (#83)', () => {
+    it('циклическая self-referencing eager-связь не уходит в бесконечную рекурсию', async () => {
+      const mock = createMockExecutor([treeRows()]);
+      currentMock = mock;
+      TreeNodeEntity.setExecutor(mock.executor);
+
+      const found = await TreeNodeEntity.findAll();
+
+      // Ровно 2 запроса: выборка корней + один batch IN (...) для связей.
+      // Глубина eager — 1, как до #83; повторная догрузка не выполняется.
+      expect(found).toHaveLength(2);
+      expect(mock.queries).toHaveLength(2);
+    });
+
+    it('afterFind связанных сущностей срабатывает раньше корневых, корень видит присоединённую связь', async () => {
+      const mock = createMockExecutor([treeRows()]);
+      currentMock = mock;
+      TreeNodeEntity.setExecutor(mock.executor);
+
+      const found = await TreeNodeEntity.findAll();
+
+      // Дети из batch-фетча получают afterFind в момент полной гидратации
+      // своей строки (parent ещё не присоединён — обратных ссылок нет),
+      // затем корни — уже с загруженным parent.
+      expect(calls).toEqual([
+        'afterFind:C:parent=-',
+        'afterFind:P:parent=-',
+        'afterFind:C:parent=P',
+        'afterFind:P:parent=C',
+      ]);
+      // Ровно по одному afterFind на каждый из 4 инстансов (2 корня + 2 связи)
+      expect(calls.filter((c) => c.startsWith('afterFind'))).toHaveLength(4);
+
+      expect(found[0].name).toBe('C');
+      expect(found[0].parent).toBeInstanceOf(TreeNodeEntity);
+      expect(found[0].parent?.name).toBe('P');
+      // Вложенная догрузка не выполняется: глубина eager осталась 1
+      expect(found[0].parent?.parent).toBeUndefined();
+    });
+
+    it('query().getMany() сохраняет загрузку eager relations (как до #83)', async () => {
+      const mock = createMockExecutor([treeRows()]);
+      currentMock = mock;
+      TreeNodeEntity.setExecutor(mock.executor);
+
+      const found = await TreeNodeEntity.query().getMany();
+
+      expect(found).toHaveLength(2);
+      expect(mock.queries).toHaveLength(2);
+      expect(found[0].parent?.name).toBe('P');
+      expect(calls).toEqual([
+        'afterFind:C:parent=-',
+        'afterFind:P:parent=-',
+        'afterFind:C:parent=P',
+        'afterFind:P:parent=C',
+      ]);
+    });
   });
 });
