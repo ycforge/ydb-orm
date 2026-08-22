@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { YdbPrimitive } from '../core/types.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
+import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
 
 export const YDB_RELATIONS_KEY = 'ydb:relations';
 export const YDB_JOIN_TABLES_KEY = 'ydb:joinTables';
@@ -160,6 +161,113 @@ export function getYdbJoinTableMetadata(target: any): JoinTableMetadata[] {
 }
 
 /**
+ * Резолвит ОДНО объявление join-таблицы: владелец + конкретная m2m-связь
+ * с @JoinTable. Валидирует PK обеих сторон, выводит имена колонок по
+ * умолчанию из фактических PK и их YDB-типы (#90).
+ *
+ * Единственная точка резолва объявления: используется и генерацией схемы
+ * (getManyToManyJoinTables), и рантайм-резолвом relations (#139) —
+ * алгоритм открытия/валидации нигде не дублируется.
+ *
+ * undefined — связь не many-to-many, у сущности нет метаданных или
+ * у этой связи нет собственной @JoinTable.
+ */
+export function resolveRelationJoinTableDefinition(
+  Entity: new (...args: any[]) => any,
+  relation: RelationMetadata,
+): ManyToManyJoinTable | undefined {
+  if (relation.type !== 'many-to-many') return undefined;
+
+  const meta = getYdbEntityMetadata(Entity);
+  if (!meta) return undefined;
+
+  const joinTable = getYdbJoinTableMetadata(Entity).find(
+    (jt) => jt.propertyKey === relation.propertyKey,
+  );
+  if (!joinTable) return undefined;
+
+  const InverseEntity = relation.target();
+  const inverseMeta = getYdbEntityMetadata(InverseEntity);
+  if (!inverseMeta) {
+    throw new Error(
+      `ManyToMany relation "${relation.propertyKey}" on ${Entity.name} ` +
+        `targets ${InverseEntity.name}, which is not decorated with @YdbEntity`,
+    );
+  }
+
+  if (meta.primaryKeys.length === 0) {
+    throw new Error(
+      `Cannot build many-to-many join table for entity ${Entity.name}: ` +
+        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+    );
+  }
+  if (inverseMeta.primaryKeys.length === 0) {
+    throw new Error(
+      `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
+        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+    );
+  }
+
+  // Рантайм-модель many-to-many связывает строки ровно по одному
+  // значению PK с каждой стороны; составной PK породил бы join-таблицу,
+  // не совпадающую с тем, что читает relations-код, — отказываем явно (#90).
+  if (meta.primaryKeys.length > 1) {
+    throw new Error(
+      `Cannot build many-to-many join table "${joinTable.tableName}" ` +
+        `for entity ${Entity.name}: composite primary keys ` +
+        `(${meta.primaryKeys.join(', ')}) are not supported in ` +
+        `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
+    );
+  }
+  if (inverseMeta.primaryKeys.length > 1) {
+    throw new Error(
+      `Cannot build many-to-many join table "${joinTable.tableName}" ` +
+        `for entity ${InverseEntity.name}: composite primary keys ` +
+        `(${inverseMeta.primaryKeys.join(', ')}) are not supported in ` +
+        `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
+    );
+  }
+
+  const ownerPk = meta.primaryKeys[0];
+  const inversePk = inverseMeta.primaryKeys[0];
+
+  const ownerPkType = meta.schema[ownerPk];
+  if (!ownerPkType) {
+    throw new Error(
+      `Cannot build many-to-many join table for entity ${Entity.name}: ` +
+        `primary key column "${ownerPk}" is not declared via @YdbColumn. ` +
+        `Declare it or mark another column with @YdbPrimaryColumn.`,
+    );
+  }
+  const inversePkType = inverseMeta.schema[inversePk];
+  if (!inversePkType) {
+    throw new Error(
+      `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
+        `primary key column "${inversePk}" is not declared via @YdbColumn. ` +
+        `Declare it or mark another column with @YdbPrimaryColumn.`,
+    );
+  }
+
+  // Имена по умолчанию выводятся из фактических PK-колонок (#90):
+  // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
+  return {
+    tableName: joinTable.tableName,
+    joinColumn:
+      joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk),
+    inverseJoinColumn:
+      joinTable.inverseJoinColumn ??
+      defaultJoinColumnName(inverseMeta.tableName, inversePk),
+    joinColumnType: ownerPkType,
+    inverseJoinColumnType: inversePkType,
+    ownerEntity: Entity as typeof YdbBaseEntity,
+    ownerTableName: meta.tableName,
+    ownerProperty: relation.propertyKey,
+    inverseEntity: InverseEntity,
+    inverseTableName: inverseMeta.tableName,
+  };
+}
+
+/**
  * Возвращает join-таблицы many-to-many, владельцами которых являются переданные сущности.
  * Обратная сторона (без @JoinTable) не порождает отдельную таблицу.
  *
@@ -176,102 +284,11 @@ export function getManyToManyJoinTables(
   const groups = new Map<string, ManyToManyJoinTable[]>();
 
   for (const Entity of entities) {
-    const meta = getYdbEntityMetadata(Entity);
-    if (!meta) continue;
-
     const relations = getYdbRelationsMetadata(Entity);
-    const joinTables = getYdbJoinTableMetadata(Entity);
 
     for (const relation of relations) {
-      if (relation.type !== 'many-to-many') continue;
-
-      const joinTable = joinTables.find(
-        (jt) => jt.propertyKey === relation.propertyKey,
-      );
-      if (!joinTable) continue;
-
-      const InverseEntity = relation.target();
-      const inverseMeta = getYdbEntityMetadata(InverseEntity);
-      if (!inverseMeta) {
-        throw new Error(
-          `ManyToMany relation "${relation.propertyKey}" on ${Entity.name} ` +
-            `targets ${InverseEntity.name}, which is not decorated with @YdbEntity`,
-        );
-      }
-
-      if (meta.primaryKeys.length === 0) {
-        throw new Error(
-          `Cannot build many-to-many join table for entity ${Entity.name}: ` +
-            `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
-        );
-      }
-      if (inverseMeta.primaryKeys.length === 0) {
-        throw new Error(
-          `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
-            `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
-        );
-      }
-
-      // Рантайм-модель many-to-many связывает строки ровно по одному
-      // значению PK с каждой стороны; составной PK породил бы join-таблицу,
-      // не совпадающую с тем, что читает relations-код, — отказываем явно (#90).
-      if (meta.primaryKeys.length > 1) {
-        throw new Error(
-          `Cannot build many-to-many join table "${joinTable.tableName}" ` +
-            `for entity ${Entity.name}: composite primary keys ` +
-            `(${meta.primaryKeys.join(', ')}) are not supported in ` +
-            `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
-        );
-      }
-      if (inverseMeta.primaryKeys.length > 1) {
-        throw new Error(
-          `Cannot build many-to-many join table "${joinTable.tableName}" ` +
-            `for entity ${InverseEntity.name}: composite primary keys ` +
-            `(${inverseMeta.primaryKeys.join(', ')}) are not supported in ` +
-            `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
-        );
-      }
-
-      const ownerPk = meta.primaryKeys[0];
-      const inversePk = inverseMeta.primaryKeys[0];
-
-      const ownerPkType = meta.schema[ownerPk];
-      if (!ownerPkType) {
-        throw new Error(
-          `Cannot build many-to-many join table for entity ${Entity.name}: ` +
-            `primary key column "${ownerPk}" is not declared via @YdbColumn. ` +
-            `Declare it or mark another column with @YdbPrimaryColumn.`,
-        );
-      }
-      const inversePkType = inverseMeta.schema[inversePk];
-      if (!inversePkType) {
-        throw new Error(
-          `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
-            `primary key column "${inversePk}" is not declared via @YdbColumn. ` +
-            `Declare it or mark another column with @YdbPrimaryColumn.`,
-        );
-      }
-
-      // Имена по умолчанию выводятся из фактических PK-колонок (#90):
-      // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
-      const joinColumn =
-        joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk);
-      const inverseJoinColumn =
-        joinTable.inverseJoinColumn ??
-        defaultJoinColumnName(inverseMeta.tableName, inversePk);
-
-      const definition: ManyToManyJoinTable = {
-        tableName: joinTable.tableName,
-        joinColumn,
-        inverseJoinColumn,
-        joinColumnType: ownerPkType,
-        inverseJoinColumnType: inversePkType,
-        ownerEntity: Entity as typeof YdbBaseEntity,
-        ownerTableName: meta.tableName,
-        ownerProperty: relation.propertyKey,
-        inverseEntity: InverseEntity,
-        inverseTableName: inverseMeta.tableName,
-      };
+      const definition = resolveRelationJoinTableDefinition(Entity, relation);
+      if (!definition) continue;
 
       const group = groups.get(definition.tableName);
       if (!group) {
@@ -293,6 +310,44 @@ export function getManyToManyJoinTables(
   }
 
   return [...groups.values()].map(([first]) => first);
+}
+
+/**
+ * Глобальная сверка объявления join-таблицы со всеми зарегистрированными
+ * сущностями (#139): если то же имя таблицы объявлено другой связью
+ * с другим физическим описанием — ошибка с перечислением определений.
+ *
+ * Вызывается рантайм-резолвом relations, чтобы конфликт, который отвергла
+ * бы schema sync/verify/миграции, не проходил молча при чтении: локально
+ * для пары (owner, inverse) объявление может быть единственным, но имя
+ * таблицы уже занято расходящимся объявлением в другом месте модели.
+ */
+export function assertNoForeignJoinTableConflicts(
+  canonical: ManyToManyJoinTable,
+): void {
+  for (const Entity of getRegisteredYdbEntities()) {
+    const relations = getYdbRelationsMetadata(Entity);
+    for (const relation of relations) {
+      // Сломанные нерелевантные объявления не должны ронять чтение другой
+      // связи: их отвергнет полное сканирование модели (schema sync/verify/
+      // миграции) с той же ошибкой. Роняет сверку только реальный конфликт
+      // имён таблиц.
+      let other: ManyToManyJoinTable | undefined;
+      try {
+        other = resolveRelationJoinTableDefinition(Entity, relation);
+      } catch {
+        continue;
+      }
+      if (!other || other.tableName !== canonical.tableName) continue;
+      // Эквивалентные (например, зеркальные) объявления разрешены.
+      if (joinTableDefinitionsEquivalent(canonical, other)) continue;
+      throw new Error(
+        formatJoinTableConflict([canonical, other]) +
+          `\nDetected while resolving runtime relation access — the same ` +
+          `conflict would fail schema sync/verify/migration generation.`,
+      );
+    }
+  }
 }
 
 /**

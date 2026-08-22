@@ -170,6 +170,7 @@ class SymChildEntity extends YdbBaseEntity {
 
 // #139: расходящиеся объявления одного имени join-таблицы
 @YdbEntity('rt_conflict_lefts')
+@EagerLoad(['rights'])
 class ConflictLeftEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Int64')
   left_id: bigint;
@@ -417,6 +418,19 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
       /Conflicting definitions for many-to-many join table "rt_conflict_join"/,
     );
     await expect(left.loadRelations(['rights'])).rejects.toThrow(
+      /ConflictLeftEntity\.rights[\s\S]*ConflictRightEntity\.lefts/,
+    );
+  });
+
+  it('eager loading fails on the same conflict as schema generation (#139)', async () => {
+    // Строка владельца нужна, чтобы eager-загрузка дошла до резолва join-таблицы
+    const mock = setup([[[{ left_id: 1n, name: 'L' }]]]);
+    ConflictLeftEntity.setExecutor(mock.executor);
+
+    await expect(ConflictLeftEntity.findAll()).rejects.toThrow(
+      /Conflicting definitions for many-to-many join table "rt_conflict_join"/,
+    );
+    await expect(ConflictLeftEntity.findAll()).rejects.toThrow(
       /ConflictLeftEntity\.rights[\s\S]*ConflictRightEntity\.lefts/,
     );
   });

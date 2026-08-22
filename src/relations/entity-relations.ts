@@ -2,6 +2,7 @@ import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
+  assertNoForeignJoinTableConflicts,
   getManyToManyJoinTables,
   getYdbRelationsMetadata,
 } from '../decorators/relation.decorators.js';
@@ -299,20 +300,23 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       } else if (rel.type === 'many-to-many') {
         const pkField = getPrimaryKey(constructor);
 
+        // Резолв зависит только от метаданных класса — один раз на связь,
+        // а не на каждый элемент (внутри проверяются конфликты объявлений).
+        const joinTable = resolveManyToManyJoinTable(constructor, rel);
+        if (!joinTable) {
+          throw new Error(
+            `Cannot load many-to-many relation "${name}": ` +
+              `join table is not defined on ${constructor.name}. ` +
+              `Mark the owning side with @JoinTable.`,
+          );
+        }
+
         for (const item of items) {
           const pkValue = (item as any)[pkField];
           if (pkValue === undefined) {
             throw new Error(
               `Cannot load many-to-many relation "${name}": ` +
                 `primary key "${pkField}" is undefined on ${constructor.name}`,
-            );
-          }
-          const joinTable = resolveManyToManyJoinTable(constructor, rel);
-          if (!joinTable) {
-            throw new Error(
-              `Cannot load many-to-many relation "${name}": ` +
-                `join table is not defined on ${constructor.name}. ` +
-                `Mark the owning side with @JoinTable.`,
             );
           }
           const related = await this.loadManyToManyRelation(
@@ -430,6 +434,7 @@ function resolveManyToManyJoinTable(
     (d) => d.ownerEntity === owner && d.ownerProperty === relation.propertyKey,
   );
   if (own) {
+    assertNoForeignJoinTableConflicts(own);
     return {
       tableName: own.tableName,
       ownerColumn: own.joinColumn,
@@ -446,6 +451,7 @@ function resolveManyToManyJoinTable(
     (d) => d.ownerEntity === inverseEntity && d.inverseEntity === owner,
   );
   if (inverseOwned) {
+    assertNoForeignJoinTableConflicts(inverseOwned);
     return {
       tableName: inverseOwned.tableName,
       ownerColumn: inverseOwned.inverseJoinColumn,
