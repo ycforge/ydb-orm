@@ -108,6 +108,7 @@ export {
   YdbRepository,
   YdbEntityManager,
   getRepositoryToken,
+  getActiveRecordInitToken,
   InjectRepository,
   getOrCreateRepository,
 } from './repository/index.js';

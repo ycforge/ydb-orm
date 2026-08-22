@@ -4,7 +4,10 @@ import { createActiveRecordEntityProvider } from './repository-factory.js';
 import { YdbModuleAsyncOptions } from '../core/interfaces.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
-import { getRepositoryToken } from '../repository/index.js';
+import {
+  getRepositoryToken,
+  getActiveRecordInitToken,
+} from '../repository/repository-token.js';
 
 @Module({})
 export class YdbModule {
@@ -33,7 +36,7 @@ export class YdbModule {
         }
         return repo;
       },
-      inject: [`${entityClass.name}_AR_INIT`],
+      inject: [getActiveRecordInitToken(entityClass as any)],
     }));
 
     return {
