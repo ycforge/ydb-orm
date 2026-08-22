@@ -932,6 +932,33 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     }
   }
 
+  /**
+   * Единый конвейер гидратации результатов SELECT: дешифровка →
+   * instantiate → eager relations → afterFind.
+   *
+   * Семантика lifecycle: afterFind вызывается ровно один раз для каждого
+   * инстанса и никогда — при пустом результате. Используется всеми путями
+   * чтения (find, findAll, executeSelect, fetchByColumnIn), поэтому
+   * связанные через eager/lazy relations сущности проходят тот же конвейер.
+   */
+  private async hydrate(
+    raw: Record<string, any>[],
+    options?: QueryOptions,
+  ): Promise<T[]> {
+    await this.decryptResult(raw);
+    const result = raw.map((r) => this.instantiate(r));
+    if (!result.length) return result;
+
+    await this.loadEagerRelations(result, options);
+
+    if (getLifecycleHooks(this.entityClass).afterFind.length) {
+      for (const inst of result) {
+        await this.callHooks('afterFind', inst);
+      }
+    }
+    return result;
+  }
+
   private async runValidation(entity: Record<string, any>): Promise<void> {
     const provider = this.getValidationProvider();
     if (!provider) return;
@@ -975,14 +1002,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const raw = rows[0]?.[0] ?? null;
     if (!raw) return null;
 
-    await this.decryptResult(raw);
-
-    const result = this.instantiate(raw);
-
-    await this.loadEagerRelations([result], options);
-
-    await this.callHooks('afterFind', result);
-
+    const [result] = await this.hydrate([raw], options);
     return result;
   }
 
@@ -1008,17 +1028,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-
-    const result = raw.map((r) => this.instantiate(r));
-
-    if (result.length) {
-      await this.loadEagerRelations(result, options);
-    }
-
-    return result;
+    return this.hydrate(rows[0] ?? [], options);
   }
 
   async count(
@@ -1076,15 +1087,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-
-    const result = raw.map((r) => this.instantiate(r));
-    if (result.length) {
-      await this.loadEagerRelations(result, options);
-    }
-    return result;
+    return this.hydrate(rows[0] ?? [], options);
   }
 
   /** @internal Мост для YdbQueryBuilder. */
@@ -1264,6 +1268,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
+    // beforeInsert: как в insert() — до валидации, шифрования и формирования
+    // параметров; мутации полей из хуков попадают в БД.
+    for (const e of entities) {
+      await this.callHooks('beforeInsert', e);
+    }
+
     for (const e of entities) {
       this.requirePkValues(meta, e as Record<string, any>, 'insert');
     }
@@ -1330,6 +1340,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         await this.executeQuery(query, options);
       }
+    }
+
+    // afterInsert: только после успешного завершения всех батчей записи.
+    for (const e of entities) {
+      await this.callHooks('afterInsert', e);
     }
 
     return entities;
@@ -1666,10 +1681,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-    return raw.map((r) => this.instantiate(r));
+    return this.hydrate(rows[0] ?? [], options);
   }
 
   /**
