@@ -35,6 +35,14 @@ export type YdbEntityConstructor<T extends YdbBaseEntity> = {
 } & typeof YdbBaseEntity;
 
 /**
+ * Контекст одной операции гидратации: identity guard против двойного
+ * afterFind на одном инстансе (см. YdbEntityPersistence.hydrate).
+ */
+export interface HydrationContext {
+  seen: WeakSet<object>;
+}
+
+/**
  * Зависимости persistence: executor и опциональные провайдеры.
  */
 export interface PersistenceDeps {
@@ -42,6 +50,11 @@ export interface PersistenceDeps {
   blindIndexProvider?: YdbBlindIndexProvider;
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
+  /**
+   * @internal Общий контекст гидратации одной операции чтения.
+   * Прокидывается в persistence связанных сущностей при догрузке связей.
+   */
+  hydrationContext?: HydrationContext;
 }
 
 /**
@@ -932,6 +945,51 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     }
   }
 
+  /**
+   * Единый конвейер гидратации результатов SELECT: дешифровка →
+   * instantiate → [eager relations] → afterFind.
+   *
+   * Семантика lifecycle (#83):
+   * - afterFind вызывается ровно один раз для каждого инстанса в рамках
+   *   операции чтения и никогда — при пустом результате;
+   * - хуки корневых сущностей срабатывают после догрузки связей;
+   * - связанные сущности (fetchByColumnIn) проходят тот же конвейер с
+   *   `eager: false`: глубина eager остаётся равной 1, как и до #83,
+   *   что исключает бесконечную рекурсию на циклических/self-referencing
+   *   eager-связях.
+   *
+   * `hydrationContext.seen` — identity guard: инстанс, уже попавший в
+   * гидратацию этой операции, не получит afterFind повторно.
+   */
+  private async hydrate(
+    raw: Record<string, any>[],
+    options?: QueryOptions,
+    opts?: { eager?: boolean },
+  ): Promise<T[]> {
+    await this.decryptResult(raw);
+    const result = raw.map((r) => this.instantiate(r));
+    if (!result.length) return result;
+
+    const ctx = this.options.hydrationContext ?? {
+      seen: new WeakSet<object>(),
+    };
+
+    const fresh = result.filter((inst) => !ctx.seen.has(inst));
+    for (const inst of fresh) ctx.seen.add(inst);
+    if (!fresh.length) return result;
+
+    if (opts?.eager ?? true) {
+      await this.loadEagerRelations(fresh, options, ctx);
+    }
+
+    if (getLifecycleHooks(this.entityClass).afterFind.length) {
+      for (const inst of fresh) {
+        await this.callHooks('afterFind', inst);
+      }
+    }
+    return result;
+  }
+
   private async runValidation(entity: Record<string, any>): Promise<void> {
     const provider = this.getValidationProvider();
     if (!provider) return;
@@ -975,14 +1033,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const raw = rows[0]?.[0] ?? null;
     if (!raw) return null;
 
-    await this.decryptResult(raw);
-
-    const result = this.instantiate(raw);
-
-    await this.loadEagerRelations([result], options);
-
-    await this.callHooks('afterFind', result);
-
+    const [result] = await this.hydrate([raw], options);
     return result;
   }
 
@@ -1008,17 +1059,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-
-    const result = raw.map((r) => this.instantiate(r));
-
-    if (result.length) {
-      await this.loadEagerRelations(result, options);
-    }
-
-    return result;
+    return this.hydrate(rows[0] ?? [], options);
   }
 
   async count(
@@ -1076,15 +1118,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-
-    const result = raw.map((r) => this.instantiate(r));
-    if (result.length) {
-      await this.loadEagerRelations(result, options);
-    }
-    return result;
+    return this.hydrate(rows[0] ?? [], options);
   }
 
   /** @internal Мост для YdbQueryBuilder. */
@@ -1264,6 +1299,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
+    // beforeInsert: как в insert() — до валидации, шифрования и формирования
+    // параметров; мутации полей из хуков попадают в БД.
+    for (const e of entities) {
+      await this.callHooks('beforeInsert', e);
+    }
+
     for (const e of entities) {
       this.requirePkValues(meta, e as Record<string, any>, 'insert');
     }
@@ -1330,6 +1371,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         await this.executeQuery(query, options);
       }
+    }
+
+    // afterInsert: только после успешного завершения всех батчей записи.
+    for (const e of entities) {
+      await this.callHooks('afterInsert', e);
     }
 
     return entities;
@@ -1666,19 +1712,22 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    const raw = rows[0] ?? [];
 
-    await this.decryptResult(raw);
-    return raw.map((r) => this.instantiate(r));
+    // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
+    // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
+    // afterFind при этом обязателен для связанных сущностей (issue #83).
+    return this.hydrate(rows[0] ?? [], options, { eager: false });
   }
 
   /**
    * Загружает eager relations для списка сущностей.
-   * Вызывается из find/findAll/executeSelect.
+   * Вызывается из find/findAll/executeSelect. Контекст гидратации
+   * прокидывается в связанные сущности (identity guard для afterFind).
    */
   private async loadEagerRelations(
     items: T[],
     options?: QueryOptions,
+    hydrationContext?: HydrationContext,
   ): Promise<void> {
     if (!items.length) return;
 
@@ -1690,6 +1739,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     ).YdbEntityRelations(this.entityClass, this.executor, {
       encryptionProvider: this.options.encryptionProvider,
       blindIndexProvider: this.options.blindIndexProvider,
+      hydrationContext,
     });
     await relations.loadEagerRelations(items, options);
   }
