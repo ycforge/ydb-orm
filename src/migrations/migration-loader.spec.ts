@@ -65,11 +65,12 @@ describe('loadMigrationsFromDir', () => {
     expect(migrations[0].name).toBe('custom-name');
   });
 
-  it('returns empty list for missing directory', async () => {
-    const migrations = await loadMigrationsFromDir(
-      path.join(dir, 'not-exists'),
-    );
-    expect(migrations).toEqual([]);
+  it('fails clearly for missing directory (#103)', async () => {
+    // Раньше возвращался [] — опечатка в --dir выглядела как
+    // «No pending migrations».
+    await expect(
+      loadMigrationsFromDir(path.join(dir, 'not-exists')),
+    ).rejects.toThrow(/Migration directory does not exist/);
   });
 
   it('throws when a file exports no migration class', async () => {
@@ -242,6 +243,31 @@ describe('loadMigrationsFromDir', () => {
       await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
         /identical content/,
       );
+    });
+  });
+
+  describe('missing directory (#103)', () => {
+    it('fails clearly instead of returning []', async () => {
+      // Раньше несуществующая директория выглядела как «No pending
+      // migrations» — опечатка в --dir была неотличима от пустой директории.
+      const missing = path.join(dir, 'no-such-dir');
+
+      await expect(loadMigrationsFromDir(missing)).rejects.toThrow(
+        /Migration directory does not exist: .*no-such-dir/,
+      );
+    });
+
+    it('fails when the path is a file, not a directory', async () => {
+      const filePath = path.join(dir, 'not-a-dir.ts');
+      fs.writeFileSync(filePath, '', 'utf-8');
+
+      await expect(loadMigrationsFromDir(filePath)).rejects.toThrow(
+        /is not a directory/,
+      );
+    });
+
+    it('still accepts an existing empty directory', async () => {
+      expect(await loadMigrationsFromDir(dir)).toEqual([]);
     });
   });
 });

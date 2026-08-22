@@ -33,13 +33,14 @@ export const CLI_COMMANDS: CliCommand[] = [
   { name: 'completion', description: 'Print shell completion script' },
 ];
 
-/** Флаги, которые парсит CLI (см. parseArgs в cli.ts). */
+/** Флаги, которые парсит CLI (см. parseArgs в args.ts). */
 export const CLI_FLAGS = [
   '--config',
   '--dir',
   '--json',
   '--as-applied',
   '--as-reverted',
+  '--verbose',
 ];
 
 /** Поддерживаемые шеллы. */
@@ -122,7 +123,8 @@ ${commands}
             '--dir[Migrations/entities directory]:directory:_files -/' \\
             '--json[JSON output]' \\
             '--as-applied[Repair: mark migration as applied]' \\
-            '--as-reverted[Repair: remove bookkeeping record]'
+            '--as-reverted[Repair: remove bookkeeping record]' \\
+            '--verbose[Full error stack and cause chain]'
           ;;
       esac
       ;;
@@ -161,6 +163,7 @@ function renderFish(): string {
     "complete -c ydb-orm -l json -d 'JSON output'",
     "complete -c ydb-orm -l as-applied -d 'Repair: mark migration as applied'",
     "complete -c ydb-orm -l as-reverted -d 'Repair: remove bookkeeping record'",
+    "complete -c ydb-orm -l verbose -d 'Full error stack and cause chain'",
   );
   return lines.join('\n') + '\n';
 }

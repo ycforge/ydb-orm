@@ -91,7 +91,21 @@ function collectCandidates(mod: Record<string, any>): MigrationCandidate[] {
 export async function loadMigrationsFromDir(
   dir: string,
 ): Promise<YdbMigration[]> {
-  if (!fs.existsSync(dir)) return [];
+  // Несуществующая директория — ошибка, а не «No pending migrations» (#103):
+  // опечатка в --dir не должна выглядеть как отсутствие миграций.
+  if (!fs.existsSync(dir)) {
+    throw new Error(
+      `Migration directory does not exist: ${path.resolve(dir)} ` +
+        `(resolved from "${dir}"). Create it with ` +
+        `"ydb-orm migration:create <name>" or pass a correct --dir.`,
+    );
+  }
+  if (!fs.statSync(dir).isDirectory()) {
+    throw new Error(
+      `Migration directory is not a directory: ${path.resolve(dir)} ` +
+        `(resolved from "${dir}").`,
+    );
+  }
 
   const files = fs.readdirSync(dir).filter(isMigrationFileName).sort();
 

@@ -317,9 +317,9 @@ ydb-orm entity:create UserProfile         # сущность ./src/user-profile.
 ydb-orm completion bash                   # скрипт shell-автодополнения (bash|zsh|fish)
 ```
 
-Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`, `--json` (для `migration:show`/`migration:check`).
+Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`, `--json` (для `migration:show`/`migration:check`), `--verbose` (полный стек ошибки и цепочка cause при сбое). Неизвестные флаги и пустые значения опций считаются ошибкой.
 
-`migration:generate` и `schema:verify` печатают цветной diff расхождений «сущности vs БД», сгруппированный по таблицам; цвета отключаются при выводе не в TTY или переменной `NO_COLOR`.
+`migration:generate` и `schema:verify` печатают цветной diff расхождений «сущности vs БД», сгруппированный по таблицам; цвет определяется по потоку, куда попадает вывод (для `schema:verify` это stderr), отключается при выводе не в TTY или переменной `NO_COLOR`.
 
 Автодополнение команд и флагов для шелла:
 
@@ -332,7 +332,7 @@ ydb-orm completion zsh > ~/.zsh/completions/_ydb-orm
 ydb-orm completion fish > ~/.config/fish/completions/ydb-orm.fish
 ```
 
-Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; также ищется в `./src/`):
+Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; ищется в текущей директории и выше, до корня ФС; поддерживается как default, так и именованный экспорт):
 
 ```ts
 import { UserEntity } from './src/user.entity.js';

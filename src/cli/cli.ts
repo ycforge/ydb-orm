@@ -14,6 +14,7 @@ import { connectCli, loadCliConfig } from './config.js';
 import { createEntityFile, createMigrationFile } from './generators.js';
 import { renderCompletionScript } from './completion.js';
 import { renderSchemaDiff } from './diff.js';
+import { CliArgsError, formatError, parseArgs, CliArgs } from './args.js';
 
 const HELP = `ydb-orm — CLI для миграций и генерации кода
 
@@ -30,45 +31,47 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
 
 Опции:
-  --config <path>   Путь к конфигу (по умолчанию ./ydb-orm.config.ts|mts|mjs|js,
-                    иначе env: YDB_ENDPOINT, YDB_AUTH_TYPE,
-                    YDB_AUTHORIZED_KEY_PATH)
+  --config <path>   Путь к конфигу (ищется в CWD и выше:
+                    ydb-orm.config.ts|mts|mjs|js, иначе env: YDB_ENDPOINT,
+                    YDB_AUTH_TYPE, YDB_AUTHORIZED_KEY_PATH)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
   --json            JSON-вывод (для migration:show и migration:check)
+  --verbose         Полный стек ошибки и цепочка cause при сбое
+  -h, --help        Эта справка
 
+Неизвестные флаги и пустые значения опций считаются ошибкой (#103).
 `;
 
-interface ParsedArgs {
-  command?: string;
-  positional?: string;
-  config?: string;
-  dir?: string;
-  json?: boolean;
-  asApplied?: boolean;
-  asReverted?: boolean;
-}
-
-function parseArgs(argv: string[]): ParsedArgs {
-  const result: ParsedArgs = {};
-  const rest: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--config') result.config = argv[++i];
-    else if (argv[i] === '--dir') result.dir = argv[++i];
-    else if (argv[i] === '--json') result.json = true;
-    else if (argv[i] === '--as-applied') result.asApplied = true;
-    else if (argv[i] === '--as-reverted') result.asReverted = true;
-    else rest.push(argv[i]);
-  }
-  [result.command, result.positional] = rest;
-  return result;
-}
-
 async function main(): Promise<void> {
-  const args = parseArgs(process.argv.slice(2));
+  let args: CliArgs = {};
+  try {
+    args = parseArgs(process.argv.slice(2));
+    await runCommand(args);
+  } catch (error) {
+    process.exitCode = 1;
+    const verbose = args.verbose === true;
+    console.error(
+      formatError(error, {
+        verbose,
+        // Полезная диагностика окружения при verbose (#103).
+        context: [
+          `cwd: ${process.cwd()}`,
+          `argv: ${JSON.stringify(process.argv.slice(2))}`,
+          `node: ${process.version}`,
+        ],
+      }),
+    );
+    if (!verbose && !(error instanceof CliArgsError)) {
+      console.error('\nRun with --verbose for the full stack trace.');
+    }
+  }
+}
+
+async function runCommand(args: CliArgs): Promise<void> {
   const command = args.command;
 
-  if (!command || command === '--help' || command === '-h') {
+  if (!command || args.help) {
     console.log(HELP);
     return;
   }
@@ -77,7 +80,7 @@ async function main(): Promise<void> {
     try {
       console.log(renderCompletionScript(args.positional ?? ''));
     } catch (error) {
-      console.error((error as Error).message);
+      console.error(formatError(error));
       process.exitCode = 1;
     }
     return;
@@ -169,7 +172,11 @@ async function main(): Promise<void> {
         console.log('Schema OK — no issues found');
       } else {
         console.error(`Found ${issues.length} schema issue(s):`);
-        console.error(renderSchemaDiff(issues));
+        // Расхождения пишутся в stderr — цвет решаем по stderr, а не по
+        // stdout (#103): при `ydb-orm schema:verify 2>issues.txt` ANSI-коды
+        // не должны уезжать в перенаправленный файл, а при
+        // `... | cat` — теряться, если stderr остался TTY.
+        console.error(renderSchemaDiff(issues, { stream: process.stderr }));
         process.exitCode = 1;
       }
     } finally {
@@ -328,7 +335,4 @@ function requireEntityMeta(entity: any) {
   return meta;
 }
 
-main().catch((error: unknown) => {
-  console.error((error as Error).message);
-  process.exitCode = 1;
-});
+main();
