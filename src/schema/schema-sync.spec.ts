@@ -31,6 +31,7 @@ import {
   ExpectedTableSchema,
   YdbSchemaSyncer,
   YdbTableDescription,
+  YdbTableTtl,
 } from './schema-sync.js';
 import {
   getManyToManyJoinTables,
@@ -113,6 +114,17 @@ class TestSessionEntity extends YdbBaseEntity {
   expires_at: Date;
 }
 
+@YdbEntity('test_ttl_numeric')
+@YdbTtl({ interval: 'P30D', column: 'expires_at', unit: 'milliseconds' })
+class TestNumericTtlEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  // Uint32 нет в YdbPrimitive — числовые TTL-типы проверяются отдельно
+  @YdbColumn('Uint32' as never)
+  expires_at: number;
+}
+
 @YdbEntity('test_photos')
 @EagerLoad(['tags'])
 class TestPhotoEntity extends YdbBaseEntity {
@@ -137,7 +149,13 @@ const description = (
   columns: [string, Type_PrimitiveTypeId][],
   primaryKey: string[] = ['uuid'],
   indexes: Array<{ name: string; columns: string[]; unique: boolean }> = [],
-): YdbTableDescription => ({ columns: new Map(columns), primaryKey, indexes });
+  ttl?: YdbTableTtl,
+): YdbTableDescription => ({
+  columns: new Map(columns),
+  primaryKey,
+  indexes,
+  ...(ttl ? { ttl } : {}),
+});
 
 describe('entity registry', () => {
   it('registers classes decorated with @YdbEntity', () => {
@@ -587,6 +605,23 @@ describe('checkTableSchema TTL (#88)', () => {
       }),
     );
     expect(changedCheck.ttlMismatches).toHaveLength(1);
+  });
+
+  it('treats sub-microsecond intervals as mismatch instead of truncating (#88)', () => {
+    // "PT0.0000001S" непредставим в YDB Interval: усечение до 0µs дало бы
+    // ложное «совпадение» с TTL = 0 секунд в БД
+    const subMicroExpected = {
+      ...ttlExpected,
+      ttl: { interval: 'PT0.0000001S', column: 'expires_at' },
+    };
+    const check = checkTableSchema(
+      subMicroExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 0 },
+      }),
+    );
+
+    expect(check.ttlMismatches).toHaveLength(1);
   });
 
   it('detects changed TTL column and unit', () => {
@@ -1041,6 +1076,154 @@ describe('YdbSchemaSyncer', () => {
         'expected false, actual true',
     });
     expect(executedSql()).toEqual([]);
+  });
+
+  // Синхронизация TTL (#88): отсутствующий ставим, изменённый заменяем,
+  // лишний не сбрасываем.
+  describe('sync applies TTL changes', () => {
+    const sessionDescriptionFull = (ttl?: YdbTableTtl): YdbTableDescription =>
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['expires_at', Type_PrimitiveTypeId.DATETIME],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_sessions__expires_at',
+            columns: ['expires_at'],
+            unique: false,
+          },
+        ],
+        ttl,
+      );
+
+    const numericDescription = (ttl?: YdbTableTtl): YdbTableDescription =>
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['expires_at', Type_PrimitiveTypeId.UINT32],
+        ],
+        ['uuid'],
+        [],
+        ttl,
+      );
+
+    it('sets TTL declared by entity but absent in DB', async () => {
+      mockDescribe(sessionDescriptionFull());
+
+      await syncer.sync([TestSessionEntity]);
+
+      expect(executedSql()).toEqual([
+        generateSetTtlYql('test_sessions', {
+          interval: 'PT2H',
+          column: 'expires_at',
+        }),
+      ]);
+    });
+
+    it('replaces changed TTL with metadata from entity', async () => {
+      mockDescribe(
+        sessionDescriptionFull({
+          column: 'expires_at',
+          expireAfterSeconds: 90000,
+        }),
+      );
+
+      await syncer.sync([TestSessionEntity]);
+
+      expect(executedSql()).toEqual([
+        generateSetTtlYql('test_sessions', {
+          interval: 'PT2H',
+          column: 'expires_at',
+        }),
+      ]);
+    });
+
+    it('replaces changed numeric TTL including unit', async () => {
+      mockDescribe(
+        numericDescription({
+          column: 'expires_at',
+          expireAfterSeconds: 2592000,
+          unit: 'seconds',
+        }),
+      );
+
+      await syncer.sync([TestNumericTtlEntity]);
+
+      expect(executedSql()).toEqual([
+        generateSetTtlYql('test_ttl_numeric', {
+          interval: 'P30D',
+          column: 'expires_at',
+          unit: 'milliseconds',
+        }),
+      ]);
+    });
+
+    it('sets numeric TTL with unit when absent in DB', async () => {
+      mockDescribe(numericDescription());
+
+      await syncer.sync([TestNumericTtlEntity]);
+
+      expect(executedSql()).toEqual([
+        generateSetTtlYql('test_ttl_numeric', {
+          interval: 'P30D',
+          column: 'expires_at',
+          unit: 'milliseconds',
+        }),
+      ]);
+    });
+
+    it('executes no DDL when TTL matches', async () => {
+      mockDescribe(
+        sessionDescriptionFull({
+          column: 'expires_at',
+          expireAfterSeconds: 7200,
+        }),
+      );
+
+      await syncer.sync([TestSessionEntity]);
+
+      expect(executedSql()).toEqual([]);
+    });
+
+    it('warns about extra TTL without resetting it', async () => {
+      const warnSpy = jest
+        .spyOn((syncer as any).logger, 'warn')
+        .mockImplementation(() => {});
+      mockDescribe(
+        description(
+          [
+            ['uuid', Type_PrimitiveTypeId.UUID],
+            ['name', Type_PrimitiveTypeId.UTF8],
+            ['secret', Type_PrimitiveTypeId.STRING],
+            ['is_active', Type_PrimitiveTypeId.BOOL],
+            ['secret_bi', Type_PrimitiveTypeId.UTF8],
+          ],
+          ['uuid'],
+          [
+            {
+              name: 'test_users__secret_bi',
+              columns: ['secret_bi'],
+              unique: false,
+            },
+            {
+              name: 'test_users__active_name',
+              columns: ['is_active', 'name'],
+              unique: false,
+            },
+          ],
+          { column: 'legacy_expires_at', expireAfterSeconds: 3600 },
+        ),
+      );
+
+      await syncer.sync([TestUserEntity]);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('extra TTL on column "legacy_expires_at"'),
+      );
+      expect(executedSql()).toEqual([]);
+    });
   });
 });
 

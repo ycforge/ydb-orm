@@ -48,16 +48,21 @@ const MICROS_PER = {
   minute: 60 * MICROSECONDS_PER_SECOND,
 };
 
+/** Результат разбора ISO duration. */
+interface IsoDurationParse {
+  /** Длительность в целых микросекундах (без дроби точнее µs). */
+  micros: bigint;
+  /** Есть значимые цифры дробной части за пределами микросекунд. */
+  subMicroRemainder: boolean;
+}
+
 /**
- * Приводит ISO 8601 duration к целому числу микросекунд — внутренней
- * единице типа YDB Interval ("PT2H" → 720000000, "PT0.5S" → 500000).
- * Дробь вычисляется точно (без плавающей точки); знаки после микросекунд
- * отбрасываются детерминированно — YDB Interval хранит максимум 6 знаков.
- * Возвращает null для интервалов с календарными частями (годы/месяцы):
- * они не имеют фиксированной длины и не поддерживаются YDB Interval,
- * поэтому надёжно сравнить их с настройками из DescribeTable нельзя.
+ * Разбор ISO 8601 duration по компонентам с точной целочисленной
+ * арифметикой. Возвращает null для невалидных строк и интервалов
+ * с календарными частями (годы/месяцы): они не имеют фиксированной
+ * длины и не поддерживаются YDB Interval.
  */
-export function isoDurationToMicroseconds(iso: string): number | null {
+function parseIsoDuration(iso: string): IsoDurationParse | null {
   const match = ISO_DURATION_PARSE_RE.exec(iso);
   if (!match) return null;
   const [, years, months, weeks, days, hours, minutes, seconds] = match;
@@ -75,7 +80,34 @@ export function isoDurationToMicroseconds(iso: string): number | null {
   if (fracSeconds) {
     micros += BigInt((fracSeconds + '000000').slice(0, 6));
   }
-  return Number(micros);
+  return { micros, subMicroRemainder: /[1-9]/.test(fracSeconds.slice(6)) };
+}
+
+/**
+ * Приводит ISO 8601 duration к целому числу микросекунд — внутренней
+ * единице типа YDB Interval ("PT2H" → 720000000, "PT0.5S" → 500000).
+ * Дробь вычисляется точно (без плавающей точки); знаки после микросекунд
+ * отбрасываются детерминированно — YDB Interval хранит максимум 6 знаков.
+ * Для сравнения TTL используйте isoDurationToMicrosecondsExact:
+ * усечение скрывает расхождения.
+ */
+export function isoDurationToMicroseconds(iso: string): number | null {
+  const parsed = parseIsoDuration(iso);
+  return parsed === null ? null : Number(parsed.micros);
+}
+
+/**
+ * Строгий вариант isoDurationToMicroseconds: возвращает null для
+ * интервалов, непредставимых в YDB Interval точно, — календарные части
+ * и дробную часть точнее микросекунд ("PT0.0000001S"). Используется при
+ * сравнении TTL, чтобы непредставимый интервал не «совпал» со значением
+ * из БД после молчаливого усечения.
+ */
+export function isoDurationToMicrosecondsExact(iso: string): number | null {
+  const parsed = parseIsoDuration(iso);
+  return parsed !== null && !parsed.subMicroRemainder
+    ? Number(parsed.micros)
+    : null;
 }
 
 /**
@@ -205,6 +237,13 @@ function validateYdbTtlOptions(
       `@YdbTtl on class "${className}": ` +
         `interval must be a valid ISO 8601 duration (e.g. "PT2H", "P30D"), ` +
         `got "${options?.interval}"`,
+    );
+  }
+  if (parseIsoDuration(options.interval)?.subMicroRemainder) {
+    throw new Error(
+      `@YdbTtl on class "${className}": interval "${options.interval}" is ` +
+        `more precise than a microsecond — YDB Interval supports only integer ` +
+        `microseconds (up to 6 fractional second digits)`,
     );
   }
   if (!options.column || typeof options.column !== 'string') {

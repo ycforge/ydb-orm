@@ -27,7 +27,7 @@ import {
 } from '../decorators/index.decorator.js';
 import {
   getYdbTtlMetadata,
-  isoDurationToMicroseconds,
+  isoDurationToMicrosecondsExact,
   microsecondsToIsoDuration,
   MICROSECONDS_PER_SECOND,
   validateYdbTtlAgainstSchema,
@@ -146,6 +146,24 @@ const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
 const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
   Object.entries(PRIMITIVE_TO_TYPE_ID).map(([k, v]) => [v, k as YdbPrimitive]),
 );
+
+/**
+ * Числовые типы TTL-колонок: YDB допускает TTL по Uint32/Uint64/DyNumber
+ * с unit, но эти типы не входят в YdbPrimitive (маппинг значений запросов
+ * их не поддерживает). Здесь они нужны только для схемного сравнения,
+ * чтобы sync/verify не считали такую колонку расхождением типов (#88).
+ */
+const TTL_NUMERIC_TYPE_IDS: Record<string, Type_PrimitiveTypeId> = {
+  Uint32: Type_PrimitiveTypeId.UINT32,
+  Uint64: Type_PrimitiveTypeId.UINT64,
+  DyNumber: Type_PrimitiveTypeId.DYNUMBER,
+};
+
+for (const [name, typeId] of Object.entries(TTL_NUMERIC_TYPE_IDS)) {
+  if (!TYPE_ID_TO_PRIMITIVE.has(typeId)) {
+    TYPE_ID_TO_PRIMITIVE.set(typeId, name as YdbPrimitive);
+  }
+}
 
 /** Enum Unit из TtlSettings → YdbTtlUnit (см. @YdbTtl). */
 const TTL_UNIT_BY_PROTO: Record<
@@ -372,8 +390,10 @@ function formatTableTtl(ttl: YdbTableTtl): string {
  * колонка, unit и интервал. Интервал сравнивается семантически в целых
  * микросекундах (внутренней точности YDB Interval): "PT1H" и "PT60M"
  * равны, "PT0.5S" — это ровно 500000µs, без потерь на float.
- * Интервалы с календарными частями (годы/месяцы) не сравнимы надёжно —
- * считаются расхождением, чтобы миграция выставила значение из метаданных.
+ * Интервалы, непредставимые в YDB Interval точно, — календарные части
+ * и дробь точнее микросекунд — считаются расхождением, чтобы миграция
+ * или синхронизация выставили значение из метаданных вместо ложного
+ * «совпадения» после усечения.
  */
 function ttlSettingsMatch(
   expected: YdbTtlMetadata,
@@ -381,7 +401,7 @@ function ttlSettingsMatch(
 ): boolean {
   if (expected.column !== actual.column) return false;
   if ((expected.unit ?? undefined) !== (actual.unit ?? undefined)) return false;
-  const expectedMicros = isoDurationToMicroseconds(expected.interval);
+  const expectedMicros = isoDurationToMicrosecondsExact(expected.interval);
   return (
     expectedMicros !== null &&
     expectedMicros === actual.expireAfterSeconds * MICROSECONDS_PER_SECOND
@@ -405,7 +425,11 @@ export function checkTableSchema(
       missingColumns.push([name, type]);
       continue;
     }
-    if (actualTypeId !== PRIMITIVE_TO_TYPE_ID[type]) {
+    // Числовые TTL-типы (Uint32/Uint64/DyNumber) не входят в YdbPrimitive,
+    // но валидны для схемного сравнения — см. TTL_NUMERIC_TYPE_IDS.
+    const expectedTypeId =
+      PRIMITIVE_TO_TYPE_ID[type] ?? TTL_NUMERIC_TYPE_IDS[type];
+    if (actualTypeId !== expectedTypeId) {
       typeMismatches.push({
         column: name,
         expected: type,
@@ -672,8 +696,13 @@ export class YdbSchemaSyncer {
    * Подстраивает БД под схему сущностей:
    *  - нет таблицы — CREATE TABLE;
    *  - нет колонок — ALTER TABLE ADD COLUMN;
-   *  - лишние колонки — только предупреждение в лог (не удаляем данные);
-   *  - расхождение типа/PK — ошибка (в YDB не меняется, нужна миграция).
+   *  - нет индексов — ALTER TABLE ADD INDEX;
+   *  - нет TTL или TTL отличается от метаданных — ALTER TABLE SET (TTL = ...)
+   *    (SET перезаписывает существующие настройки);
+   *  - лишние колонки/индексы/TTL — только предупреждение в лог
+   *    (не удаляем данные и настройки);
+   *  - расхождение типа/PK/колонок индекса — ошибка (в YDB не меняется,
+   *    нужна миграция).
    */
   async sync(entities: (new (...args: any[]) => any)[]): Promise<void> {
     for (const expected of buildExpectedSchemas(entities)) {
@@ -761,6 +790,36 @@ export class YdbSchemaSyncer {
         this.logger.warn(
           `Table "${expected.tableName}" index "${m.name}" unique flag mismatch: ` +
             `expected ${m.expected}, actual ${m.actual} — recreate index manually if needed`,
+        );
+      }
+
+      // TTL: отсутствующий ставим, изменённый заменяем — SET (TTL = ...)
+      // перезаписывает существующие настройки. Лишний TTL не сбрасываем
+      // автоматически: та же политика, что и в planMigration (#88).
+      if (check.missingTtl.length && check.missingTtl[0].expected) {
+        this.logger.log(
+          `Setting TTL on "${expected.tableName}" ` +
+            `(column "${check.missingTtl[0].expected.column}")`,
+        );
+        await this.executeDdl(
+          generateSetTtlYql(expected.tableName, check.missingTtl[0].expected),
+        );
+      }
+
+      for (const m of check.ttlMismatches) {
+        this.logger.log(
+          `Updating TTL on "${expected.tableName}" ` +
+            `(was ${formatTableTtl(m.actual)})`,
+        );
+        await this.executeDdl(
+          generateSetTtlYql(expected.tableName, m.expected),
+        );
+      }
+
+      for (const extra of check.extraTtl) {
+        this.logger.warn(
+          `Table "${expected.tableName}" has extra TTL on column ` +
+            `"${extra.actual.column}" — left as is`,
         );
       }
     }

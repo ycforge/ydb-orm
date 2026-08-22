@@ -9,6 +9,7 @@ import {
   YdbTtl,
   getYdbTtlMetadata,
   isoDurationToMicroseconds,
+  isoDurationToMicrosecondsExact,
   isoDurationToSeconds,
   microsecondsToIsoDuration,
   secondsToIsoDuration,
@@ -528,6 +529,48 @@ describe('ISO duration microsecond precision (#88)', () => {
         micros,
       );
     }
+  });
+});
+
+describe('Exact microsecond conversion (#88)', () => {
+  it('accepts intervals representable in YDB Interval exactly', () => {
+    expect(isoDurationToMicrosecondsExact('PT2H')).toBe(7_200_000_000);
+    expect(isoDurationToMicrosecondsExact('PT0.5S')).toBe(500000);
+    // Хвостовые нули за пределами микросекунд не мешают точности
+    expect(isoDurationToMicrosecondsExact('PT0.5000000S')).toBe(500000);
+    // Официальный пример из документации YDB: ровно 6 знаков дроби
+    expect(isoDurationToMicrosecondsExact('P1W2DT2H3M4.567890S')).toBe(
+      isoDurationToMicroseconds('P1W2DT2H3M4.567890S'),
+    );
+  });
+
+  it('returns null for sub-microsecond precision instead of truncating', () => {
+    expect(isoDurationToMicrosecondsExact('PT0.0000001S')).toBeNull();
+    expect(isoDurationToMicrosecondsExact('PT4.5678909S')).toBeNull();
+  });
+
+  it('returns null for calendar parts and invalid strings', () => {
+    expect(isoDurationToMicrosecondsExact('P1M')).toBeNull();
+    expect(isoDurationToMicrosecondsExact('P1Y2M')).toBeNull();
+    expect(isoDurationToMicrosecondsExact('nope')).toBeNull();
+  });
+
+  it('rejects @YdbTtl intervals more precise than a microsecond', () => {
+    class SubMicroEntity {}
+    expect(() =>
+      YdbTtl({ interval: 'PT0.0000001S', column: 'expires_at' })(
+        SubMicroEntity,
+      ),
+    ).toThrow(/more precise than a microsecond/);
+  });
+
+  it('still accepts up to 6 fractional digits at decoration time', () => {
+    class MaxPrecisionEntity {}
+    expect(() =>
+      YdbTtl({ interval: 'PT4.567890S', column: 'expires_at' })(
+        MaxPrecisionEntity,
+      ),
+    ).not.toThrow();
   });
 });
 
