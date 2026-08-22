@@ -75,6 +75,10 @@ export type {
 export { YdbEnum, getYdbEnumMetadata } from './decorators/enum.decorator.js';
 export type { YdbEnumMeta } from './decorators/enum.decorator.js';
 export { YdbTtl, getYdbTtlMetadata } from './decorators/ttl.decorator.js';
+export {
+  isoDurationToSeconds,
+  secondsToIsoDuration,
+} from './decorators/ttl.decorator.js';
 export type {
   YdbTtlOptions,
   YdbTtlMetadata,
@@ -156,11 +160,17 @@ export {
   generateCreateTableYql,
   generateTtlWithClause,
   generateAddColumnsYql,
+  generateAddIndexYql,
+  generateDropIndexYql,
+  generateSetTtlYql,
+  generateResetTtlYql,
   checkTableSchema,
 } from './schema/schema-sync.js';
 export type {
+  ExpectedIndex,
   ExpectedTableSchema,
   YdbTableDescription,
+  YdbTableTtl,
   SchemaCheckResult,
   YdbSchemaIssue,
 } from './schema/schema-sync.js';

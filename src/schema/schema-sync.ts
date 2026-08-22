@@ -5,7 +5,9 @@ import {
   TableServiceDefinition,
   CreateSessionResultSchema,
   DescribeTableResultSchema,
+  ValueSinceUnixEpochModeSettings_Unit,
 } from '@ydbjs/api/table';
+import type { TtlSettings } from '@ydbjs/api/table';
 import { StatusIds_StatusCode, IssueMessage } from '@ydbjs/api/operation';
 import { Type, Type_PrimitiveTypeId } from '@ydbjs/api/value';
 import { YdbPrimitive } from '../core/types.js';
@@ -25,8 +27,11 @@ import {
 } from '../decorators/index.decorator.js';
 import {
   getYdbTtlMetadata,
+  isoDurationToSeconds,
+  secondsToIsoDuration,
   validateYdbTtlAgainstSchema,
   YdbTtlMetadata,
+  YdbTtlUnit,
 } from '../decorators/ttl.decorator.js';
 
 /** Ожидаемый вторичный индекс таблицы. */
@@ -34,6 +39,18 @@ export interface ExpectedIndex {
   name: string;
   columns: string[];
   unique: boolean;
+}
+
+/**
+ * Нормализованные TTL-настройки существующей таблицы
+ * (TtlSettings из DescribeTable, см. issue #81/#88).
+ */
+export interface YdbTableTtl {
+  column: string;
+  /** Задержка до истечения в секундах (expire_after_seconds из proto). */
+  expireAfterSeconds: number;
+  /** Единица числовой колонки; отсутствует для Date/Datetime/Timestamp. */
+  unit?: YdbTtlUnit;
 }
 
 /** Ожидаемая схема таблицы, построенная по метаданным сущности. */
@@ -52,6 +69,11 @@ export interface YdbTableDescription {
   primaryKey: string[];
   /** Индексы, описанные в БД. */
   indexes?: Array<{ name: string; columns: string[]; unique: boolean }>;
+  /**
+   * TTL-настройки таблицы из DescribeTable (undefined — TTL не задан).
+   * Сравнивается с метаданными @YdbTtl при verify/миграциях (#88).
+   */
+  ttl?: YdbTableTtl;
 }
 
 /** Результат проверки существующей таблицы против ожидаемой схемы. */
@@ -76,6 +98,12 @@ export interface SchemaCheckResult {
     expected: string[];
     actual: string[];
   }[];
+  /** TTL объявлен сущностью, но в БД не задан. */
+  missingTtl: { expected: YdbTtlMetadata }[];
+  /** TTL задан и в БД, и в метаданных, но колонка/unit/интервал различаются. */
+  ttlMismatches: { expected: YdbTtlMetadata; actual: YdbTableTtl }[];
+  /** В БД задан TTL, которого нет в метаданных (не сбрасывается автоматически). */
+  extraTtl: { actual: YdbTableTtl }[];
 }
 
 /** Проблема схемы, найденная при verify. */
@@ -89,7 +117,11 @@ export interface YdbSchemaIssue {
     | 'extra-column'
     | 'missing-index'
     | 'extra-index'
-    | 'index-columns-mismatch';
+    | 'index-columns-mismatch'
+    | 'unique-mismatch'
+    | 'ttl-missing'
+    | 'ttl-mismatch'
+    | 'ttl-extra';
   message: string;
 }
 
@@ -113,6 +145,18 @@ const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
 const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
   Object.entries(PRIMITIVE_TO_TYPE_ID).map(([k, v]) => [v, k as YdbPrimitive]),
 );
+
+/** Enum Unit из TtlSettings → YdbTtlUnit (см. @YdbTtl). */
+const TTL_UNIT_BY_PROTO: Record<
+  ValueSinceUnixEpochModeSettings_Unit,
+  YdbTtlUnit | undefined
+> = {
+  [ValueSinceUnixEpochModeSettings_Unit.UNSPECIFIED]: undefined,
+  [ValueSinceUnixEpochModeSettings_Unit.SECONDS]: 'seconds',
+  [ValueSinceUnixEpochModeSettings_Unit.MILLISECONDS]: 'milliseconds',
+  [ValueSinceUnixEpochModeSettings_Unit.MICROSECONDS]: 'microseconds',
+  [ValueSinceUnixEpochModeSettings_Unit.NANOSECONDS]: 'nanoseconds',
+};
 
 /**
  * Строит ожидаемую схему таблицы по метаданным сущности:
@@ -225,12 +269,7 @@ export function buildExpectedSchemas(
  *   WITH (TTL = Interval("PT2H") ON `col` [AS SECONDS])
  */
 export function generateTtlWithClause(ttl: YdbTtlMetadata): string {
-  const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
-  return (
-    `WITH (\n` +
-    `  TTL = Interval("${ttl.interval}") ON ${quoteIdentifier(ttl.column)}` +
-    `${unitPart}\n)`
-  );
+  return `WITH (\n  ${ttlExpression(ttl)}\n)`;
 }
 
 /** Генерирует DDL создания таблицы. */
@@ -286,6 +325,59 @@ export function generateDropIndexYql(
   return (
     `ALTER TABLE ${quoteIdentifier(tableName)} ` +
     `DROP INDEX ${quoteIdentifier(indexName)}`
+  );
+}
+
+/**
+ * Генерирует DDL установки/замены TTL через ALTER TABLE.
+ * Выражение TTL совпадает с WITH-секцией CREATE TABLE (#81):
+ *   ALTER TABLE `t` SET (TTL = Interval("PT2H") ON `col` [AS SECONDS])
+ */
+export function generateSetTtlYql(
+  tableName: string,
+  ttl: YdbTtlMetadata,
+): string {
+  return `ALTER TABLE ${quoteIdentifier(tableName)} SET (${ttlExpression(ttl)})`;
+}
+
+/** Генерирует DDL сброса TTL: ALTER TABLE `t` RESET (TTL). */
+export function generateResetTtlYql(tableName: string): string {
+  return `ALTER TABLE ${quoteIdentifier(tableName)} RESET (TTL)`;
+}
+
+/** TTL-выражение `TTL = Interval(...) ON col [AS unit]`, общее для CREATE/ALTER. */
+function ttlExpression(ttl: YdbTtlMetadata): string {
+  const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
+  return `TTL = Interval("${ttl.interval}") ON ${quoteIdentifier(ttl.column)}${unitPart}`;
+}
+
+/** Человекочитаемое представление ожидаемого TTL (для issues/warnings). */
+function formatTtlMeta(ttl: YdbTtlMetadata): string {
+  const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
+  return `${ttl.interval} on column "${ttl.column}"${unitPart}`;
+}
+
+/** Человекочитаемое представление фактического TTL из БД. */
+function formatTableTtl(ttl: YdbTableTtl): string {
+  const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
+  return `${secondsToIsoDuration(ttl.expireAfterSeconds)} on column "${ttl.column}"${unitPart}`;
+}
+
+/**
+ * Сравнивает ожидаемый TTL с фактическим из DescribeTable:
+ * колонка, unit и интервал (семантически, в секундах — "PT1H" и "PT60M" равны).
+ * Интервалы с календарными частями (годы/месяцы) не сравнимы надёжно —
+ * считаются расхождением, чтобы миграция выставила значение из метаданных.
+ */
+function ttlSettingsMatch(
+  expected: YdbTtlMetadata,
+  actual: YdbTableTtl,
+): boolean {
+  if (expected.column !== actual.column) return false;
+  if ((expected.unit ?? undefined) !== (actual.unit ?? undefined)) return false;
+  const expectedSeconds = isoDurationToSeconds(expected.interval);
+  return (
+    expectedSeconds !== null && expectedSeconds === actual.expireAfterSeconds
   );
 }
 
@@ -370,6 +462,24 @@ export function checkTableSchema(
     }
   }
 
+  // TTL (#88): отсутствующий, изменённый и лишний — в БД TTL либо задан
+  // согласно @YdbTtl, либо его нет вовсе.
+  const missingTtl: SchemaCheckResult['missingTtl'] = [];
+  const ttlMismatches: SchemaCheckResult['ttlMismatches'] = [];
+  const extraTtl: SchemaCheckResult['extraTtl'] = [];
+
+  if (expected.ttl && !existing.ttl) {
+    missingTtl.push({ expected: expected.ttl });
+  } else if (!expected.ttl && existing.ttl) {
+    extraTtl.push({ actual: existing.ttl });
+  } else if (
+    expected.ttl &&
+    existing.ttl &&
+    !ttlSettingsMatch(expected.ttl, existing.ttl)
+  ) {
+    ttlMismatches.push({ expected: expected.ttl, actual: existing.ttl });
+  }
+
   return {
     tableName: expected.tableName,
     missingColumns,
@@ -380,6 +490,9 @@ export function checkTableSchema(
     extraIndexes,
     uniqueMismatches,
     indexColumnsMismatches,
+    missingTtl,
+    ttlMismatches,
+    extraTtl,
   };
 }
 
@@ -441,6 +554,42 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
       message:
         `Table "${check.tableName}" index "${m.name}" columns mismatch: ` +
         `expected [${m.expected.join(', ')}], actual [${m.actual.join(', ')}]`,
+    });
+  }
+  for (const m of check.uniqueMismatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'unique-mismatch',
+      message:
+        `Table "${check.tableName}" index "${m.name}" unique flag mismatch: ` +
+        `expected ${m.expected}, actual ${m.actual}`,
+    });
+  }
+  for (const m of check.missingTtl) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'ttl-missing',
+      message:
+        `Table "${check.tableName}" has no TTL, entity declares ` +
+        formatTtlMeta(m.expected),
+    });
+  }
+  for (const m of check.ttlMismatches) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'ttl-mismatch',
+      message:
+        `Table "${check.tableName}" TTL mismatch: expected ` +
+        `${formatTtlMeta(m.expected)}, actual ${formatTableTtl(m.actual)}`,
+    });
+  }
+  for (const m of check.extraTtl) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'ttl-extra',
+      message:
+        `Table "${check.tableName}" has TTL ${formatTableTtl(m.actual)} ` +
+        `not present in entity`,
     });
   }
 
@@ -670,7 +819,12 @@ export class YdbSchemaSyncer {
         unique: idx.type.case === 'globalUniqueIndex',
       }));
 
-      return { columns, primaryKey: [...result.primaryKey], indexes };
+      return {
+        columns,
+        primaryKey: [...result.primaryKey],
+        indexes,
+        ttl: this.extractTtl(result.ttlSettings),
+      };
     } finally {
       await client.deleteSession({ sessionId }).catch((error: unknown) => {
         this.logger.warn(
@@ -690,6 +844,32 @@ export class YdbSchemaSyncer {
       return current.type.value;
     }
     return Type_PrimitiveTypeId.PRIMITIVE_TYPE_ID_UNSPECIFIED;
+  }
+
+  /**
+   * Нормализует TtlSettings из DescribeTable в YdbTableTtl.
+   * Date-режим (dateTypeColumn) не имеет unit; числовой (valueSinceUnixEpoch)
+   * маппит enum Unit в YdbTtlUnit, UNSPECIFIED трактуется как отсутствие unit.
+   */
+  private extractTtl(settings?: TtlSettings): YdbTableTtl | undefined {
+    const mode = settings?.mode;
+    if (!mode?.case) return undefined;
+
+    if (mode.case === 'dateTypeColumn') {
+      return {
+        column: mode.value.columnName,
+        expireAfterSeconds: mode.value.expireAfterSeconds,
+      };
+    }
+
+    const { columnName, columnUnit, expireAfterSeconds } = mode.value;
+    return {
+      column: columnName,
+      expireAfterSeconds,
+      ...(columnUnit !== ValueSinceUnixEpochModeSettings_Unit.UNSPECIFIED
+        ? { unit: TTL_UNIT_BY_PROTO[columnUnit] }
+        : {}),
+    };
   }
 
   private formatIssues(issues?: IssueMessage[]): string {

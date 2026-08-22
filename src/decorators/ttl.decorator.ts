@@ -35,6 +35,60 @@ const NUMERIC_TTL_TYPES: readonly string[] = ['Uint32', 'Uint64', 'DyNumber'];
 const ISO_DURATION_RE =
   /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/;
 
+/** Строгий разбор ISO 8601 duration по компонентам (для сравнения TTL). */
+const ISO_DURATION_PARSE_RE =
+  /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+
+const SECONDS_PER = {
+  day: 86400,
+  hour: 3600,
+  minute: 60,
+};
+
+/**
+ * Приводит ISO 8601 duration к секундам ("PT2H" → 7200, "P30D" → 2592000).
+ * Возвращает null для интервалов с календарными частями (годы/месяцы):
+ * у них нет фиксированной длины, надёжно сравнить их с секундами из
+ * DescribeTable нельзя.
+ */
+export function isoDurationToSeconds(iso: string): number | null {
+  const match = ISO_DURATION_PARSE_RE.exec(iso);
+  if (!match) return null;
+  const [, years, months, weeks, days, hours, minutes, seconds] = match;
+  if (years || months) return null;
+  return (
+    Number(weeks ?? 0) * 7 * SECONDS_PER.day +
+    Number(days ?? 0) * SECONDS_PER.day +
+    Number(hours ?? 0) * SECONDS_PER.hour +
+    Number(minutes ?? 0) * SECONDS_PER.minute +
+    Number(seconds ?? 0)
+  );
+}
+
+/**
+ * Обратное преобразование секунд в ISO 8601 duration — используется для
+ * восстановления фактических настроек TTL из БД в down-миграциях
+ * и сообщениях о расхождениях (7200 → "PT2H", 90000 → "P1DT1H").
+ */
+export function secondsToIsoDuration(totalSeconds: number): string {
+  let rest = Math.max(0, Math.round(totalSeconds));
+  const days = Math.floor(rest / SECONDS_PER.day);
+  rest -= days * SECONDS_PER.day;
+  const hours = Math.floor(rest / SECONDS_PER.hour);
+  rest -= hours * SECONDS_PER.hour;
+  const minutes = Math.floor(rest / SECONDS_PER.minute);
+  const seconds = rest - minutes * SECONDS_PER.minute;
+
+  let duration = 'P';
+  if (days) duration += `${days}D`;
+  const time =
+    `${hours ? `${hours}H` : ''}` +
+    `${minutes ? `${minutes}M` : ''}` +
+    `${seconds ? `${seconds}S` : ''}`;
+  if (time) duration += `T${time}`;
+  return duration === 'P' ? 'PT0S' : duration;
+}
+
 export interface YdbTtlOptions {
   /** ISO 8601 duration (например, "PT2H", "P30D", "PT1H"). */
   interval: string;

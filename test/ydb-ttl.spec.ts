@@ -8,6 +8,8 @@ import { YdbBaseEntity } from '../src/entity/base-entity.js';
 import {
   YdbTtl,
   getYdbTtlMetadata,
+  isoDurationToSeconds,
+  secondsToIsoDuration,
   validateYdbTtlAgainstSchema,
 } from '../src/decorators/ttl.decorator.js';
 import {
@@ -399,5 +401,39 @@ describe('generateCreateTableYql with TTL', () => {
     ).toBe(
       'WITH (\n  TTL = Interval("P30D") ON `expires_at` AS MILLISECONDS\n)',
     );
+  });
+});
+
+describe('ISO 8601 duration helpers (#88)', () => {
+  it('converts ISO duration to seconds', () => {
+    expect(isoDurationToSeconds('PT2H')).toBe(7200);
+    expect(isoDurationToSeconds('P30D')).toBe(2592000);
+    expect(isoDurationToSeconds('P1DT2H30M')).toBe(95400);
+    expect(isoDurationToSeconds('PT90S')).toBe(90);
+    expect(isoDurationToSeconds('P1W')).toBe(604800);
+    // Семантически равные записи дают одно и то же число секунд
+    expect(isoDurationToSeconds('PT1H')).toBe(isoDurationToSeconds('PT60M'));
+  });
+
+  it('returns null for calendar parts and invalid strings', () => {
+    // У годов/месяцев нет фиксированной длины — сравнить с секундами нельзя
+    expect(isoDurationToSeconds('P1Y')).toBeNull();
+    expect(isoDurationToSeconds('P1M')).toBeNull();
+    expect(isoDurationToSeconds('2 hours')).toBeNull();
+    expect(isoDurationToSeconds('')).toBeNull();
+  });
+
+  it('converts seconds back to ISO duration', () => {
+    expect(secondsToIsoDuration(7200)).toBe('PT2H');
+    expect(secondsToIsoDuration(2592000)).toBe('P30D');
+    expect(secondsToIsoDuration(90000)).toBe('P1DT1H');
+    expect(secondsToIsoDuration(0)).toBe('PT0S');
+    expect(secondsToIsoDuration(-5)).toBe('PT0S');
+  });
+
+  it('round-trips seconds through ISO duration', () => {
+    for (const seconds of [1, 59, 3600, 86399, 86400, 90061, 2592000]) {
+      expect(isoDurationToSeconds(secondsToIsoDuration(seconds))).toBe(seconds);
+    }
   });
 });

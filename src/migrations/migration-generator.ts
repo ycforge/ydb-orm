@@ -1,11 +1,20 @@
 import {
   ExpectedTableSchema,
   YdbTableDescription,
+  YdbTableTtl,
   checkTableSchema,
   generateAddColumnsYql,
+  generateAddIndexYql,
   generateCreateTableYql,
+  generateDropIndexYql,
+  generateResetTtlYql,
+  generateSetTtlYql,
 } from '../schema/schema-sync.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
+import {
+  secondsToIsoDuration,
+  YdbTtlMetadata,
+} from '../decorators/ttl.decorator.js';
 
 /** План миграции: DDL для up/down и предупреждения о ручных правках. */
 export interface PlannedMigration {
@@ -14,10 +23,26 @@ export interface PlannedMigration {
   warnings: string[];
 }
 
+/** Восстанавливает YdbTtlMetadata из фактических настроек TTL в БД. */
+function ttlMetaFromActual(actual: YdbTableTtl): YdbTtlMetadata {
+  return {
+    interval: secondsToIsoDuration(actual.expireAfterSeconds),
+    column: actual.column,
+    ...(actual.unit ? { unit: actual.unit } : {}),
+  };
+}
+
 /**
  * Чистая функция: строит план миграции по ожидаемым схемам сущностей
  * и текущему состоянию БД (null — таблицы нет).
  * Используется `migration:generate`.
+ *
+ * Политика безопасности (#88):
+ *  - отсутствующие индексы и TTL создаются в up и откатываются в down;
+ *  - лишние индексы и TTL не удаляются — только предупреждение;
+ *  - расхождение существующего индекса (unique/колонки) только
+ *    диагностируется — пересоздание индекса небезопасно делать молча;
+ *  - PK, типы колонок и лишние колонки не меняются (как раньше).
  */
 export function planMigration(
   expected: ExpectedTableSchema[],
@@ -65,6 +90,62 @@ export function planMigration(
           `ALTER TABLE ${quoteIdentifier(schema.tableName)} DROP COLUMN ${quoteIdentifier(column)}`,
         );
       }
+    }
+
+    // Отсутствующие индексы: создаём в up, удаляем в down (#88).
+    for (const idx of check.missingIndexes) {
+      up.push(generateAddIndexYql(schema.tableName, idx));
+      down.unshift(generateDropIndexYql(schema.tableName, idx.name));
+    }
+
+    // Существующий индекс расходится с метаданными — только диагностируем.
+    for (const mismatch of check.uniqueMismatches) {
+      warnings.push(
+        `Table "${schema.tableName}" index "${mismatch.name}": ` +
+          `unique flag mismatch (expected ${mismatch.expected}, actual ${mismatch.actual}) — ` +
+          `recreate the index manually if needed`,
+      );
+    }
+    for (const mismatch of check.indexColumnsMismatches) {
+      warnings.push(
+        `Table "${schema.tableName}" index "${mismatch.name}": ` +
+          `columns mismatch (expected [${mismatch.expected.join(', ')}], ` +
+          `actual [${mismatch.actual.join(', ')}]) — ` +
+          `recreate the index manually if needed`,
+      );
+    }
+    // Лишние индексы никогда не удаляем автоматически.
+    for (const extra of check.extraIndexes) {
+      warnings.push(
+        `Table "${schema.tableName}" has extra index "${extra.name}" — not dropped automatically`,
+      );
+    }
+
+    // TTL: отсутствующий ставим, изменённый заменяем; down восстанавливает
+    // прежнее состояние БД (сброс или старые настройки).
+    if (check.missingTtl.length && check.missingTtl[0].expected) {
+      up.push(
+        generateSetTtlYql(schema.tableName, check.missingTtl[0].expected),
+      );
+      down.unshift(generateResetTtlYql(schema.tableName));
+    }
+    if (check.ttlMismatches.length && check.ttlMismatches[0].expected) {
+      up.push(
+        generateSetTtlYql(schema.tableName, check.ttlMismatches[0].expected),
+      );
+      down.unshift(
+        generateSetTtlYql(
+          schema.tableName,
+          ttlMetaFromActual(check.ttlMismatches[0].actual),
+        ),
+      );
+    }
+    // TTL без метаданных в сущности не сбрасываем автоматически.
+    for (const extra of check.extraTtl) {
+      warnings.push(
+        `Table "${schema.tableName}" has extra TTL on column "${extra.actual.column}" ` +
+          `— not reset automatically`,
+      );
     }
   }
 

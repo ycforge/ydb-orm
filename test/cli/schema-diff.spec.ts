@@ -96,6 +96,49 @@ describe('renderSchemaDiff', () => {
     );
   });
 
+  it('renders unique-mismatch and TTL issues (#88)', () => {
+    const issues: YdbSchemaIssue[] = [
+      {
+        tableName: 'users',
+        kind: 'unique-mismatch',
+        message:
+          'Table "users" index "users__name" unique flag mismatch: ' +
+          'expected false, actual true',
+      },
+      {
+        tableName: 'sessions',
+        kind: 'ttl-missing',
+        message:
+          'Table "sessions" has no TTL, entity declares PT2H on column "expires_at"',
+      },
+      {
+        tableName: 'sessions',
+        kind: 'ttl-mismatch',
+        message:
+          'Table "sessions" TTL mismatch: expected PT2H on column "expires_at", ' +
+          'actual PT1H on column "expires_at"',
+      },
+      {
+        tableName: 'legacy',
+        kind: 'ttl-extra',
+        message:
+          'Table "legacy" has TTL PT1H on column "created_at" not present in entity',
+      },
+    ];
+
+    const out = renderSchemaDiff(issues, { color: false });
+    const lines = out.split('\n');
+
+    expect(lines[1]).toContain('~ index "users__name" unique flag mismatch');
+    expect(lines[3]).toContain('+ has no TTL, entity declares PT2H');
+    expect(lines[4]).toContain(
+      '~ TTL: PT1H on column "expires_at" → PT2H on column "expires_at"',
+    );
+    expect(lines[6]).toContain(
+      '- has TTL PT1H on column "created_at" not present in entity',
+    );
+  });
+
   it('adds ANSI codes when color is enabled', () => {
     const issues: YdbSchemaIssue[] = [
       {

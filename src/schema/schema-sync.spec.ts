@@ -1,6 +1,14 @@
 import 'reflect-metadata';
 import { jest } from '@jest/globals';
+import { create } from '@bufbuild/protobuf';
+import { anyPack } from '@bufbuild/protobuf/wkt';
 import { Type_PrimitiveTypeId } from '@ydbjs/api/value';
+import {
+  CreateSessionResultSchema,
+  DescribeTableResultSchema,
+  ValueSinceUnixEpochModeSettings_Unit,
+} from '@ydbjs/api/table';
+import { StatusIds_StatusCode } from '@ydbjs/api/operation';
 import { YdbEntity } from '../decorators/entity.decorator.js';
 import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
 import { YdbEncrypted } from '../decorators/encryption.decorator.js';
@@ -14,8 +22,13 @@ import {
   buildExpectedJoinTableSchema,
   buildExpectedSchemas,
   checkTableSchema,
+  checkToIssues,
+  diffSchemas,
   generateAddColumnsYql,
   generateCreateTableYql,
+  generateResetTtlYql,
+  generateSetTtlYql,
+  ExpectedTableSchema,
   YdbSchemaSyncer,
   YdbTableDescription,
 } from './schema-sync.js';
@@ -26,6 +39,7 @@ import {
 } from '../decorators/relation.decorators.js';
 import { EagerLoad } from '../decorators/eager.decorator.js';
 import { YdbIndex } from '../decorators/index.decorator.js';
+import { YdbTtl } from '../decorators/ttl.decorator.js';
 
 @YdbEntity('test_users')
 @YdbIndex({ columns: ['secret_bi'] })
@@ -86,6 +100,17 @@ class TestTagEntity extends YdbBaseEntity {
 
   @ManyToMany(() => TestPhotoEntity, (photo) => photo.tags)
   photos?: TestPhotoEntity[];
+}
+
+@YdbEntity('test_sessions')
+@YdbTtl({ interval: 'PT2H', column: 'expires_at' })
+@YdbIndex({ columns: ['expires_at'] })
+class TestSessionEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbColumn('Datetime')
+  expires_at: Date;
 }
 
 @YdbEntity('test_photos')
@@ -437,6 +462,312 @@ describe('checkTableSchema', () => {
       },
     ]);
   });
+
+  it('detects index unique flag mismatch', () => {
+    const check = checkTableSchema(
+      expected,
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__secret_bi',
+            columns: ['secret_bi'],
+            unique: false,
+          },
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: true,
+          },
+        ],
+      ),
+    );
+
+    expect(check.uniqueMismatches).toEqual([
+      { name: 'test_users__active_name', expected: false, actual: true },
+    ]);
+    expect(check.missingIndexes).toEqual([]);
+    expect(check.extraIndexes).toEqual([]);
+    expect(check.indexColumnsMismatches).toEqual([]);
+  });
+});
+
+describe('checkTableSchema TTL (#88)', () => {
+  const ttlExpected = buildExpectedTableSchema(meta(TestSessionEntity));
+
+  const sessionDescription = (
+    overrides: Partial<YdbTableDescription> = {},
+  ): YdbTableDescription => ({
+    columns: new Map([
+      ['uuid', Type_PrimitiveTypeId.UUID],
+      ['expires_at', Type_PrimitiveTypeId.DATETIME],
+    ]),
+    primaryKey: ['uuid'],
+    indexes: [
+      {
+        name: 'test_sessions__expires_at',
+        columns: ['expires_at'],
+        unique: false,
+      },
+    ],
+    ttl: { column: 'expires_at', expireAfterSeconds: 7200 },
+    ...overrides,
+  });
+
+  it('passes when TTL and indexes match', () => {
+    const check = checkTableSchema(ttlExpected, sessionDescription());
+
+    expect(check.missingTtl).toEqual([]);
+    expect(check.ttlMismatches).toEqual([]);
+    expect(check.extraTtl).toEqual([]);
+    expect(check.missingIndexes).toEqual([]);
+  });
+
+  it('detects TTL declared by entity but absent in DB', () => {
+    const check = checkTableSchema(
+      ttlExpected,
+      sessionDescription({ ttl: undefined }),
+    );
+
+    expect(check.missingTtl).toEqual([
+      { expected: { interval: 'PT2H', column: 'expires_at' } },
+    ]);
+  });
+
+  it('detects changed TTL interval semantically (by seconds)', () => {
+    // P1DT0H == 24 часа != PT2H; при этом "PT120M" эквивалентен "PT2H"
+    const equalCheck = checkTableSchema(
+      ttlExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 7200 },
+      }),
+    );
+    expect(equalCheck.ttlMismatches).toEqual([]);
+
+    const changedCheck = checkTableSchema(
+      ttlExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 90000 },
+      }),
+    );
+    expect(changedCheck.ttlMismatches).toEqual([
+      {
+        expected: { interval: 'PT2H', column: 'expires_at' },
+        actual: { column: 'expires_at', expireAfterSeconds: 90000 },
+      },
+    ]);
+  });
+
+  it('detects changed TTL column and unit', () => {
+    const numericExpected: ExpectedTableSchema = {
+      tableName: 'ttl_numeric',
+      columns: { uuid: 'Uuid' },
+      primaryKey: ['uuid'],
+      indexes: [],
+      ttl: { interval: 'P30D', column: 'expires_at', unit: 'seconds' },
+    };
+
+    const check = checkTableSchema(numericExpected, {
+      columns: new Map([['uuid', Type_PrimitiveTypeId.UUID]]),
+      primaryKey: ['uuid'],
+      indexes: [],
+      ttl: {
+        column: 'other_col',
+        expireAfterSeconds: 2592000,
+        unit: 'milliseconds',
+      },
+    });
+
+    expect(check.ttlMismatches).toEqual([
+      {
+        expected: { interval: 'P30D', column: 'expires_at', unit: 'seconds' },
+        actual: {
+          column: 'other_col',
+          expireAfterSeconds: 2592000,
+          unit: 'milliseconds',
+        },
+      },
+    ]);
+  });
+
+  it('treats calendar-part intervals (years/months) as mismatch', () => {
+    const calendarExpected = {
+      ...ttlExpected,
+      ttl: { interval: 'P1M', column: 'expires_at' },
+    };
+    const check = checkTableSchema(
+      calendarExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 2592000 },
+      }),
+    );
+
+    expect(check.ttlMismatches).toHaveLength(1);
+  });
+
+  it('detects TTL present in DB but absent in entity', () => {
+    const plainExpected = buildExpectedTableSchema(
+      meta(TestExplicitUuidPkEntity),
+    );
+    const check = checkTableSchema(plainExpected, {
+      columns: new Map([['uuid', Type_PrimitiveTypeId.UUID]]),
+      primaryKey: ['uuid'],
+      indexes: [],
+      ttl: { column: 'created_at', expireAfterSeconds: 3600 },
+    });
+
+    expect(check.extraTtl).toEqual([
+      { actual: { column: 'created_at', expireAfterSeconds: 3600 } },
+    ]);
+  });
+});
+
+describe('checkToIssues / diffSchemas (#88)', () => {
+  const ttlExpected = buildExpectedTableSchema(meta(TestSessionEntity));
+
+  const sessionDescription = (
+    overrides: Partial<YdbTableDescription> = {},
+  ): YdbTableDescription => ({
+    columns: new Map([
+      ['uuid', Type_PrimitiveTypeId.UUID],
+      ['expires_at', Type_PrimitiveTypeId.DATETIME],
+    ]),
+    primaryKey: ['uuid'],
+    indexes: [
+      {
+        name: 'test_sessions__expires_at',
+        columns: ['expires_at'],
+        unique: false,
+      },
+    ],
+    ...overrides,
+  });
+
+  it('exposes unique flag mismatch as an issue', () => {
+    const check = checkTableSchema(
+      buildExpectedTableSchema(meta(TestUserEntity)),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: true,
+          },
+        ],
+      ),
+    );
+    const issues = checkToIssues(check);
+
+    expect(issues).toContainEqual({
+      tableName: 'test_users',
+      kind: 'unique-mismatch',
+      message:
+        'Table "test_users" index "test_users__active_name" unique flag mismatch: ' +
+        'expected false, actual true',
+    });
+  });
+
+  it('exposes missing TTL as ttl-missing issue', () => {
+    const issues = diffSchemas(
+      [ttlExpected],
+      [sessionDescription({ ttl: undefined })],
+    );
+
+    expect(issues).toContainEqual({
+      tableName: 'test_sessions',
+      kind: 'ttl-missing',
+      message:
+        'Table "test_sessions" has no TTL, entity declares PT2H on column "expires_at"',
+    });
+  });
+
+  it('exposes changed TTL with unit as ttl-mismatch issue', () => {
+    const issues = diffSchemas(
+      [
+        {
+          ...ttlExpected,
+          ttl: { interval: 'PT2H', column: 'expires_at', unit: 'seconds' },
+        },
+      ],
+      [
+        sessionDescription({
+          ttl: { column: 'expires_at', expireAfterSeconds: 3600 },
+        }),
+      ],
+    );
+
+    expect(issues).toContainEqual({
+      tableName: 'test_sessions',
+      kind: 'ttl-mismatch',
+      message:
+        'Table "test_sessions" TTL mismatch: expected PT2H on column "expires_at" AS SECONDS, ' +
+        'actual PT1H on column "expires_at"',
+    });
+  });
+
+  it('exposes DB-only TTL as ttl-extra issue', () => {
+    const plainExpected = buildExpectedTableSchema(
+      meta(TestExplicitUuidPkEntity),
+    );
+    const issues = diffSchemas(
+      [plainExpected],
+      [
+        {
+          columns: new Map([['uuid', Type_PrimitiveTypeId.UUID]]),
+          primaryKey: ['uuid'],
+          indexes: [],
+          ttl: { column: 'created_at', expireAfterSeconds: 3600 },
+        },
+      ],
+    );
+
+    expect(issues).toContainEqual({
+      tableName: 'test_explicit_uuid_pk',
+      kind: 'ttl-extra',
+      message:
+        'Table "test_explicit_uuid_pk" has TTL PT1H on column "created_at" not present in entity',
+    });
+  });
+});
+
+describe('generateSetTtlYql / generateResetTtlYql', () => {
+  it('generates ALTER TABLE SET with TTL expression compatible with WITH-clause', () => {
+    expect(
+      generateSetTtlYql('sessions', { interval: 'PT2H', column: 'expires_at' }),
+    ).toBe(
+      'ALTER TABLE `sessions` SET (TTL = Interval("PT2H") ON `expires_at`)',
+    );
+    expect(
+      generateSetTtlYql('sessions', {
+        interval: 'P30D',
+        column: 'expires_at',
+        unit: 'seconds',
+      }),
+    ).toBe(
+      'ALTER TABLE `sessions` SET (TTL = Interval("P30D") ON `expires_at` AS SECONDS)',
+    );
+  });
+
+  it('generates ALTER TABLE RESET (TTL)', () => {
+    expect(generateResetTtlYql('sessions')).toBe(
+      'ALTER TABLE `sessions` RESET (TTL)',
+    );
+  });
 });
 
 describe('YdbSchemaSyncer', () => {
@@ -630,5 +961,159 @@ describe('YdbSchemaSyncer', () => {
       },
     ]);
     expect(executedSql()).toEqual([]);
+  });
+
+  it('verify reports missing TTL and missing index (#88)', async () => {
+    mockDescribe({
+      columns: new Map([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['expires_at', Type_PrimitiveTypeId.DATETIME],
+      ]),
+      primaryKey: ['uuid'],
+      indexes: [],
+    });
+
+    const issues = await syncer.verify([TestSessionEntity]);
+
+    expect(issues).toEqual([
+      expect.objectContaining({ kind: 'missing-index' }),
+      {
+        tableName: 'test_sessions',
+        kind: 'ttl-missing',
+        message:
+          'Table "test_sessions" has no TTL, entity declares PT2H on column "expires_at"',
+      },
+    ]);
+  });
+
+  it('verify reports unique flag mismatch issue (#88)', async () => {
+    mockDescribe(
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [
+          {
+            name: 'test_users__active_name',
+            columns: ['is_active', 'name'],
+            unique: true,
+          },
+        ],
+      ),
+    );
+
+    const issues = await syncer.verify([TestUserEntity]);
+
+    expect(issues).toContainEqual({
+      tableName: 'test_users',
+      kind: 'unique-mismatch',
+      message:
+        'Table "test_users" index "test_users__active_name" unique flag mismatch: ' +
+        'expected false, actual true',
+    });
+    expect(executedSql()).toEqual([]);
+  });
+});
+
+describe('YdbSchemaSyncer.describeTable TTL parsing (#88)', () => {
+  const sessionResult = anyPack(
+    CreateSessionResultSchema,
+    create(CreateSessionResultSchema, { sessionId: 'session-ttl-1' }),
+  );
+
+  function makeSyncer(describeResponse: unknown): YdbSchemaSyncer {
+    const tableClient = {
+      createSession: jest.fn(() =>
+        Promise.resolve({ operation: { result: sessionResult } }),
+      ),
+      describeTable: jest.fn(() => Promise.resolve(describeResponse)),
+      deleteSession: jest.fn(() => Promise.resolve({})),
+    };
+    const driver = {
+      database: '/local',
+      createClient: jest.fn(() => tableClient),
+    };
+    return new YdbSchemaSyncer(driver as never, {} as YdbExecutor);
+  }
+
+  function describeResponse(ttl?: unknown): unknown {
+    return {
+      operation: {
+        status: StatusIds_StatusCode.SUCCESS,
+        result: anyPack(
+          DescribeTableResultSchema,
+          create(DescribeTableResultSchema, {
+            columns: [
+              {
+                name: 'expires_at',
+                type: {
+                  type: {
+                    case: 'typeId',
+                    value: Type_PrimitiveTypeId.DATETIME,
+                  },
+                },
+              },
+            ],
+            primaryKey: ['expires_at'],
+            indexes: [],
+            ...(ttl ? { ttlSettings: ttl } : {}),
+          }),
+        ),
+      },
+    };
+  }
+
+  it('parses date-type TTL settings', async () => {
+    const syncer = makeSyncer(
+      describeResponse({
+        mode: {
+          case: 'dateTypeColumn',
+          value: { columnName: 'expires_at', expireAfterSeconds: 7200 },
+        },
+      }),
+    );
+
+    const desc = await syncer.describeTable('test_sessions');
+
+    expect(desc?.ttl).toEqual({
+      column: 'expires_at',
+      expireAfterSeconds: 7200,
+    });
+  });
+
+  it('maps numeric TTL unit from proto enum', async () => {
+    const syncer = makeSyncer(
+      describeResponse({
+        mode: {
+          case: 'valueSinceUnixEpoch',
+          value: {
+            columnName: 'expires_at',
+            columnUnit: ValueSinceUnixEpochModeSettings_Unit.SECONDS,
+            expireAfterSeconds: 2592000,
+          },
+        },
+      }),
+    );
+
+    const desc = await syncer.describeTable('test_sessions');
+
+    expect(desc?.ttl).toEqual({
+      column: 'expires_at',
+      expireAfterSeconds: 2592000,
+      unit: 'seconds',
+    });
+  });
+
+  it('returns undefined ttl when ttlSettings is absent', async () => {
+    const syncer = makeSyncer(describeResponse());
+
+    const desc = await syncer.describeTable('test_sessions');
+
+    expect(desc?.ttl).toBeUndefined();
   });
 });
