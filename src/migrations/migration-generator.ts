@@ -38,6 +38,40 @@ function ttlMetaFromActual(actual: YdbTableTtl): YdbTtlMetadata {
 }
 
 /**
+ * Валидирует входы planMigration (#102). Массивы сопоставляются строго
+ * по индексу (expected[i] ↔ existing[i]) — это часть публичного контракта,
+ * поэтому расхождение длин должно падать с понятной ошибкой, а не молча
+ * порождать неверный DDL.
+ */
+function validatePlanInputs(
+  expected: ExpectedTableSchema[],
+  existing: (YdbTableDescription | null)[],
+): void {
+  if (!Array.isArray(expected)) {
+    throw new TypeError(
+      'planMigration: "expected" must be an array of ExpectedTableSchema',
+    );
+  }
+  if (!Array.isArray(existing)) {
+    throw new TypeError(
+      'planMigration: "existing" must be an array of YdbTableDescription or null',
+    );
+  }
+  if (expected.length !== existing.length) {
+    const expectedTables = expected
+      .map((schema) => schema?.tableName)
+      .filter(Boolean)
+      .join(', ');
+    throw new Error(
+      `planMigration: "expected" (${expected.length}) and "existing" ` +
+        `(${existing.length}) must have the same length — entries are matched ` +
+        `positionally (expected[i] <-> existing[i])` +
+        (expectedTables ? `; expected tables: ${expectedTables}` : ''),
+    );
+  }
+}
+
+/**
  * Чистая функция: строит план миграции по ожидаемым схемам сущностей
  * и текущему состоянию БД (null — таблицы нет).
  * Используется `migration:generate`.
@@ -53,6 +87,8 @@ export function planMigration(
   expected: ExpectedTableSchema[],
   existing: (YdbTableDescription | null)[],
 ): PlannedMigration {
+  validatePlanInputs(expected, existing);
+
   const up: string[] = [];
   const down: string[] = [];
   const warnings: string[] = [];

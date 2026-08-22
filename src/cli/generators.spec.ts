@@ -1,12 +1,14 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { jest } from '@jest/globals';
 import {
   createEntityFile,
   createMigrationFile,
   toKebabCase,
   toPascalCase,
   toSnakeCase,
+  toValidClassName,
 } from './generators.js';
 
 let dir: string;
@@ -26,6 +28,23 @@ describe('case utils', () => {
     expect(toPascalCase('UserProfile')).toBe('UserProfile');
     expect(toSnakeCase('UserProfile')).toBe('user_profile');
     expect(toKebabCase('UserProfile')).toBe('user-profile');
+  });
+});
+
+describe('toValidClassName (#102)', () => {
+  it('keeps valid identifiers untouched', () => {
+    expect(toValidClassName('create users')).toBe('CreateUsers');
+    expect(toValidClassName('UserProfile')).toBe('UserProfile');
+  });
+
+  it('prefixes digit-leading names so the class compiles', () => {
+    expect(toValidClassName('123')).toBe('Migration123');
+    expect(toValidClassName('2fa setup')).toBe('Migration2faSetup');
+  });
+
+  it('falls back to Migration when the name has no letters or digits', () => {
+    expect(toValidClassName('---')).toBe('Migration');
+    expect(toValidClassName('')).toBe('Migration');
   });
 });
 
@@ -78,5 +97,62 @@ describe('createMigrationFile', () => {
       'await executeSql(executor, "DROP TABLE `photos`");',
     );
     expect(content).toContain('WARNING: Table "photos": extra column "legacy"');
+  });
+
+  it('does not collide when called repeatedly at the same millisecond (#102)', () => {
+    // Фиксируем Date.now() в будущем (после любых реальных вызовов
+    // в других тестах): все три генерации попадают в одну миллисекунду.
+    const fixed = Date.now() + 60_000;
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(fixed);
+    try {
+      const first = createMigrationFile(dir, 'add photos');
+      const second = createMigrationFile(dir, 'add photos');
+      const third = createMigrationFile(dir, 'add photos');
+
+      expect(first.name).toBe(`${fixed}-AddPhotos`);
+      expect(second.name).toBe(`${fixed}-AddPhotos-1`);
+      expect(third.name).toBe(`${fixed}-AddPhotos-2`);
+
+      for (const created of [first, second, third]) {
+        expect(fs.existsSync(created.filePath)).toBe(true);
+      }
+
+      // Лексикографическая сортировка загрузчика сохраняет хронологию:
+      // порядок имён после сортировки совпадает с порядком генерации.
+      expect([first.name, second.name, third.name].sort()).toEqual([
+        first.name,
+        second.name,
+        third.name,
+      ]);
+
+      // Имена классов уникальны и являются валидными идентификаторами.
+      const classNames = [first, second, third].map(
+        (created) =>
+          fs
+            .readFileSync(created.filePath, 'utf-8')
+            .match(/export class (\w+) implements/)?.[1],
+      );
+      expect(new Set(classNames).size).toBe(3);
+      for (const className of classNames) {
+        expect(className).toMatch(/^[A-Za-z_$][A-Za-z0-9_$]*$/);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('generates a compilable class for names without letters or with leading digits (#102)', () => {
+    const fromDigits = createMigrationFile(dir, '123');
+    const fromSymbols = createMigrationFile(dir, '---');
+    const fromMixed = createMigrationFile(dir, '2fa setup');
+
+    for (const created of [fromDigits, fromSymbols, fromMixed]) {
+      const content = fs.readFileSync(created.filePath, 'utf-8');
+      const className = content.match(/export class (\w+) implements/)?.[1];
+      // Класс не может начинаться с цифры — иначе файл не скомпилируется.
+      expect(className).toMatch(/^[A-Za-z_$][A-Za-z0-9_$]*$/);
+      expect(content).toContain(`readonly name = "${created.name}";`);
+      expect(path.basename(created.filePath)).toBe(`${created.name}.ts`);
+    }
   });
 });

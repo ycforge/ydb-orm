@@ -351,6 +351,39 @@ describe('planMigration', () => {
   });
 });
 
+describe('planMigration input validation (#102)', () => {
+  it('rejects non-array inputs with a clear error', () => {
+    const wrongExpected = () =>
+      planMigration(
+        expected as unknown as ExpectedTableSchema[],
+        undefined as unknown as (YdbTableDescription | null)[],
+      );
+    expect(wrongExpected).toThrow(TypeError);
+    expect(wrongExpected).toThrow(/"expected" must be an array/);
+
+    const wrongExisting = () =>
+      planMigration(
+        [expected],
+        null as unknown as (YdbTableDescription | null)[],
+      );
+    expect(wrongExisting).toThrow(TypeError);
+    expect(wrongExisting).toThrow(/"existing" must be an array/);
+  });
+
+  it('rejects mismatched array lengths instead of matching positionally', () => {
+    expect(() => planMigration([expected], [])).toThrow(
+      /"expected" \(1\) and "existing" \(0\) must have the same length/,
+    );
+    expect(() => planMigration([], [null])).toThrow(
+      /"expected" \(0\) and "existing" \(1\) must have the same length/,
+    );
+  });
+
+  it('mentions the involved tables in the length-mismatch error', () => {
+    expect(() => planMigration([expected], [])).toThrow(/photos/);
+  });
+});
+
 describe('renderMigrationFile', () => {
   it('renders a migration class with up/down statements', () => {
     const content = renderMigrationFile(
