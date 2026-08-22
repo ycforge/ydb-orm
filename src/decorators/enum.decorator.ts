@@ -11,6 +11,11 @@ export interface YdbEnumMeta {
 
 /**
  * Декоратор enum-колонки: маппинг enum ↔ Utf8 (строковое значение) или Int32 (порядковый номер).
+ *
+ * Семантика наследования и повторного применения: последняя декларация
+ * побеждает (last-write-wins). Переопределение @YdbEnum на свойстве,
+ * унаследованном от родителя, заменяет values/storage — а не игнорируется.
+ * Для каждого propertyKey в метаданных остаётся ровно одна запись.
  * @example
  *   enum Status { ACTIVE = 'active', INACTIVE = 'inactive' }
  *
@@ -27,20 +32,15 @@ export function YdbEnum(options: {
     const existing: YdbEnumMeta[] =
       Reflect.getMetadata(YDB_ENUM_KEY, constructor) || [];
 
-    if (existing.some((e) => e.propertyKey === propertyKey)) return;
-
-    Reflect.defineMetadata(
-      YDB_ENUM_KEY,
-      [
-        ...existing,
-        {
-          propertyKey: propertyKey as string,
-          values: options.values,
-          storage: options.storage ?? 'Utf8',
-        },
-      ],
-      constructor,
-    );
+    const list: YdbEnumMeta[] = [
+      ...existing.filter((e) => e.propertyKey !== propertyKey),
+      {
+        propertyKey: propertyKey as string,
+        values: options.values,
+        storage: options.storage ?? 'Utf8',
+      },
+    ];
+    Reflect.defineMetadata(YDB_ENUM_KEY, list, constructor);
   };
 }
 
