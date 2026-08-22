@@ -400,8 +400,9 @@ YdbCoreModule.forRootAsync({
 ```
 
 - `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (значения секретов и длинных строк маскируются), `durationMs` и опциональную `error`.
-- Аналогично работает standalone `createExecutor(driver, opts)` (учитывает `poolOptions` и `logQueries`). Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную.
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (все значения маскируются), `durationMs` и опциональную `error`.
+- Аналогично работает standalone `createExecutor(driver, opts)` (учитывает `poolOptions` и `logQueries`). Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
+- Маскирование параметров: секреты/PII по имени параметра (`password`, `token`, `secret`, `authorization`, `email`, credential, phone, card, blind index `{field}_bi` и т.п.) заменяются на `<redacted>` для значений любой длины; бинарные/зашифрованные данные логируются только длиной (`<bytes:N>`); остальные длинные строки обрезаются до 64 символов.
 
 ## Аутентификация (`auth_type`)
 
