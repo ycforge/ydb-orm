@@ -24,6 +24,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:revert            Откатить последнюю миграцию
   ydb-orm migration:show              Показать статус миграций
   ydb-orm migration:check             Проверить, все ли миграции применены (exit 1 если нет)
+  ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
   ydb-orm entity:create <name>        Создать сущность
   ydb-orm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
@@ -44,6 +45,8 @@ interface ParsedArgs {
   config?: string;
   dir?: string;
   json?: boolean;
+  asApplied?: boolean;
+  asReverted?: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -53,6 +56,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (argv[i] === '--config') result.config = argv[++i];
     else if (argv[i] === '--dir') result.dir = argv[++i];
     else if (argv[i] === '--json') result.json = true;
+    else if (argv[i] === '--as-applied') result.asApplied = true;
+    else if (argv[i] === '--as-reverted') result.asReverted = true;
     else rest.push(argv[i]);
   }
   [result.command, result.positional] = rest;
@@ -173,6 +178,34 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'migration:repair') {
+    // Восстановление после прерванной миграции (#101): запись в
+    // ydb_migrations осталась в состоянии "started" и блокирует migration:run.
+    requireName(command, args.positional);
+    if (!args.asApplied && !args.asReverted) {
+      throw new Error(
+        'migration:repair requires --as-applied ' +
+          '(schema changes were completed manually) or --as-reverted ' +
+          '(schema changes were rolled back manually).',
+      );
+    }
+    const { executor, close } = await connectCli(config);
+    try {
+      const runner = new YdbMigrationRunner(executor);
+      const target = args.positional as string;
+      if (args.asApplied) {
+        await runner.markMigrationApplied(target);
+        console.log(`Marked as applied: ${target}`);
+      } else {
+        await runner.removeMigrationRecord(target);
+        console.log(`Removed bookkeeping record: ${target}`);
+      }
+    } finally {
+      close();
+    }
+    return;
+  }
+
   if (
     command === 'migration:run' ||
     command === 'migration:revert' ||
@@ -201,10 +234,27 @@ async function main(): Promise<void> {
             name: s.name,
             applied: s.applied,
             appliedAt: s.appliedAt ? s.appliedAt.toISOString() : null,
+            ...(s.interrupted ? { interrupted: true } : {}),
+            ...(s.orphan ? { orphan: true } : {}),
           }));
           console.log(JSON.stringify(json, null, 2));
         } else {
           for (const s of statuses) {
+            if (s.orphan) {
+              // Применена, но файла миграции больше нет (#101)
+              console.log(
+                `[!] ${s.name} — orphan record (no matching migration file)` +
+                  (s.interrupted ? ' [interrupted]' : ''),
+              );
+              continue;
+            }
+            if (s.applied && s.interrupted) {
+              // Прервана посреди применения/отката (#101)
+              console.log(
+                `[~] ${s.name} — interrupted, resolve via migration:repair`,
+              );
+              continue;
+            }
             console.log(
               `${s.applied ? '[x]' : '[ ]'} ${s.name}` +
                 (s.appliedAt ? ` (${s.appliedAt.toISOString()})` : ''),

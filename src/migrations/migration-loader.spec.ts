@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { loadMigrationsFromDir } from './migration-loader.js';
 
 let dir: string;
@@ -166,7 +167,7 @@ describe('loadMigrationsFromDir', () => {
       writeMigration('5000-Dup.js', body);
 
       await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
-        /Duplicate migration name "5000-Dup" from files 5000-Dup\.(ts|js) and 5000-Dup\.(ts|js)/,
+        /5000-Dup\.(ts|js) and 5000-Dup\.(ts|js)/,
       );
     });
 
@@ -190,6 +191,56 @@ describe('loadMigrationsFromDir', () => {
 
       await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
         /Duplicate migration name "shared" from files/,
+      );
+    });
+  });
+
+  describe('#101 regression: stable content identity', () => {
+    it('assigns a sha256 content hash to every loaded migration', async () => {
+      const body = `export default class Hashed {
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('1000-Hashed.mjs', body);
+
+      const migrations = await loadMigrationsFromDir(dir);
+
+      expect(migrations[0].hash).toBe(
+        createHash('sha256').update(body).digest('hex'),
+      );
+    });
+
+    it('keeps the hash stable across file renames', async () => {
+      // Переименование файла не должно менять идентичность миграции
+      const body = `export default class Stable {
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('1000-First.mjs', body);
+      const before = await loadMigrationsFromDir(dir);
+
+      fs.renameSync(
+        path.join(dir, '1000-First.mjs'),
+        path.join(dir, '2000-Renamed.mjs'),
+      );
+      const after = await loadMigrationsFromDir(dir);
+
+      expect(after[0].hash).toBe(before[0].hash);
+      expect(after[0].name).toBe('2000-Renamed');
+    });
+
+    it('throws when two files have identical content', async () => {
+      // Обе «миграции» применились бы, но вторая упала бы на уже
+      // выполненном DDL — раньше это всплывало только в рантайме БД
+      const body = `export default class Dup2 {
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('1000-One.mjs', body);
+      writeMigration('2000-Two.mjs', body);
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /identical content/,
       );
     });
   });

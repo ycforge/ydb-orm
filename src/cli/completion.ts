@@ -23,13 +23,24 @@ export const CLI_COMMANDS: CliCommand[] = [
     name: 'migration:check',
     description: 'Check that all migrations are applied',
   },
+  {
+    name: 'migration:repair',
+    description:
+      'Resolve an interrupted migration (--as-applied/--as-reverted)',
+  },
   { name: 'schema:verify', description: 'Verify DB schema against entities' },
   { name: 'entity:create', description: 'Create an entity' },
   { name: 'completion', description: 'Print shell completion script' },
 ];
 
 /** Флаги, которые парсит CLI (см. parseArgs в cli.ts). */
-export const CLI_FLAGS = ['--config', '--dir', '--json'];
+export const CLI_FLAGS = [
+  '--config',
+  '--dir',
+  '--json',
+  '--as-applied',
+  '--as-reverted',
+];
 
 /** Поддерживаемые шеллы. */
 export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish'] as const;
@@ -109,7 +120,9 @@ ${commands}
           _arguments \\
             '--config[Path to CLI config]:file:_files' \\
             '--dir[Migrations/entities directory]:directory:_files -/' \\
-            '--json[JSON output]'
+            '--json[JSON output]' \\
+            '--as-applied[Repair: mark migration as applied]' \\
+            '--as-reverted[Repair: remove bookkeeping record]'
           ;;
       esac
       ;;
@@ -146,6 +159,8 @@ function renderFish(): string {
     "complete -c ydb-orm -l config -r -F -d 'Path to CLI config'",
     "complete -c ydb-orm -l dir -r -F -d 'Migrations/entities directory'",
     "complete -c ydb-orm -l json -d 'JSON output'",
+    "complete -c ydb-orm -l as-applied -d 'Repair: mark migration as applied'",
+    "complete -c ydb-orm -l as-reverted -d 'Repair: remove bookkeeping record'",
   );
   return lines.join('\n') + '\n';
 }

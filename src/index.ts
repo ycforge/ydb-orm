@@ -190,6 +190,7 @@ export {
 } from './migrations/migration-runner.js';
 export type {
   AppliedMigration,
+  MigrationRecordState,
   YdbMigrationStatus,
 } from './migrations/migration-runner.js';
 export { loadMigrationsFromDir } from './migrations/migration-loader.js';
