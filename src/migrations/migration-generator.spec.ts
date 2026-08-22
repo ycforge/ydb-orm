@@ -296,6 +296,37 @@ describe('planMigration', () => {
     ]);
   });
 
+  it('restores fractional TTL exactly in down without rounding (#88)', () => {
+    const ttlSchema: ExpectedTableSchema = {
+      ...expected,
+      ttl: { interval: 'P1D', column: 'title' },
+    };
+    const plan = planMigration(
+      [ttlSchema],
+      [
+        description(
+          [
+            ['uuid', Type_PrimitiveTypeId.UUID],
+            ['title', Type_PrimitiveTypeId.UTF8],
+            ['width', Type_PrimitiveTypeId.INT32],
+          ],
+          ['uuid'],
+          { ttl: { column: 'width_col', expireAfterSeconds: 1.5 } },
+        ),
+      ],
+    );
+
+    expect(plan.up).toEqual([
+      'ALTER TABLE `photos` SET (TTL = Interval("P1D") ON `title`)',
+    ]);
+    // Регрессия микросекундной точности YDB Interval: прежняя конверсия
+    // через secondsToIsoDuration округляла 1.5s до "PT2S" и ломала откат.
+    // down обязан восстановить дробный TTL ровно ("PT1.5S").
+    expect(plan.down).toEqual([
+      'ALTER TABLE `photos` SET (TTL = Interval("PT1.5S") ON `width_col`)',
+    ]);
+  });
+
   it('does not reset extra TTL without entity metadata and warns (#88)', () => {
     const plan = planMigration(
       [expected],
