@@ -216,4 +216,7 @@ export type { YdbCliConfig } from './cli/config.js';
 
 // Credentials
 export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';
-export type { IamJWTKeyCredentials } from './credentials/auth-key-credentials-provider.js';
+export type {
+  AuthKeyCredentialsProviderOptions,
+  IamJWTKeyCredentials,
+} from './credentials/auth-key-credentials-provider.js';
