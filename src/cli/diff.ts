@@ -32,9 +32,16 @@ const KIND_STYLE: Record<
   'ttl-extra': { marker: '-', color: BLUE },
 };
 
-/** Цвет включён, только если вывод — TTY и не задана NO_COLOR. */
-export function shouldUseColor(): boolean {
-  return Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+/**
+ * Цвет включён, только если целевой поток вывода — TTY и не задана
+ * NO_COLOR (#103). Раньше TTY проверялся только у stdout, хотя расхождения
+ * в schema:verify пишутся в stderr — при перенаправлении stdout ANSI-коды
+ * попадали в файл, а при перенаправлении stderr цвет зря отключался.
+ */
+export function shouldUseColor(
+  stream: NodeJS.WriteStream = process.stdout,
+): boolean {
+  return Boolean(stream.isTTY) && !process.env.NO_COLOR;
 }
 
 /** Оборачивает текст в ANSI-цвет, если раскраска включена. */
@@ -88,12 +95,15 @@ function formatIssueText(issue: YdbSchemaIssue): string {
 /**
  * Рендерит список расхождений, сгруппированный по таблицам.
  * Возвращает многострочную строку (без завершающего перевода строки).
+ *
+ * Цвет определяется по потоку, куда вывод реально попадает: опция
+ * `stream` (по умолчанию stdout) или явный `color`.
  */
 export function renderSchemaDiff(
   issues: YdbSchemaIssue[],
-  options?: { color?: boolean },
+  options?: { color?: boolean; stream?: NodeJS.WriteStream },
 ): string {
-  const colorEnabled = options?.color ?? shouldUseColor();
+  const colorEnabled = options?.color ?? shouldUseColor(options?.stream);
 
   // Группировка по таблицам с сохранением исходного порядка.
   const byTable = new Map<string, YdbSchemaIssue[]>();

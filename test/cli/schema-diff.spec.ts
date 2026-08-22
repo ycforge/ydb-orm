@@ -270,6 +270,36 @@ describe('shouldUseColor', () => {
     expect(shouldUseColor()).toBe(true);
   });
 
+  it('decides by the passed stream, not always stdout (#103)', () => {
+    // schema:verify пишет расхождения в stderr: при pipe stdout
+    // (`ydb-orm schema:verify | cat`) цвет должен решаться по stderr.
+    const ttyStderr = { isTTY: true } as unknown as NodeJS.WriteStream;
+    const pipedStdout = { isTTY: false } as unknown as NodeJS.WriteStream;
+
+    expect(shouldUseColor(ttyStderr)).toBe(true);
+    expect(shouldUseColor(pipedStdout)).toBe(false);
+  });
+
+  it('renderSchemaDiff colors by the target stream (#103)', () => {
+    delete process.env.NO_COLOR;
+    Object.defineProperty(process.stdout, 'isTTY', {
+      value: undefined,
+      configurable: true,
+    });
+    const issues = diffSchemas([makeExpected()], [makeExisting()]);
+
+    // stderr остался TTY, хотя stdout перенаправлен — цвет включается.
+    const colored = renderSchemaDiff(issues, {
+      stream: { isTTY: true } as unknown as NodeJS.WriteStream,
+    });
+    expect(colored).toMatch(ANSI_RE);
+
+    const plain = renderSchemaDiff(issues, {
+      stream: { isTTY: false } as unknown as NodeJS.WriteStream,
+    });
+    expect(plain).not.toMatch(ANSI_RE);
+  });
+
   it('renderSchemaDiff without options emits no ANSI when NO_COLOR is set', () => {
     Object.defineProperty(process.stdout, 'isTTY', {
       value: true,
