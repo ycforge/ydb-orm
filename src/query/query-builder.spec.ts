@@ -59,6 +59,60 @@ describe('YdbQueryBuilder', () => {
     );
   });
 
+  it('normalizes direction case and whitespace in orderBy', async () => {
+    mockRuntime();
+    const { sql } = await QbPhotoEntity.query()
+      .orderBy('rating', ' desc ' as any)
+      .toYql();
+    expect(sql).toContain('ORDER BY `rating` DESC');
+
+    const { sql: ascSql } = await QbPhotoEntity.query()
+      .orderBy('rating', 'Asc' as any)
+      .toYql();
+    expect(ascSql).toContain('ORDER BY `rating` ASC');
+  });
+
+  it('normalizes and validates direction in addOrderBy', async () => {
+    mockRuntime();
+    const { sql } = await QbPhotoEntity.query()
+      .orderBy('rating', 'desc' as any)
+      .addOrderBy('title', ' Asc' as any)
+      .toYql();
+    expect(sql).toContain('ORDER BY `rating` DESC, `title` ASC');
+  });
+
+  it('rejects invalid direction before it reaches SQL (any bypass)', () => {
+    mockRuntime();
+    const injection = 'DESC, (SELECT group_concat(name) FROM users)' as any;
+    expect(() => QbPhotoEntity.query().orderBy('rating', injection)).toThrow(
+      /Invalid ORDER BY direction/,
+    );
+    expect(() => QbPhotoEntity.query().addOrderBy('rating', injection)).toThrow(
+      /Invalid ORDER BY direction/,
+    );
+  });
+
+  it('rejects invalid direction passed to addOrderBy via any', () => {
+    mockRuntime();
+    const injection = 'ASC; DROP TABLE qb_photos' as any;
+    const builder = QbPhotoEntity.query().orderBy('rating');
+    expect(() => builder.addOrderBy('title', injection)).toThrow(
+      /Invalid ORDER BY direction/,
+    );
+  });
+
+  it('rejects non-string directions from JavaScript callers', () => {
+    mockRuntime();
+    for (const bad of [null as any, 1 as any, {} as any]) {
+      expect(() => QbPhotoEntity.query().orderBy('rating', bad)).toThrow(
+        /Invalid ORDER BY direction/,
+      );
+      expect(() => QbPhotoEntity.query().addOrderBy('rating', bad)).toThrow(
+        /Invalid ORDER BY direction/,
+      );
+    }
+  });
+
   it('throws on unknown WHERE field', async () => {
     mockRuntime();
     await expect(

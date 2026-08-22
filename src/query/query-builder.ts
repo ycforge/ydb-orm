@@ -99,13 +99,38 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   orderBy(field: string, direction: OrderDirection = 'ASC'): this {
-    this.orderClauses = [{ field, direction }];
+    this.orderClauses = [
+      { field, direction: this.normalizeDirection(direction) },
+    ];
     return this;
   }
 
   addOrderBy(field: string, direction: OrderDirection = 'ASC'): this {
-    this.orderClauses.push({ field, direction });
+    this.orderClauses.push({
+      field,
+      direction: this.normalizeDirection(direction),
+    });
     return this;
+  }
+
+  /**
+   * Рантайм-валидация направления сортировки: trim + uppercase,
+   * whitelist ASC|DESC. Защита от SQL-инъекции через direction,
+   * переданный как any/из JS в обход TS-типа OrderDirection.
+   */
+  private normalizeDirection(direction: unknown): OrderDirection {
+    if (typeof direction !== 'string') {
+      throw new Error(
+        `Invalid ORDER BY direction: ${String(direction)}. Expected 'ASC' or 'DESC'.`,
+      );
+    }
+    const normalized = direction.trim().toUpperCase();
+    if (normalized !== 'ASC' && normalized !== 'DESC') {
+      throw new Error(
+        `Invalid ORDER BY direction: "${direction}". Allowed values: ASC, DESC.`,
+      );
+    }
+    return normalized;
   }
 
   /** Указать конкретные колонки для SELECT (вместо SELECT *). */
