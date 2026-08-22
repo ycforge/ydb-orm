@@ -135,6 +135,72 @@ class CompositeTagEntity extends YdbBaseEntity {
   photos?: CompositePhotoEntity[];
 }
 
+// #139: зеркальные декларации одной таблицы на обеих сторонах — эквивалентны
+@YdbEntity('rt_sym_parents')
+class SymParentEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  parent_id: bigint;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => SymChildEntity, (child) => child.parents)
+  @JoinTable('rt_sym_join', {
+    joinColumn: 'parent_ref',
+    inverseJoinColumn: 'child_key',
+  })
+  children?: SymChildEntity[];
+}
+
+@YdbEntity('rt_sym_children')
+class SymChildEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  child_key: string;
+
+  @YdbColumn('Utf8')
+  label: string;
+
+  @ManyToMany(() => SymParentEntity, (parent) => parent.children)
+  @JoinTable('rt_sym_join', {
+    joinColumn: 'child_key',
+    inverseJoinColumn: 'parent_ref',
+  })
+  parents?: SymParentEntity[];
+}
+
+// #139: расходящиеся объявления одного имени join-таблицы
+@YdbEntity('rt_conflict_lefts')
+class ConflictLeftEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  left_id: bigint;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => ConflictRightEntity, (right) => right.lefts)
+  @JoinTable('rt_conflict_join', {
+    joinColumn: 'left_ref',
+    inverseJoinColumn: 'right_code',
+  })
+  rights?: ConflictRightEntity[];
+}
+
+@YdbEntity('rt_conflict_rights')
+class ConflictRightEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  right_code: string;
+
+  @YdbColumn('Utf8')
+  label: string;
+
+  @ManyToMany(() => ConflictLeftEntity, (left) => left.rights)
+  @JoinTable('rt_conflict_join', {
+    joinColumn: 'other_column',
+    inverseJoinColumn: 'another_column',
+  })
+  lefts?: ConflictLeftEntity[];
+}
+
 const orderRow = { order_id: 10n, title: 'o1' };
 const skuRows = [
   { sku: 'a1', label: 'A' },
@@ -164,6 +230,10 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
       CourseEntity,
       CompositePhotoEntity,
       CompositeTagEntity,
+      SymParentEntity,
+      SymChildEntity,
+      ConflictLeftEntity,
+      ConflictRightEntity,
     ]) {
       Entity.setExecutor(undefined as any);
     }
@@ -292,6 +362,62 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
 
     await expect(CompositePhotoEntity.findAll()).rejects.toThrow(
       /composite primary keys.*not supported in.*many-to-many/s,
+    );
+  });
+
+  it('resolves mirrored equivalent declarations from both sides (#139)', async () => {
+    const parentRow = { parent_id: 1n, name: 'p1' };
+    const childRows = [
+      { child_key: 'c1', label: 'C1' },
+      { child_key: 'c2', label: 'C2' },
+    ];
+    const linkFromParent = [{ parent_ref: 1n, child_key: 'c1' }];
+    const linkFromChild = [
+      { parent_ref: 1n, child_key: 'c1' },
+      { parent_ref: 2n, child_key: 'c1' },
+    ];
+
+    const mock = setup([
+      [linkFromParent],
+      [childRows],
+      [linkFromChild],
+      [[{ parent_id: 2n, name: 'p2' }, parentRow]],
+    ]);
+
+    SymParentEntity.setExecutor(mock.executor);
+    SymChildEntity.setExecutor(mock.executor);
+
+    // Владелец декларации (parent): колонки как объявлены
+    const parent = new SymParentEntity();
+    parent.parent_id = 1n;
+    await parent.loadRelations(['children']);
+    expect(mock.queries[0].sql).toContain(
+      'SELECT `parent_ref`, `child_key` FROM `rt_sym_join`',
+    );
+    expect(parent.children?.map((c) => c.child_key)).toEqual(['c1']);
+
+    // Зеркальная декларация на child: колонки разворачиваются
+    const child = new SymChildEntity();
+    child.child_key = 'c1';
+    await child.loadRelations(['parents']);
+    expect(mock.queries[2].sql).toContain(
+      'SELECT `child_key`, `parent_ref` FROM `rt_sym_join`',
+    );
+    expect(child.parents?.map((p) => String(p.parent_id))).toEqual(['1', '2']);
+  });
+
+  it('rejects conflicting join-table declarations at runtime with a clear error (#139)', async () => {
+    const mock = setup([[]]);
+    ConflictLeftEntity.setExecutor(mock.executor);
+
+    const left = new ConflictLeftEntity();
+    left.left_id = 1n;
+
+    await expect(left.loadRelations(['rights'])).rejects.toThrow(
+      /Conflicting definitions for many-to-many join table "rt_conflict_join"/,
+    );
+    await expect(left.loadRelations(['rights'])).rejects.toThrow(
+      /ConflictLeftEntity\.rights[\s\S]*ConflictRightEntity\.lefts/,
     );
   });
 });

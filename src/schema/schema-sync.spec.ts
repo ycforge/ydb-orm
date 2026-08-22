@@ -35,6 +35,7 @@ import {
 } from './schema-sync.js';
 import {
   getManyToManyJoinTables,
+  joinTableDefinitionsEquivalent,
   ManyToMany,
   JoinTable,
 } from '../decorators/relation.decorators.js';
@@ -233,6 +234,92 @@ class TestCompositeRoleEntity extends YdbBaseEntity {
   users?: TestCompositeUserEntity[];
 }
 
+// #90/#139: зеркальные декларации одной join-таблицы на обеих сторонах —
+// физически эквивалентны, дедуплицируются безопасно
+@YdbEntity('test_sym_lefts')
+class TestSymLeftEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  left_id: bigint;
+
+  @YdbColumn('Utf8')
+  title: string;
+
+  @ManyToMany(() => TestSymRightEntity, (right) => right.lefts)
+  @JoinTable('test_sym_join', {
+    joinColumn: 'left_ref',
+    inverseJoinColumn: 'right_code',
+  })
+  rights?: TestSymRightEntity[];
+}
+
+@YdbEntity('test_sym_rights')
+class TestSymRightEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  right_code: string;
+
+  @YdbColumn('Utf8')
+  label: string;
+
+  @ManyToMany(() => TestSymLeftEntity, (left) => left.rights)
+  @JoinTable('test_sym_join', {
+    joinColumn: 'right_code',
+    inverseJoinColumn: 'left_ref',
+  })
+  lefts?: TestSymLeftEntity[];
+}
+
+// #139: конфликтующие объявления одного имени таблицы
+// (разные пары сущностей с разными PK-типами)
+@YdbEntity('test_dup_orders')
+class TestDupOrderEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  order_id: bigint;
+
+  @YdbColumn('Utf8')
+  title: string;
+
+  @ManyToMany(() => TestDupItemEntity, (item) => item.orders)
+  @JoinTable('test_duplicated_join')
+  items?: TestDupItemEntity[];
+}
+
+@YdbEntity('test_dup_items')
+class TestDupItemEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  item_uuid: string;
+
+  @YdbColumn('Utf8')
+  label: string;
+
+  @ManyToMany(() => TestDupOrderEntity, (order) => order.items)
+  orders?: TestDupOrderEntity[];
+}
+
+@YdbEntity('test_dup_users')
+class TestDupUserEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  user_id: bigint;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestDupGroupEntity, (group) => group.users)
+  @JoinTable('test_duplicated_join')
+  groups?: TestDupGroupEntity[];
+}
+
+@YdbEntity('test_dup_groups')
+class TestDupGroupEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  group_id: bigint;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @ManyToMany(() => TestDupUserEntity, (user) => user.groups)
+  users?: TestDupUserEntity[];
+}
+
 const meta = (entity: new (...args: any[]) => any) => {
   const m = getYdbEntityMetadata(entity);
   if (!m) throw new Error('no metadata');
@@ -367,6 +454,80 @@ describe('buildExpectedJoinTableSchema', () => {
         TestCompositeRoleEntity,
       ]),
     ).toThrow(/composite primary keys.*not supported in.*many-to-many/s);
+  });
+});
+
+describe('duplicate join-table declarations (#139)', () => {
+  it('deduplicates the same entity class passed twice', () => {
+    const joinTables = getManyToManyJoinTables([
+      TestPhotoEntity,
+      TestPhotoEntity,
+      TestTagEntity,
+    ]);
+    expect(joinTables).toHaveLength(1);
+    expect(joinTables[0].tableName).toBe('test_photo_tag');
+  });
+
+  it('deduplicates mirrored declarations on both sides of a relation', () => {
+    const joinTables = getManyToManyJoinTables([
+      TestSymLeftEntity,
+      TestSymRightEntity,
+    ]);
+    // Оба объявления описывают одну физическую таблицу — остаётся одно
+    expect(joinTables).toHaveLength(1);
+
+    const jt = joinTables[0];
+    expect(jt.tableName).toBe('test_sym_join');
+    // Первое объявление (от left): колонка left → left_ref (Int64)
+    expect(jt.joinColumn).toBe('left_ref');
+    expect(jt.joinColumnType).toBe('Int64');
+    expect(jt.inverseJoinColumn).toBe('right_code');
+    expect(jt.inverseJoinColumnType).toBe('Utf8');
+
+    const schema = buildExpectedJoinTableSchema(jt);
+    expect(schema.columns).toEqual({ left_ref: 'Int64', right_code: 'Utf8' });
+  });
+
+  it('throws listing all definitions when declarations conflict', () => {
+    let error: Error | undefined;
+    try {
+      getManyToManyJoinTables([
+        TestDupOrderEntity,
+        TestDupItemEntity,
+        TestDupUserEntity,
+        TestDupGroupEntity,
+      ]);
+    } catch (e) {
+      error = e as Error;
+    }
+
+    expect(error).toBeDefined();
+    expect(error!.message).toContain(
+      'Conflicting definitions for many-to-many join table "test_duplicated_join"',
+    );
+    // В ошибке перечислены оба определения с сущностями и колонками/типами
+    expect(error!.message).toContain('TestDupOrderEntity.items');
+    expect(error!.message).toContain(
+      'test_dup_orders_order_id:Int64, test_dup_items_item_uuid:Uuid',
+    );
+    expect(error!.message).toContain('TestDupUserEntity.groups');
+    expect(error!.message).toContain(
+      'test_dup_users_user_id:Int64, test_dup_groups_group_id:Int64',
+    );
+  });
+
+  it('treats mirrored declarations with different column names as conflicting', () => {
+    // test_sym_join объявлен зеркально корректно; проверим, что подмена
+    // имени колонки на одной стороне даёт конфликт
+    const [fromLeft] = getManyToManyJoinTables([TestSymLeftEntity]);
+    const [fromRight] = getManyToManyJoinTables([TestSymRightEntity]);
+
+    const skewedRight = {
+      ...fromRight,
+      joinColumn: 'skewed_column',
+    };
+    expect(joinTableDefinitionsEquivalent(fromLeft, skewedRight)).toBe(false);
+    expect(joinTableDefinitionsEquivalent(fromLeft, fromRight)).toBe(true);
   });
 });
 

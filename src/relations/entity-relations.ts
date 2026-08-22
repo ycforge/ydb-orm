@@ -1,12 +1,8 @@
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
+import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
-  getYdbEntityMetadata,
-  type YdbEntityMetadata,
-} from '../metadata/entity-metadata.js';
-import {
-  defaultJoinColumnName,
-  getYdbJoinTableMetadata,
+  getManyToManyJoinTables,
   getYdbRelationsMetadata,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
@@ -396,6 +392,11 @@ function getPrimaryKey(target: typeof YdbBaseEntity): string {
 /**
  * Находит метаданные join-таблицы для many-to-many,
  * ориентированные относительно запрашиваемой сущности (owner).
+ *
+ * Валидация и разрешение конфликтов выполняются тем же кодом, что и при
+ * генерации схемы: getManyToManyJoinTables для пары сущностей. Поэтому
+ * рантайм не может молча выбрать одно из расходящихся объявлений таблицы —
+ * он упадёт с той же ошибкой конфликта, что и schema sync/migrations (#139).
  */
 interface ResolvedJoinTable {
   tableName: string;
@@ -420,90 +421,41 @@ function resolveManyToManyJoinTable(
   const inverseMeta = getYdbEntityMetadata(inverseEntity);
   if (!ownerMeta || !inverseMeta) return undefined;
 
-  // Рантайм-модель many-to-many поддерживает только одно-колоночные PK —
-  // тот же контракт, что требует schema sync при генерации join-таблицы (#90).
-  const ownerPk = m2mPrimaryKey(ownerMeta, 'owner');
-  const inversePk = m2mPrimaryKey(inverseMeta, 'inverse');
-  const ownerColumnType = m2mPrimaryKeyType(ownerMeta, 'owner');
+  // Все объявления join-таблиц, видимые для пары (владелец, inverse):
+  // здесь же проверяются PK и конфликты объявлений одного имени (#90/#139).
+  const definitions = getManyToManyJoinTables([owner, inverseEntity]);
 
-  const ownJoinTables = getYdbJoinTableMetadata(owner);
-  const own = ownJoinTables.find(
-    (jt) => jt.propertyKey === relation.propertyKey,
+  // Декларация на самом владельце для этой связи.
+  const own = definitions.find(
+    (d) => d.ownerEntity === owner && d.ownerProperty === relation.propertyKey,
   );
-
   if (own) {
     return {
       tableName: own.tableName,
-      ownerColumn:
-        own.joinColumn ?? defaultJoinColumnName(ownerMeta.tableName, ownerPk),
-      inverseColumn:
-        own.inverseJoinColumn ??
-        defaultJoinColumnName(inverseMeta.tableName, inversePk),
-      ownerColumnType,
+      ownerColumn: own.joinColumn,
+      inverseColumn: own.inverseJoinColumn,
+      ownerColumnType: own.joinColumnType as YdbPrimitive,
       ownerEntity: owner,
       inverseEntity,
     };
   }
 
-  const inverseRelations = getYdbRelationsMetadata(inverseEntity).filter(
-    (r) => r.type === 'many-to-many' && r.target() === owner,
+  // Зеркальная декларация на обратной стороне: колонки разворачиваются —
+  // joinColumn объявления принадлежит inverse-сущности, inverseJoinColumn — владельцу.
+  const inverseOwned = definitions.find(
+    (d) => d.ownerEntity === inverseEntity && d.inverseEntity === owner,
   );
-  for (const invRel of inverseRelations) {
-    const invJoinTables = getYdbJoinTableMetadata(inverseEntity);
-    const inv = invJoinTables.find(
-      (jt) => jt.propertyKey === invRel.propertyKey,
-    );
-    if (inv) {
-      return {
-        tableName: inv.tableName,
-        ownerColumn:
-          inv.inverseJoinColumn ??
-          defaultJoinColumnName(ownerMeta.tableName, ownerPk),
-        inverseColumn:
-          inv.joinColumn ??
-          defaultJoinColumnName(inverseMeta.tableName, inversePk),
-        ownerColumnType,
-        ownerEntity: owner,
-        inverseEntity,
-      };
-    }
+  if (inverseOwned) {
+    return {
+      tableName: inverseOwned.tableName,
+      ownerColumn: inverseOwned.inverseJoinColumn,
+      inverseColumn: inverseOwned.joinColumn,
+      // Тип owner-колонки = тип PK владельца = тип её колонки в объявлении.
+      ownerColumnType: inverseOwned.inverseJoinColumnType as YdbPrimitive,
+      ownerEntity: owner,
+      inverseEntity,
+    };
   }
 
   return undefined;
-}
-
-/** Единственный PK сущности; составной или отсутствующий — явная ошибка (#90). */
-function m2mPrimaryKey(
-  meta: YdbEntityMetadata,
-  side: 'owner' | 'inverse',
-): string {
-  if (!meta.primaryKeys?.length) {
-    throw new Error(
-      `Cannot resolve many-to-many ${side} side for entity ${meta.target.name}: ` +
-        `no primary key is declared`,
-    );
-  }
-  if (meta.primaryKeys.length > 1) {
-    throw new Error(
-      `Cannot resolve many-to-many relation for entity ${meta.target.name}: ` +
-        `composite primary keys (${meta.primaryKeys.join(', ')}) are not supported ` +
-        `in many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
-    );
-  }
-  return meta.primaryKeys[0];
-}
-
-function m2mPrimaryKeyType(
-  meta: YdbEntityMetadata,
-  side: 'owner' | 'inverse',
-): YdbPrimitive {
-  const pk = m2mPrimaryKey(meta, side);
-  const type = meta.schema[pk];
-  if (!type) {
-    throw new Error(
-      `Primary key column "${pk}" of entity ${meta.target.name} ` +
-        `is not declared via @YdbColumn`,
-    );
-  }
-  return type;
 }

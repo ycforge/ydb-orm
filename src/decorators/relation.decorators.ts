@@ -162,12 +162,18 @@ export function getYdbJoinTableMetadata(target: any): JoinTableMetadata[] {
 /**
  * Возвращает join-таблицы many-to-many, владельцами которых являются переданные сущности.
  * Обратная сторона (без @JoinTable) не порождает отдельную таблицу.
+ *
+ * Одно имя join-таблицы может быть объявлено несколько раз (например,
+ * зеркально на обеих сторонах связи или при повторе класса во входном
+ * списке). Повторные объявления безопасно дедуплицируются только при
+ * идентичном физическом описании (#139); расходящиеся — ошибка со списком
+ * всех определений: иначе sync/migrations молча построили бы схему по
+ * первому объявлению, а relations-код читал бы по другому.
  */
 export function getManyToManyJoinTables(
   entities: (new (...args: any[]) => any)[],
 ): ManyToManyJoinTable[] {
-  const result: ManyToManyJoinTable[] = [];
-  const seen = new Set<string>();
+  const groups = new Map<string, ManyToManyJoinTable[]>();
 
   for (const Entity of entities) {
     const meta = getYdbEntityMetadata(Entity);
@@ -254,10 +260,7 @@ export function getManyToManyJoinTables(
         joinTable.inverseJoinColumn ??
         defaultJoinColumnName(inverseMeta.tableName, inversePk);
 
-      if (seen.has(joinTable.tableName)) continue;
-      seen.add(joinTable.tableName);
-
-      result.push({
+      const definition: ManyToManyJoinTable = {
         tableName: joinTable.tableName,
         joinColumn,
         inverseJoinColumn,
@@ -268,9 +271,118 @@ export function getManyToManyJoinTables(
         ownerProperty: relation.propertyKey,
         inverseEntity: InverseEntity,
         inverseTableName: inverseMeta.tableName,
-      });
+      };
+
+      const group = groups.get(definition.tableName);
+      if (!group) {
+        groups.set(definition.tableName, [definition]);
+      } else if (
+        !group.some((d) => joinTableDefinitionsEquivalent(d, definition))
+      ) {
+        group.push(definition);
+      }
     }
   }
 
-  return result;
+  // Расходящиеся объявления одного имени таблицы — конфликт: физическую
+  // таблицу нельзя построить двумя разными способами (#139).
+  for (const group of groups.values()) {
+    if (group.length > 1) {
+      throw new Error(formatJoinTableConflict(group));
+    }
+  }
+
+  return [...groups.values()].map(([first]) => first);
+}
+
+/**
+ * Сравнивает два описания join-таблицы как ФИЗИЧЕСКУЮ таблицу (#139):
+ * совпадают пары «сущность → имя колонки + тип», направление объявления
+ * не важно (зеркальные декларации на обеих сторонах эквивалентны).
+ * Типы выводятся из PK конкретных сущностей, поэтому сравнение покрывает
+ * и семантику PK; идентичность сущностей гарантирует одинаковый источник
+ * имён/типов по умолчанию.
+ */
+export function joinTableDefinitionsEquivalent(
+  a: Pick<
+    ManyToManyJoinTable,
+    | 'ownerEntity'
+    | 'joinColumn'
+    | 'joinColumnType'
+    | 'inverseEntity'
+    | 'inverseJoinColumn'
+    | 'inverseJoinColumnType'
+  >,
+  b: Pick<
+    ManyToManyJoinTable,
+    | 'ownerEntity'
+    | 'joinColumn'
+    | 'joinColumnType'
+    | 'inverseEntity'
+    | 'inverseJoinColumn'
+    | 'inverseJoinColumnType'
+  >,
+): boolean {
+  const sameSide = (
+    e1: typeof YdbBaseEntity,
+    c1: string | undefined,
+    t1: YdbPrimitive | undefined,
+    e2: typeof YdbBaseEntity,
+    c2: string | undefined,
+    t2: YdbPrimitive | undefined,
+  ) => e1 === e2 && c1 === c2 && t1 === t2;
+
+  return (
+    (sameSide(
+      a.ownerEntity,
+      a.joinColumn,
+      a.joinColumnType,
+      b.ownerEntity,
+      b.joinColumn,
+      b.joinColumnType,
+    ) &&
+      sameSide(
+        a.inverseEntity,
+        a.inverseJoinColumn,
+        a.inverseJoinColumnType,
+        b.inverseEntity,
+        b.inverseJoinColumn,
+        b.inverseJoinColumnType,
+      )) ||
+    (sameSide(
+      a.ownerEntity,
+      a.joinColumn,
+      a.joinColumnType,
+      b.inverseEntity,
+      b.inverseJoinColumn,
+      b.inverseJoinColumnType,
+    ) &&
+      sameSide(
+        a.inverseEntity,
+        a.inverseJoinColumn,
+        a.inverseJoinColumnType,
+        b.ownerEntity,
+        b.joinColumn,
+        b.joinColumnType,
+      ))
+  );
+}
+
+/** Человекочитаемое описание одного определения join-таблицы (для ошибок). */
+function formatJoinTableDefinition(d: ManyToManyJoinTable): string {
+  return (
+    `- ${d.ownerEntity.name}.${d.ownerProperty} -> ${d.inverseEntity.name} ` +
+    `(columns: ${d.joinColumn}:${d.joinColumnType}, ` +
+    `${d.inverseJoinColumn}:${d.inverseJoinColumnType})`
+  );
+}
+
+function formatJoinTableConflict(group: ManyToManyJoinTable[]): string {
+  return (
+    `Conflicting definitions for many-to-many join table ` +
+    `"${group[0].tableName}" (${group.length} declarations):\n` +
+    group.map(formatJoinTableDefinition).join('\n') +
+    `\nAll @JoinTable declarations sharing a table name must describe the ` +
+    `same physical table: identical columns, types and entity pairs.`
+  );
 }
