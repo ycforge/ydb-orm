@@ -80,23 +80,23 @@ const userRow = {
 describe('updateBy() / deleteBy()', () => {
   afterEach(() => {
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
     UserRoleEntity.setExecutor(undefined as any);
-    UserRoleEntity.setEncryptionProvider(undefined as any);
-    UserRoleEntity.setBlindIndexProvider(undefined as any);
+    UserRoleEntity.setEncryptionProvider(undefined);
+    UserRoleEntity.setBlindIndexProvider(undefined);
     TimestampEntity.setExecutor(undefined as any);
-    TimestampEntity.setEncryptionProvider(undefined as any);
-    TimestampEntity.setBlindIndexProvider(undefined as any);
+    TimestampEntity.setEncryptionProvider(undefined);
+    TimestampEntity.setBlindIndexProvider(undefined);
     AadEntity.setExecutor(undefined as any);
-    AadEntity.setEncryptionProvider(undefined as any);
-    AadEntity.setBlindIndexProvider(undefined as any);
+    AadEntity.setEncryptionProvider(undefined);
+    AadEntity.setBlindIndexProvider(undefined);
     AadMultiEntity.setExecutor(undefined as any);
-    AadMultiEntity.setEncryptionProvider(undefined as any);
-    AadMultiEntity.setBlindIndexProvider(undefined as any);
+    AadMultiEntity.setEncryptionProvider(undefined);
+    AadMultiEntity.setBlindIndexProvider(undefined);
     AadCompositeEntity.setExecutor(undefined as any);
-    AadCompositeEntity.setEncryptionProvider(undefined as any);
-    AadCompositeEntity.setBlindIndexProvider(undefined as any);
+    AadCompositeEntity.setEncryptionProvider(undefined);
+    AadCompositeEntity.setBlindIndexProvider(undefined);
   });
 
   describe('updateBy()', () => {

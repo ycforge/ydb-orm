@@ -6,8 +6,8 @@ import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 describe('WHERE operators', () => {
   afterEach(() => {
     WhereOperatorEntity.setExecutor(undefined as any);
-    WhereOperatorEntity.setEncryptionProvider(undefined as any);
-    WhereOperatorEntity.setBlindIndexProvider(undefined as any);
+    WhereOperatorEntity.setEncryptionProvider(undefined);
+    WhereOperatorEntity.setBlindIndexProvider(undefined);
   });
 
   describe('comparison operators', () => {

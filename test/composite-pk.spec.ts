@@ -51,8 +51,8 @@ describe('Composite PK CRUD', () => {
       MembershipEntity,
     ]) {
       e.setExecutor(undefined as any);
-      e.setEncryptionProvider(undefined as any);
-      e.setBlindIndexProvider(undefined as any);
+      e.setEncryptionProvider(undefined);
+      e.setBlindIndexProvider(undefined);
     }
   });
 

@@ -20,8 +20,8 @@ function setupMock(rows: any[][] = [[]]) {
 describe('YdbValidate — валидация перед записью', () => {
   afterEach(() => {
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
     UserEntity.setValidationProvider(undefined as any);
   });
 

@@ -18,14 +18,14 @@ describe('BaseEntity CRUD (mock executor)', () => {
   afterEach(() => {
     // Сброс executor/providers у всех тестовых сущностей
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
     UserRoleEntity.setExecutor(undefined as any);
-    UserRoleEntity.setEncryptionProvider(undefined as any);
-    UserRoleEntity.setBlindIndexProvider(undefined as any);
+    UserRoleEntity.setEncryptionProvider(undefined);
+    UserRoleEntity.setBlindIndexProvider(undefined);
     PhotoEntity.setExecutor(undefined as any);
-    PhotoEntity.setEncryptionProvider(undefined as any);
-    PhotoEntity.setBlindIndexProvider(undefined as any);
+    PhotoEntity.setEncryptionProvider(undefined);
+    PhotoEntity.setBlindIndexProvider(undefined);
   });
 
   describe('find()', () => {

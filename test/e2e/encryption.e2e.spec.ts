@@ -25,8 +25,8 @@ afterAll(async () => {
   if (!ctx) return;
   await dropTableForEntity(ctx.executor, E2eSecretEntity);
   E2eSecretEntity.setExecutor(undefined as any);
-  E2eSecretEntity.setEncryptionProvider(undefined as any);
-  E2eSecretEntity.setBlindIndexProvider(undefined as any);
+  E2eSecretEntity.setEncryptionProvider(undefined);
+  E2eSecretEntity.setBlindIndexProvider(undefined);
   closeE2eContext(ctx);
 });
 

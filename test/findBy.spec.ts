@@ -6,8 +6,8 @@ import { UserEntity } from './fixtures/user/user.entity.js';
 describe('findBy / findOneBy', () => {
   afterEach(() => {
     UserEntity.setExecutor(undefined as any);
-    UserEntity.setEncryptionProvider(undefined as any);
-    UserEntity.setBlindIndexProvider(undefined as any);
+    UserEntity.setEncryptionProvider(undefined);
+    UserEntity.setBlindIndexProvider(undefined);
   });
 
   const uuid1 = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';

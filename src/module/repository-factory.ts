@@ -49,12 +49,11 @@ export function createActiveRecordEntityProvider(
         opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
 
       entityClass.setExecutor(db);
-      if (encryptionProvider) {
-        entityClass.setEncryptionProvider(encryptionProvider);
-      }
-      if (blindIndexProvider) {
-        entityClass.setBlindIndexProvider(blindIndexProvider);
-      }
+      // Провайдеры перезаписываются безусловно: повторный бутстрап без них
+      // (тесты, hot-restart) не должен оставлять провайдеры прошлой
+      // конфигурации — undefined сбрасывает предыдущее значение.
+      entityClass.setEncryptionProvider(encryptionProvider);
+      entityClass.setBlindIndexProvider(blindIndexProvider);
 
       getOrCreateRepository(entityClass as any);
 
