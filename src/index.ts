@@ -98,6 +98,10 @@ export type { LifecycleHooks } from './decorators/lifecycle.decorator.js';
 export { YdbBaseEntity } from './entity/base-entity.js';
 export { YdbQueryBuilder } from './query/query-builder.js';
 export type { BuiltQuery, OrderDirection } from './query/query-builder.js';
+export {
+  DEFAULT_RETRIEVE_LIMIT,
+  MAX_RETRIEVE_LIMIT,
+} from './query/query-builder.js';
 
 // Репозитории / EntityManager (DI-вариант поверх Active Record)
 export {

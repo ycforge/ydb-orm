@@ -21,11 +21,21 @@ type EntityClass<T extends YdbBaseEntity> = {
   new (): T;
 } & typeof YdbBaseEntity;
 
+/** Защитный лимит по умолчанию, когда limit не задан явно. */
+export const DEFAULT_RETRIEVE_LIMIT = 100;
+
+/** Защитный потолок для положительного LIMIT. */
+export const MAX_RETRIEVE_LIMIT = 1000;
+
 /**
  * Цепочный query builder поверх Active Record сущности.
  * Условия where/andWhere — только равенство, объединяются через AND
  * (повторное поле в andWhere перезаписывает предыдущее).
  * Зашифрованные поля с blind index поддерживаются так же, как в find/findAll.
+ *
+ * Билдер переиспользуем: методы-строители (where/orderBy/limit/... ) и методы
+ * выполнения (getMany/getOne/toYql) не мутируют состояние друг друга.
+ * Один и тот же билдер можно выполнить несколько раз — результат одинаковый.
  *
  * @example
  *   const photos = await PhotoEntity.query()
@@ -139,6 +149,20 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return this;
   }
 
+  /**
+   * Ограничить количество возвращаемых строк (LIMIT).
+   *
+   * Явная семантика (без молчаливого clamp в диапазон 1..1000):
+   * - `limit(0)` — `LIMIT 0`: гарантированно пустой результат `[]`;
+   * - положительное целое значение `n` — до `n` строк, сверху обрезается до
+   *   MAX_RETRIEVE_LIMIT (защитный потолок);
+   * - лимит вообще не задан — действует защитный дефолт
+   *   DEFAULT_RETRIEVE_LIMIT (см. resolveLimit);
+   * - отрицательное, дробное или неконечное значение — ошибка.
+   *
+   * Значение сохраняется в билдере и не меняется при выполнении:
+   * getOne()/getMany()/toYql() его читают, но не перезаписывают.
+   */
   limit(limit: number): this {
     this.limitValue = limit;
     return this;
@@ -179,9 +203,14 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return this.getMany();
   }
 
-  /** Первая запись или null. */
+  /**
+   * Первая запись или null.
+   *
+   * Не мутирует исходный билдер: LIMIT 1 применяется к копии. Повторный
+   * getMany()/toYql() на этом же билдере сохранит заданный пользователем лимит.
+   */
   async getOne(): Promise<T | null> {
-    const result = await this.limit(1).getMany();
+    const result = await this.clone().limit(1).getMany();
     return result[0] ?? null;
   }
 
@@ -200,6 +229,20 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       dbSchema,
       this.queryOptions,
     );
+  }
+
+  /** Копия билдера: выполнение на копии не меняет состояние исходника. */
+  private clone(): YdbQueryBuilder<T> {
+    const copy = new YdbQueryBuilder<T>(this.entity);
+    copy.whereValues = { ...this.whereValues };
+    copy.orderClauses = this.orderClauses.map((o) => ({ ...o }));
+    copy.limitValue = this.limitValue;
+    copy.offsetValue = this.offsetValue;
+    copy.selectColumns = this.selectColumns
+      ? [...this.selectColumns]
+      : undefined;
+    copy.queryOptions = this.queryOptions;
+    return copy;
   }
 
   private async build(): Promise<CompiledQuery> {
@@ -268,10 +311,29 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return Object.keys(dbSchema).join(', ');
   }
 
+  /**
+   * Итоговый LIMIT с явной семантикой:
+   * - лимит не задан (limit() и queryOptions.limit отсутствуют) —
+   *   защитный дефолт DEFAULT_RETRIEVE_LIMIT;
+   * - limit(0) — `0` (пустой результат), НЕ клампится в 1;
+   * - положительное целое значение — до MAX_RETRIEVE_LIMIT (потолок);
+   * - отрицательное, дробное или неконечное значение — ошибка.
+   */
   private resolveLimit(): number {
     const value = this.limitValue ?? this.queryOptions?.limit;
-    const num = Number.isFinite(value) ? Math.floor(value as number) : 100;
-    return Math.max(1, Math.min(num, 1000));
+    if (value === undefined) {
+      return DEFAULT_RETRIEVE_LIMIT;
+    }
+    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+      throw new Error(
+        `Invalid LIMIT: ${String(value)}. LIMIT must be a finite non-negative integer.`,
+      );
+    }
+    const num = value;
+    if (num === 0) {
+      return 0;
+    }
+    return Math.min(num, MAX_RETRIEVE_LIMIT);
   }
 
   private resolveOffset(): number {
