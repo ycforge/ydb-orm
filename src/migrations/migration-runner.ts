@@ -319,6 +319,9 @@ export class YdbMigrationRunner {
   /**
    * Откатывает последнюю применённую миграцию.
    * Возвращает её имя или null, если откатывать нечего.
+   * Отказывается работать, если последняя запись в состоянии `started`
+   * (прерванный up()/упавший down()) — сначала разрешите её явно через
+   * markMigrationApplied()/removeMigrationRecord().
    */
   async revert(migrations: YdbMigration[]): Promise<string | null> {
     assertNoDuplicates(migrations);
@@ -326,6 +329,15 @@ export class YdbMigrationRunner {
     if (!applied.length) return null;
 
     const last = applied[applied.length - 1];
+    if (last.state === 'started') {
+      // Прерванный up()/упавший down(): схема в неизвестном состоянии,
+      // слепой повторный down() запрещён (#101).
+      throw new Error(
+        `Cannot revert "${last.name}": its bookkeeping record is in "started" state — ` +
+          `a previous run was interrupted mid-way, so the database state is unknown. ` +
+          `${RECOVERY_HINT}`,
+      );
+    }
     const migration = findMigrationForRecord(migrations, last);
     if (!migration) {
       throw new Error(

@@ -511,6 +511,60 @@ describe('YdbMigrationRunner (#101)', () => {
   });
 
   describe('revert consistency', () => {
+    it('refuses to revert a record left "started" by an interrupted up()', async () => {
+      // Сбой посреди up() оставил маркер started; revert() не должен
+      // вслепую выполнять down() по частично применённой схеме
+      const mock = createStatefulExecutor();
+      const runner = new YdbMigrationRunner(mock.executor);
+      const broken = migrationFactory('1-Broken', {
+        upError: new Error('boom'),
+      });
+      await expect(runner.run([broken.migration])).rejects.toThrow(
+        /failed mid-way/,
+      );
+      expect([...mock.rows.values()][0].state).toBe('started');
+
+      const m = migrationFactory('1-Broken');
+      await expect(runner.revert([m.migration])).rejects.toThrow(
+        /Cannot revert "1-Broken"[\s\S]*"started" state/,
+      );
+      expect(m.down).not.toHaveBeenCalled();
+
+      // Запись не изменена: состояние разрешается только явно
+      expect([...mock.rows.values()][0].state).toBe('started');
+    });
+
+    it('refuses to re-revert after a failed down() left "started"', async () => {
+      // Первая попытка отката упала посреди down(): запись осталась started
+      const mock = createStatefulExecutor({
+        rows: [{ timestamp: 1000, name: '1-First' }],
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+      const broken = migrationFactory('1-First', {
+        downError: new Error('down failed'),
+      });
+      await expect(runner.revert([broken.migration])).rejects.toThrow(
+        /Revert of "1-First" failed mid-way/,
+      );
+
+      // Повторный revert() отказывается вызывать down() ещё раз
+      const retry = migrationFactory('1-First');
+      await expect(
+        new YdbMigrationRunner(mock.executor).revert([retry.migration]),
+      ).rejects.toThrow(/Cannot revert "1-First"[\s\S]*"started" state/);
+      expect(retry.down).not.toHaveBeenCalled();
+
+      // После явного восстановления revert работает как обычно
+      await runner.markMigrationApplied('1-First');
+      const afterRepair = migrationFactory('1-First');
+      const reverted = await new YdbMigrationRunner(mock.executor).revert([
+        afterRepair.migration,
+      ]);
+      expect(reverted).toBe('1-First');
+      expect(afterRepair.down).toHaveBeenCalledTimes(1);
+      expect(mock.rows.size).toBe(0);
+    });
+
     it('marks intent before down() and deletes the record after success', async () => {
       const mock = createStatefulExecutor({
         rows: [
