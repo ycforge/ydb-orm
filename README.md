@@ -167,6 +167,30 @@ await UserEntity.findAll({
 - `@YdbTtl({ interval, column, unit? })` — декларативный TTL таблицы (класс-декоратор, один раз на класс). `interval` — ISO 8601 duration (`"PT2H"`, `"P30D"`); `column` — обязательная колонка, объявленная через `@YdbColumn` (типы `Date`/`Datetime`/`Timestamp` без `unit`, либо числовые `Uint32`/`Uint64`/`DyNumber` — тогда обязателен `unit`); `unit` — единица для числовой колонки (`seconds` | `milliseconds` | `microseconds` | `nanoseconds`). Генерирует секцию `WITH (TTL = Interval(...) ON column)` в CREATE TABLE. Ошибки формата бросаются сразу при декорировании, несовместимость со схемой сущности — при инициализации модуля.
 - `@BeforeInsert` / `@AfterInsert` / `@BeforeUpdate` / `@AfterFind` / `@BeforeRemove` — lifecycle-хуки (метод-декораторы без скобок). Подробности и гарантии вызовов — в разделе [Lifecycle hooks](#lifecycle-hooks).
 
+### Наследование метаданных
+
+Правила наследования декораторов между родительским и дочерним классами (#92):
+
+- **`@YdbEntity` не наследуется.** Сущностью является только класс, непосредственно декорированный `@YdbEntity`. Подкласс без собственного `@YdbEntity` — не сущность: он не наследует tableName родителя, не попадает в реестр и в expected-схемы schema sync/миграций, а Active Record-вызовы на нём падают с понятной ошибкой «is not decorated with @YdbEntity». Передавать такой класс в `forFeature`/`configureEntities`/список entities нельзя.
+- **Колонки наследуются** (`@YdbColumn`, `@YdbPrimaryColumn`, `@YdbEncrypted`, `@YdbSecurityAAD`, `@YdbJson`, `@YdbEnum`, timestamp-декораторы, lifecycle-хуки): дочерний класс получает объединение метаданных предков, переопределение на наследнике не меняет родителя (copy-on-write). Повторы и переопределения: `@YdbEnum` — last-write-wins, AAD/PK — дедупликация по имени поля.
+- **`@YdbIndex` и `@YdbTtl` не наследуются** — они привязаны к физической таблице класса. Класс со своим `@YdbEntity` начинает без индексов и TTL и объявляет свои явно; это гарантирует, что индексы/TTL родителя (возможно, по чужим или переопределённым колонкам) никогда не попадут в DDL дочерней таблицы.
+- **`@EagerLoad` наследуется объединением**: связи родителя сохраняются, список ребёнка дополняет их без повторов (первое объявление выигрывает).
+- **Дубликат tableName у двух разных сущностей** (например, родитель и наследник, декорированные одним именем) — ошибка `Duplicate table name "..."` при построении схемы (`buildExpectedSchemas`): sync/verify/`migration:generate` всегда работают с ровно одной ожидаемой схемой на таблицу.
+
+```ts
+@YdbEntity('events')
+@YdbTtl({ interval: 'P30D', column: 'created_at' })
+class EventEntity extends YdbBaseEntity { /* ... */ }
+
+// Своя таблица: колонки родителя наследуются, TTL/индексы — нет
+@YdbEntity('audit_events')
+class AuditEventEntity extends EventEntity { /* ... */ }
+
+// Ошибка: Duplicate table name "events"
+@YdbEntity('events')
+class BrokenChildEntity extends EventEntity { /* ... */ }
+```
+
 ```ts
 @YdbEntity('photos')
 @EagerLoad(['tags'])

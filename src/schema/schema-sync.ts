@@ -277,20 +277,47 @@ export function buildExpectedJoinTableSchema(
   };
 }
 
-/** Собирает ожидаемые схемы всех таблиц сущностей и их many-to-many join-таблиц. */
+/**
+ * Собирает ожидаемые схемы всех таблиц сущностей и их many-to-many join-таблиц.
+ *
+ * Гарантия «одна таблица — одна ожидаемая схема» (#92):
+ *  - повтор класса в списке дедуплицируется;
+ *  - класс без собственного @YdbEntity пропускается (не сущность — см.
+ *    getYdbEntityMetadata), поэтому подкласс не порождает вторую схему
+ *    для таблицы родителя;
+ *  - две разные сущности с одним tableName — ошибка: иначе sync патчил бы
+ *    одну таблицу двумя разными схемами, а verify выдавал противоречивые
+ *    issues. Коллизия обнаруживается здесь — до любого обращения к БД.
+ */
 export function buildExpectedSchemas(
   entities: (new (...args: any[]) => any)[],
 ): ExpectedTableSchema[] {
   const schemas: ExpectedTableSchema[] = [];
+  const seenEntities = new Set<new (...args: any[]) => any>();
+  const tableOwners = new Map<string, new (...args: any[]) => any>();
 
   for (const entity of entities) {
+    if (seenEntities.has(entity)) continue;
+    seenEntities.add(entity);
+
     const meta = getYdbEntityMetadata(entity);
-    if (meta) {
-      schemas.push(buildExpectedTableSchema(meta));
+    if (!meta) continue;
+
+    const owner = tableOwners.get(meta.tableName);
+    if (owner && owner !== entity) {
+      throw new Error(
+        `Duplicate table name "${meta.tableName}": entities ${owner.name} ` +
+          `and ${entity.name} both map to it — each entity class must declare ` +
+          `its own table via @YdbEntity (a subclass without its own ` +
+          `@YdbEntity is not an entity and must not be passed as one).`,
+      );
     }
+    tableOwners.set(meta.tableName, entity);
+
+    schemas.push(buildExpectedTableSchema(meta));
   }
 
-  for (const joinTable of getManyToManyJoinTables(entities)) {
+  for (const joinTable of getManyToManyJoinTables([...seenEntities])) {
     schemas.push(buildExpectedJoinTableSchema(joinTable));
   }
 

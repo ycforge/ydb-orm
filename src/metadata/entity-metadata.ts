@@ -38,6 +38,15 @@ const metadataCache = new WeakMap<object, YdbEntityMetadata<any>>();
 
 /**
  * Извлекает метаданные, собранные декораторами @YdbEntity / @YdbColumn.
+ *
+ * Имя таблицы читается только из СОБСТВЕННЫХ метаданных класса
+ * (Reflect.getOwnMetadata, #92): сущностью является только класс,
+ * непосредственно декорированный @YdbEntity. Подкласс без собственного
+ * @YdbEntity — не сущность: он не наследует tableName родителя и потому
+ * не регистрируется вторым классом на его таблицу (иначе buildExpectedSchemas
+ * вернул бы дубликаты, а sync патчил одну таблицу дважды). Колонки, PK,
+ * шифрование, AAD, JSON и enum при этом продолжают наследоваться по цепочке
+ * прототипов с copy-on-write (см. декораторы свойств).
  */
 export function getYdbEntityMetadata<T>(
   target: new (...args: any[]) => T,
@@ -45,7 +54,7 @@ export function getYdbEntityMetadata<T>(
   const cached = metadataCache.get(target);
   if (cached) return cached as YdbEntityMetadata<T>;
 
-  const tableName: string | undefined = Reflect.getMetadata(
+  const tableName: string | undefined = Reflect.getOwnMetadata(
     YDB_ENTITY_KEY,
     target,
   );

@@ -161,6 +161,7 @@ export { YdbCoreModule } from './module/ydb-core.module.js';
 export {
   YdbSchemaSyncer,
   buildExpectedTableSchema,
+  buildExpectedSchemas,
   generateCreateTableYql,
   generateTtlWithClause,
   generateAddColumnsYql,

@@ -197,6 +197,13 @@ export interface YdbTtlMetadata {
  * Можно применить только один раз на класс.
  * Генерирует секцию WITH (TTL = Interval(...) ON column) после CREATE TABLE (...).
  *
+ * Семантика наследования (#92): TTL привязан к таблице того класса, на котором
+ * объявлен, и НЕ наследуется по цепочке прототипов — класс с собственным
+ * @YdbEntity объявляет свой TTL явно (или не имеет его), поэтому родительский
+ * TTL по чужой колонке не попадает в DDL дочерней таблицы. Повторное
+ * применение на наследнике разрешено: guard «один раз» смотрит только
+ * собственные метаданные класса и не считает TTL родителя своим.
+ *
  * Ошибки формата (interval, column, unit) бросаются сразу при декорировании.
  * Ошибки относительно схемы сущности (неизвестная колонка, несовместимый тип,
  * лишний/недостающий unit) обнаруживаются при инициализации модуля
@@ -210,7 +217,9 @@ export interface YdbTtlMetadata {
  */
 export function YdbTtl(options: YdbTtlOptions): ClassDecorator {
   return (target) => {
-    const existing = Reflect.getMetadata(YDB_TTL_KEY, target);
+    // Только собственные метаданные класса (#92): TTL родителя не должен
+    // блокировать объявление собственного TTL у наследника.
+    const existing = Reflect.getOwnMetadata(YDB_TTL_KEY, target);
     if (existing) {
       throw new Error(
         `@YdbTtl can only be applied once to class "${target.name}"`,
@@ -221,10 +230,11 @@ export function YdbTtl(options: YdbTtlOptions): ClassDecorator {
   };
 }
 
+/** Собственный TTL класса (не наследуется от родителя, #92). */
 export function getYdbTtlMetadata(
   target: new (...args: any[]) => any,
 ): YdbTtlMetadata | undefined {
-  return Reflect.getMetadata(YDB_TTL_KEY, target);
+  return Reflect.getOwnMetadata(YDB_TTL_KEY, target);
 }
 
 /** Проверяет опции декоратора без учёта схемы сущности (вызывается из @YdbTtl). */

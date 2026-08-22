@@ -22,6 +22,13 @@ export interface YdbIndexMetadata {
  * можно вешать несколько раз. Попадает в CREATE TABLE при schema sync
  * и в migration:generate.
  *
+ * Семантика наследования (#92): индекс привязан к таблице того класса,
+ * на котором объявлен, и НЕ наследуется по цепочке прототипов. Класс
+ * с собственным @YdbEntity начинает с пустого списка индексов и объявляет
+ * свои явно — иначе родительские индексы по чужим колонкам попали бы
+ * в CREATE TABLE дочерней таблицы и уронили DDL. Повтор @YdbIndex на
+ * наследнике не мутирует список индексов родителя (copy-on-write).
+ *
  * @example
  *   @YdbEntity('photos')
  *   @YdbIndex({ columns: ['author_email_bi'] })
@@ -30,16 +37,19 @@ export interface YdbIndexMetadata {
  */
 export function YdbIndex(options: YdbIndexOptions): ClassDecorator {
   return (target) => {
+    // Только собственные метаданные класса: иначе при декорировании
+    // наследника сюда затесались бы индексы родителя (#92).
     const existing: YdbIndexMetadata[] =
-      Reflect.getMetadata(YDB_INDEXES_KEY, target) || [];
+      Reflect.getOwnMetadata(YDB_INDEXES_KEY, target) || [];
     // Класс-декораторы применяются снизу вверх — unshift сохраняет порядок объявления.
     const indexes: YdbIndexMetadata[] = [{ ...options }, ...existing];
     Reflect.defineMetadata(YDB_INDEXES_KEY, indexes, target);
   };
 }
 
+/** Собственные индексы класса (не наследуются от родителя, #92). */
 export function getYdbIndexesMetadata(target: any): YdbIndexMetadata[] {
-  return Reflect.getMetadata(YDB_INDEXES_KEY, target) || [];
+  return Reflect.getOwnMetadata(YDB_INDEXES_KEY, target) || [];
 }
 
 /** Имя индекса по умолчанию: `{table}__{col1}_{col2}` — группируется сортировкой. */
