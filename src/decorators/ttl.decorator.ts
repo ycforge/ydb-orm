@@ -35,58 +35,105 @@ const NUMERIC_TTL_TYPES: readonly string[] = ['Uint32', 'Uint64', 'DyNumber'];
 const ISO_DURATION_RE =
   /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/;
 
+/** Микросекунд в секунде — внутренняя точность типа YDB Interval. */
+export const MICROSECONDS_PER_SECOND = 1_000_000;
+
 /** Строгий разбор ISO 8601 duration по компонентам (для сравнения TTL). */
 const ISO_DURATION_PARSE_RE =
   /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
 
-const SECONDS_PER = {
-  day: 86400,
-  hour: 3600,
-  minute: 60,
+const MICROS_PER = {
+  day: 86_400 * MICROSECONDS_PER_SECOND,
+  hour: 3_600 * MICROSECONDS_PER_SECOND,
+  minute: 60 * MICROSECONDS_PER_SECOND,
 };
 
 /**
- * Приводит ISO 8601 duration к секундам ("PT2H" → 7200, "P30D" → 2592000).
+ * Приводит ISO 8601 duration к целому числу микросекунд — внутренней
+ * единице типа YDB Interval ("PT2H" → 720000000, "PT0.5S" → 500000).
+ * Дробь вычисляется точно (без плавающей точки); знаки после микросекунд
+ * отбрасываются детерминированно — YDB Interval хранит максимум 6 знаков.
  * Возвращает null для интервалов с календарными частями (годы/месяцы):
- * у них нет фиксированной длины, надёжно сравнить их с секундами из
- * DescribeTable нельзя.
+ * они не имеют фиксированной длины и не поддерживаются YDB Interval,
+ * поэтому надёжно сравнить их с настройками из DescribeTable нельзя.
  */
-export function isoDurationToSeconds(iso: string): number | null {
+export function isoDurationToMicroseconds(iso: string): number | null {
   const match = ISO_DURATION_PARSE_RE.exec(iso);
   if (!match) return null;
   const [, years, months, weeks, days, hours, minutes, seconds] = match;
   if (years || months) return null;
-  return (
-    Number(weeks ?? 0) * 7 * SECONDS_PER.day +
-    Number(days ?? 0) * SECONDS_PER.day +
-    Number(hours ?? 0) * SECONDS_PER.hour +
-    Number(minutes ?? 0) * SECONDS_PER.minute +
-    Number(seconds ?? 0)
-  );
+
+  // Дробная часть допустима только у секунд; разбираем её по цифрам,
+  // чтобы не терять точность на float ("0.1" * 10 !== 1).
+  const [wholeSeconds = '0', fracSeconds = ''] = (seconds ?? '').split('.');
+  let micros =
+    BigInt(weeks ?? 0) * 7n * BigInt(MICROS_PER.day) +
+    BigInt(days ?? 0) * BigInt(MICROS_PER.day) +
+    BigInt(hours ?? 0) * BigInt(MICROS_PER.hour) +
+    BigInt(minutes ?? 0) * BigInt(MICROS_PER.minute) +
+    BigInt(wholeSeconds || '0') * BigInt(MICROSECONDS_PER_SECOND);
+  if (fracSeconds) {
+    micros += BigInt((fracSeconds + '000000').slice(0, 6));
+  }
+  return Number(micros);
 }
 
 /**
- * Обратное преобразование секунд в ISO 8601 duration — используется для
+ * Обратное преобразование целого числа микросекунд в ISO 8601 duration —
+ * точный inverse `isoDurationToMicroseconds` (500000 → "PT0.5S",
+ * 720000000 → "PT2H", 90000000000 → "P1DT1H"). Используется для
  * восстановления фактических настроек TTL из БД в down-миграциях
- * и сообщениях о расхождениях (7200 → "PT2H", 90000 → "P1DT1H").
+ * и сообщениях о расхождениях; дробная часть рендерится без потери
+ * микросекундной точности YDB.
  */
-export function secondsToIsoDuration(totalSeconds: number): string {
-  let rest = Math.max(0, Math.round(totalSeconds));
-  const days = Math.floor(rest / SECONDS_PER.day);
-  rest -= days * SECONDS_PER.day;
-  const hours = Math.floor(rest / SECONDS_PER.hour);
-  rest -= hours * SECONDS_PER.hour;
-  const minutes = Math.floor(rest / SECONDS_PER.minute);
-  const seconds = rest - minutes * SECONDS_PER.minute;
+export function microsecondsToIsoDuration(totalMicros: number): string {
+  const micros = Math.max(0, Math.trunc(totalMicros));
+  const days = Math.floor(micros / MICROS_PER.day);
+  let rest = micros % MICROS_PER.day;
+  const hours = Math.floor(rest / MICROS_PER.hour);
+  rest %= MICROS_PER.hour;
+  const minutes = Math.floor(rest / MICROS_PER.minute);
+  rest %= MICROS_PER.minute;
+  const wholeSeconds = Math.floor(rest / MICROSECONDS_PER_SECOND);
+  const fracMicros = rest % MICROSECONDS_PER_SECOND;
 
   let duration = 'P';
   if (days) duration += `${days}D`;
-  const time =
-    `${hours ? `${hours}H` : ''}` +
-    `${minutes ? `${minutes}M` : ''}` +
-    `${seconds ? `${seconds}S` : ''}`;
+  let time = '';
+  if (hours) time += `${hours}H`;
+  if (minutes) time += `${minutes}M`;
+  if (wholeSeconds || fracMicros) {
+    let secondsText = String(wholeSeconds);
+    if (fracMicros) {
+      secondsText += `.${String(fracMicros).padStart(6, '0').replace(/0+$/, '')}`;
+    }
+    time += `${secondsText}S`;
+  }
   if (time) duration += `T${time}`;
   return duration === 'P' ? 'PT0S' : duration;
+}
+
+/**
+ * Приводит ISO 8601 duration к секундам ("PT2H" → 7200, "P30D" → 2592000).
+ * Возвращает null для интервалов с календарными частями (годы/месяцы).
+ * Для дробных секунд результат дробный — сравнение TTL выполняется
+ * через isoDurationToMicroseconds, эта функция осталась для удобства.
+ */
+export function isoDurationToSeconds(iso: string): number | null {
+  const micros = isoDurationToMicroseconds(iso);
+  return micros === null ? null : micros / MICROSECONDS_PER_SECOND;
+}
+
+/**
+ * Преобразует целое число секунд (формат expire_after_seconds из
+ * DescribeTable) в ISO 8601 duration (7200 → "PT2H", 90000 → "P1DT1H").
+ * Дробная часть округляется до секунд; для значений с долями секунды
+ * используйте microsecondsToIsoDuration.
+ */
+export function secondsToIsoDuration(totalSeconds: number): string {
+  return microsecondsToIsoDuration(
+    Math.round(totalSeconds) * MICROSECONDS_PER_SECOND,
+  );
 }
 
 export interface YdbTtlOptions {

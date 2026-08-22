@@ -565,6 +565,30 @@ describe('checkTableSchema TTL (#88)', () => {
     ]);
   });
 
+  it('matches fractional-second TTL without precision loss (#88)', () => {
+    // PT0.5S == ровно 500000µs; сравнение в целых микросекундах YDB Interval
+    const fractionalExpected = {
+      ...ttlExpected,
+      ttl: { interval: 'PT0.5S', column: 'expires_at' },
+    };
+    const equalCheck = checkTableSchema(
+      fractionalExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 0.5 },
+      }),
+    );
+    expect(equalCheck.ttlMismatches).toEqual([]);
+
+    // Сдвиг на микросекунду фиксируется как расхождение
+    const changedCheck = checkTableSchema(
+      fractionalExpected,
+      sessionDescription({
+        ttl: { column: 'expires_at', expireAfterSeconds: 0.500001 },
+      }),
+    );
+    expect(changedCheck.ttlMismatches).toHaveLength(1);
+  });
+
   it('detects changed TTL column and unit', () => {
     const numericExpected: ExpectedTableSchema = {
       tableName: 'ttl_numeric',
@@ -1086,15 +1110,46 @@ describe('YdbSchemaSyncer.describeTable TTL parsing (#88)', () => {
     });
   });
 
-  it('maps numeric TTL unit from proto enum', async () => {
+  it.each([
+    [ValueSinceUnixEpochModeSettings_Unit.SECONDS, 'seconds'],
+    [ValueSinceUnixEpochModeSettings_Unit.MILLISECONDS, 'milliseconds'],
+    [ValueSinceUnixEpochModeSettings_Unit.MICROSECONDS, 'microseconds'],
+    [ValueSinceUnixEpochModeSettings_Unit.NANOSECONDS, 'nanoseconds'],
+  ] as const)(
+    'maps numeric TTL unit from proto enum (%#)',
+    async (protoUnit, expectedUnit) => {
+      const syncer = makeSyncer(
+        describeResponse({
+          mode: {
+            case: 'valueSinceUnixEpoch',
+            value: {
+              columnName: 'expires_at',
+              columnUnit: protoUnit,
+              expireAfterSeconds: 2592000,
+            },
+          },
+        }),
+      );
+
+      const desc = await syncer.describeTable('test_sessions');
+
+      expect(desc?.ttl).toEqual({
+        column: 'expires_at',
+        expireAfterSeconds: 2592000,
+        unit: expectedUnit,
+      });
+    },
+  );
+
+  it('treats UNSPECIFIED numeric TTL unit as date-like (no AS suffix)', async () => {
     const syncer = makeSyncer(
       describeResponse({
         mode: {
           case: 'valueSinceUnixEpoch',
           value: {
             columnName: 'expires_at',
-            columnUnit: ValueSinceUnixEpochModeSettings_Unit.SECONDS,
-            expireAfterSeconds: 2592000,
+            columnUnit: ValueSinceUnixEpochModeSettings_Unit.UNSPECIFIED,
+            expireAfterSeconds: 3600,
           },
         },
       }),
@@ -1104,8 +1159,7 @@ describe('YdbSchemaSyncer.describeTable TTL parsing (#88)', () => {
 
     expect(desc?.ttl).toEqual({
       column: 'expires_at',
-      expireAfterSeconds: 2592000,
-      unit: 'seconds',
+      expireAfterSeconds: 3600,
     });
   });
 

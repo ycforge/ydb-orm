@@ -27,8 +27,9 @@ import {
 } from '../decorators/index.decorator.js';
 import {
   getYdbTtlMetadata,
-  isoDurationToSeconds,
-  secondsToIsoDuration,
+  isoDurationToMicroseconds,
+  microsecondsToIsoDuration,
+  MICROSECONDS_PER_SECOND,
   validateYdbTtlAgainstSchema,
   YdbTtlMetadata,
   YdbTtlUnit,
@@ -360,12 +361,17 @@ function formatTtlMeta(ttl: YdbTtlMetadata): string {
 /** Человекочитаемое представление фактического TTL из БД. */
 function formatTableTtl(ttl: YdbTableTtl): string {
   const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
-  return `${secondsToIsoDuration(ttl.expireAfterSeconds)} on column "${ttl.column}"${unitPart}`;
+  return (
+    `${microsecondsToIsoDuration(ttl.expireAfterSeconds * MICROSECONDS_PER_SECOND)} ` +
+    `on column "${ttl.column}"${unitPart}`
+  );
 }
 
 /**
  * Сравнивает ожидаемый TTL с фактическим из DescribeTable:
- * колонка, unit и интервал (семантически, в секундах — "PT1H" и "PT60M" равны).
+ * колонка, unit и интервал. Интервал сравнивается семантически в целых
+ * микросекундах (внутренней точности YDB Interval): "PT1H" и "PT60M"
+ * равны, "PT0.5S" — это ровно 500000µs, без потерь на float.
  * Интервалы с календарными частями (годы/месяцы) не сравнимы надёжно —
  * считаются расхождением, чтобы миграция выставила значение из метаданных.
  */
@@ -375,9 +381,10 @@ function ttlSettingsMatch(
 ): boolean {
   if (expected.column !== actual.column) return false;
   if ((expected.unit ?? undefined) !== (actual.unit ?? undefined)) return false;
-  const expectedSeconds = isoDurationToSeconds(expected.interval);
+  const expectedMicros = isoDurationToMicroseconds(expected.interval);
   return (
-    expectedSeconds !== null && expectedSeconds === actual.expireAfterSeconds
+    expectedMicros !== null &&
+    expectedMicros === actual.expireAfterSeconds * MICROSECONDS_PER_SECOND
   );
 }
 

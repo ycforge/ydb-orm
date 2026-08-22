@@ -12,7 +12,8 @@ import {
 } from '../schema/schema-sync.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import {
-  secondsToIsoDuration,
+  microsecondsToIsoDuration,
+  MICROSECONDS_PER_SECOND,
   YdbTtlMetadata,
 } from '../decorators/ttl.decorator.js';
 
@@ -26,7 +27,11 @@ export interface PlannedMigration {
 /** Восстанавливает YdbTtlMetadata из фактических настроек TTL в БД. */
 function ttlMetaFromActual(actual: YdbTableTtl): YdbTtlMetadata {
   return {
-    interval: secondsToIsoDuration(actual.expireAfterSeconds),
+    // expire_after_seconds — целые секунды; конвертация через микросекунды
+    // (точность YDB Interval) без потерь
+    interval: microsecondsToIsoDuration(
+      actual.expireAfterSeconds * MICROSECONDS_PER_SECOND,
+    ),
     column: actual.column,
     ...(actual.unit ? { unit: actual.unit } : {}),
   };

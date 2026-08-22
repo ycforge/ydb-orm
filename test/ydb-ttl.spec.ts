@@ -8,15 +8,20 @@ import { YdbBaseEntity } from '../src/entity/base-entity.js';
 import {
   YdbTtl,
   getYdbTtlMetadata,
+  isoDurationToMicroseconds,
   isoDurationToSeconds,
+  microsecondsToIsoDuration,
   secondsToIsoDuration,
   validateYdbTtlAgainstSchema,
 } from '../src/decorators/ttl.decorator.js';
 import {
   buildExpectedTableSchema,
+  checkTableSchema,
   generateCreateTableYql,
+  generateSetTtlYql,
   generateTtlWithClause,
   ExpectedTableSchema,
+  YdbTableDescription,
 } from '../src/schema/schema-sync.js';
 import { YdbPrimitive } from '../src/core/types.js';
 import { validateEntityMetadata } from '../src/metadata/validate-entity.js';
@@ -436,4 +441,189 @@ describe('ISO 8601 duration helpers (#88)', () => {
       expect(isoDurationToSeconds(secondsToIsoDuration(seconds))).toBe(seconds);
     }
   });
+});
+
+describe('ISO duration microsecond precision (#88)', () => {
+  it('parses fractional seconds to exact microseconds', () => {
+    expect(isoDurationToMicroseconds('PT0.5S')).toBe(500000);
+    expect(isoDurationToMicroseconds('PT1.25S')).toBe(1250000);
+    expect(isoDurationToMicroseconds('PT0.000001S')).toBe(1);
+    // Официальный пример из документации YDB Interval
+    expect(isoDurationToMicroseconds('P1W2DT2H3M4.567890S')).toBe(
+      ((7 + 2) * 24 * 3600 + 2 * 3600 + 3 * 60) * 1000000 + 4567890,
+    );
+  });
+
+  it('truncates digits beyond microseconds deterministically', () => {
+    // YDB Interval хранит максимум 6 знаков после секунды
+    expect(isoDurationToMicroseconds('PT0.0000004S')).toBe(0);
+    expect(isoDurationToMicroseconds('PT4.5678909S')).toBe(4567890);
+    expect(isoDurationToMicroseconds('PT4.5678909S')).toBe(
+      isoDurationToMicroseconds('PT4.5678901S'),
+    );
+  });
+
+  it('renders microseconds back to ISO duration exactly', () => {
+    expect(microsecondsToIsoDuration(500000)).toBe('PT0.5S');
+    expect(microsecondsToIsoDuration(1250000)).toBe('PT1.25S');
+    expect(microsecondsToIsoDuration(1)).toBe('PT0.000001S');
+    expect(microsecondsToIsoDuration(1500000)).toBe('PT1.5S');
+    expect(microsecondsToIsoDuration(7_200_000_000)).toBe('PT2H');
+    // Хвостовые нули дробной части не пишутся: .567890 → .56789
+    expect(microsecondsToIsoDuration(784_984_567_890)).toBe('P9DT2H3M4.56789S');
+    expect(microsecondsToIsoDuration(0)).toBe('PT0S');
+  });
+
+  it('is value-round-trip safe: iso → µs → iso preserves the duration', () => {
+    const cases = [
+      'PT0.5S',
+      'PT1.25S',
+      'PT0.000001S',
+      'PT2.000002S',
+      'P1W2DT2H3M4.567890S',
+      'PT2H',
+      'P30D',
+      'P1DT1H30M15S',
+    ];
+    for (const iso of cases) {
+      const micros = isoDurationToMicroseconds(iso);
+      expect(micros).not.toBeNull();
+      // Повторный разбор нормализованной строки даёт те же микросекунды —
+      // diff/verify/миграции стабильны после round-trip
+      expect(
+        isoDurationToMicroseconds(microsecondsToIsoDuration(micros!)),
+      ).toBe(micros);
+    }
+  });
+
+  it('round-trips canonical strings byte-identically', () => {
+    // Каноническая форма: без недель (они рендерятся днями) и без
+    // хвостовых нулей в дробной части
+    const canonical = [
+      'PT0.5S',
+      'PT1.25S',
+      'PT0.000001S',
+      'PT2H',
+      'P30D',
+      'P1DT1H30M15S',
+    ];
+    for (const iso of canonical) {
+      expect(microsecondsToIsoDuration(isoDurationToMicroseconds(iso)!)).toBe(
+        iso,
+      );
+    }
+  });
+
+  it('normalizes equivalent spellings to identical microseconds', () => {
+    // Недели → дни, .567890 == .56789
+    expect(isoDurationToMicroseconds('P1W2DT2H3M4.567890S')).toBe(
+      isoDurationToMicroseconds('P9DT2H3M4.56789S'),
+    );
+  });
+
+  it('round-trips integer microseconds without loss', () => {
+    const values = [1, 999999, 1000000, 1500000, 3600000000, 86_400_000_000];
+    for (const micros of values) {
+      expect(isoDurationToMicroseconds(microsecondsToIsoDuration(micros))).toBe(
+        micros,
+      );
+    }
+  });
+});
+
+describe('TTL DDL units for numeric columns (#88)', () => {
+  const units = [
+    ['seconds', 'SECONDS'],
+    ['milliseconds', 'MILLISECONDS'],
+    ['microseconds', 'MICROSECONDS'],
+    ['nanoseconds', 'NANOSECONDS'],
+  ] as const;
+
+  it.each(units)(
+    'generates SET TTL with AS %s for numeric column',
+    (unit, sqlUnit) => {
+      expect(
+        generateSetTtlYql('events', {
+          interval: 'P1D',
+          column: 'created_at',
+          unit,
+        }),
+      ).toBe(
+        `ALTER TABLE \`events\` SET (TTL = Interval("P1D") ON \`created_at\` AS ${sqlUnit})`,
+      );
+    },
+  );
+
+  it.each(units)(
+    'puts AS %s into WITH clause of CREATE TABLE for Uint32 column',
+    (unit, sqlUnit) => {
+      const schema: ExpectedTableSchema = {
+        tableName: 'ttl_events',
+        columns: cols({ id: 'Utf8', created_at: 'Uint32' }),
+        primaryKey: ['id'],
+        indexes: [],
+        ttl: { interval: 'P7D', column: 'created_at', unit },
+      };
+
+      expect(generateCreateTableYql(schema)).toBe(
+        'CREATE TABLE `ttl_events` (\n' +
+          '  `id` Utf8,\n' +
+          '  `created_at` Uint32,\n' +
+          '  PRIMARY KEY (`id`)\n' +
+          ')\n' +
+          `WITH (\n  TTL = Interval("P7D") ON \`created_at\` AS ${sqlUnit}\n)`,
+      );
+    },
+  );
+
+  it.each([['Uint32'], ['Uint64'], ['DyNumber']] as const)(
+    `matches TTL on %s column by unit and seconds`,
+    (columnType) => {
+      const schema: ExpectedTableSchema = {
+        tableName: 'ttl_numeric',
+        columns: cols({ uuid: 'Uuid', expires_at: columnType }),
+        primaryKey: ['uuid'],
+        indexes: [],
+        ttl: {
+          interval: 'PT2H',
+          column: 'expires_at',
+          unit: 'milliseconds',
+        },
+      };
+      const description = (): YdbTableDescription => ({
+        columns: new Map(),
+        primaryKey: ['uuid'],
+        indexes: [],
+        ttl: {
+          column: 'expires_at',
+          expireAfterSeconds: 7200,
+          unit: 'milliseconds',
+        },
+      });
+
+      // Ровно 2 часа — совпадение независимо от типа числовой колонки
+      expect(checkTableSchema(schema, description()).ttlMismatches).toEqual([]);
+
+      const changed = checkTableSchema(schema, {
+        ...description(),
+        ttl: {
+          column: 'expires_at',
+          expireAfterSeconds: 7201,
+          unit: 'milliseconds',
+        },
+      });
+      expect(changed.ttlMismatches).toHaveLength(1);
+
+      // Расхождение unit тоже фиксируется
+      const wrongUnit = checkTableSchema(schema, {
+        ...description(),
+        ttl: {
+          column: 'expires_at',
+          expireAfterSeconds: 7200,
+          unit: 'seconds',
+        },
+      });
+      expect(wrongUnit.ttlMismatches).toHaveLength(1);
+    },
+  );
 });
