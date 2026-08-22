@@ -2,11 +2,13 @@ import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
-  getYdbJoinTableMetadata,
+  assertNoForeignJoinTableConflicts,
+  getManyToManyJoinTables,
   getYdbRelationsMetadata,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbPrimitive } from '../core/types.js';
 import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -98,10 +100,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     }
 
     const inParams = ownerPks.map((_, i) => `$p${i}`).join(', ');
-    const ownerPkField = getPrimaryKey(joinTable.ownerEntity);
-    const ownerPkType =
-      getYdbEntityMetadata(joinTable.ownerEntity)?.schema[ownerPkField] ??
-      'Uuid';
+    const ownerPkType = joinTable.ownerColumnType;
 
     const sql =
       `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
@@ -111,7 +110,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
     const joinQuery = exec([sql] as unknown as TemplateStringsArray);
     ownerPks.forEach((value, i) => {
-      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerPkField));
+      joinQuery.parameter(
+        `p${i}`,
+        mapToYdb(ownerPkType, value, joinTable.ownerColumn),
+      );
     });
 
     const joinRows = await this.executeQuery(joinQuery, options);
@@ -298,20 +300,23 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       } else if (rel.type === 'many-to-many') {
         const pkField = getPrimaryKey(constructor);
 
+        // Резолв зависит только от метаданных класса — один раз на связь,
+        // а не на каждый элемент (внутри проверяются конфликты объявлений).
+        const joinTable = resolveManyToManyJoinTable(constructor, rel);
+        if (!joinTable) {
+          throw new Error(
+            `Cannot load many-to-many relation "${name}": ` +
+              `join table is not defined on ${constructor.name}. ` +
+              `Mark the owning side with @JoinTable.`,
+          );
+        }
+
         for (const item of items) {
           const pkValue = (item as any)[pkField];
           if (pkValue === undefined) {
             throw new Error(
               `Cannot load many-to-many relation "${name}": ` +
                 `primary key "${pkField}" is undefined on ${constructor.name}`,
-            );
-          }
-          const joinTable = resolveManyToManyJoinTable(constructor, rel);
-          if (!joinTable) {
-            throw new Error(
-              `Cannot load many-to-many relation "${name}": ` +
-                `join table is not defined on ${constructor.name}. ` +
-                `Mark the owning side with @JoinTable.`,
             );
           }
           const related = await this.loadManyToManyRelation(
@@ -391,11 +396,22 @@ function getPrimaryKey(target: typeof YdbBaseEntity): string {
 /**
  * Находит метаданные join-таблицы для many-to-many,
  * ориентированные относительно запрашиваемой сущности (owner).
+ *
+ * Валидация и разрешение конфликтов выполняются тем же кодом, что и при
+ * генерации схемы: getManyToManyJoinTables для пары сущностей. Поэтому
+ * рантайм не может молча выбрать одно из расходящихся объявлений таблицы —
+ * он упадёт с той же ошибкой конфликта, что и schema sync/migrations (#139).
  */
 interface ResolvedJoinTable {
   tableName: string;
   ownerColumn: string;
   inverseColumn: string;
+  /**
+   * YDB-тип owner-колонки join-таблицы (#90): тип PK owner-сущности.
+   * Схема join-таблицы (schema sync) выводит те же имена и типы, поэтому
+   * чтение всегда совместимо со сгенерированной таблицей.
+   */
+  ownerColumnType: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
   inverseEntity: typeof YdbBaseEntity;
 }
@@ -409,38 +425,42 @@ function resolveManyToManyJoinTable(
   const inverseMeta = getYdbEntityMetadata(inverseEntity);
   if (!ownerMeta || !inverseMeta) return undefined;
 
-  const ownJoinTables = getYdbJoinTableMetadata(owner);
-  const own = ownJoinTables.find(
-    (jt) => jt.propertyKey === relation.propertyKey,
-  );
+  // Все объявления join-таблиц, видимые для пары (владелец, inverse):
+  // здесь же проверяются PK и конфликты объявлений одного имени (#90/#139).
+  const definitions = getManyToManyJoinTables([owner, inverseEntity]);
 
+  // Декларация на самом владельце для этой связи.
+  const own = definitions.find(
+    (d) => d.ownerEntity === owner && d.ownerProperty === relation.propertyKey,
+  );
   if (own) {
+    assertNoForeignJoinTableConflicts(own);
     return {
       tableName: own.tableName,
-      ownerColumn: own.joinColumn ?? `${ownerMeta.tableName}_uuid`,
-      inverseColumn: own.inverseJoinColumn ?? `${inverseMeta.tableName}_uuid`,
+      ownerColumn: own.joinColumn,
+      inverseColumn: own.inverseJoinColumn,
+      ownerColumnType: own.joinColumnType as YdbPrimitive,
       ownerEntity: owner,
       inverseEntity,
     };
   }
 
-  const inverseRelations = getYdbRelationsMetadata(inverseEntity).filter(
-    (r) => r.type === 'many-to-many' && r.target() === owner,
+  // Зеркальная декларация на обратной стороне: колонки разворачиваются —
+  // joinColumn объявления принадлежит inverse-сущности, inverseJoinColumn — владельцу.
+  const inverseOwned = definitions.find(
+    (d) => d.ownerEntity === inverseEntity && d.inverseEntity === owner,
   );
-  for (const invRel of inverseRelations) {
-    const invJoinTables = getYdbJoinTableMetadata(inverseEntity);
-    const inv = invJoinTables.find(
-      (jt) => jt.propertyKey === invRel.propertyKey,
-    );
-    if (inv) {
-      return {
-        tableName: inv.tableName,
-        ownerColumn: inv.inverseJoinColumn ?? `${ownerMeta.tableName}_uuid`,
-        inverseColumn: inv.joinColumn ?? `${inverseMeta.tableName}_uuid`,
-        ownerEntity: owner,
-        inverseEntity,
-      };
-    }
+  if (inverseOwned) {
+    assertNoForeignJoinTableConflicts(inverseOwned);
+    return {
+      tableName: inverseOwned.tableName,
+      ownerColumn: inverseOwned.inverseJoinColumn,
+      inverseColumn: inverseOwned.joinColumn,
+      // Тип owner-колонки = тип PK владельца = тип её колонки в объявлении.
+      ownerColumnType: inverseOwned.inverseJoinColumnType as YdbPrimitive,
+      ownerEntity: owner,
+      inverseEntity,
+    };
   }
 
   return undefined;
