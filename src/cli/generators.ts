@@ -31,6 +31,18 @@ export function toKebabCase(input: string): string {
     .join('-');
 }
 
+/**
+ * Гарантирует валидный TypeScript-идентификатор класса (#102): `toPascalCase`
+ * от имени без буквенных слов ('123', '---') возвращает пустую строку или
+ * строку с ведущей цифрой — такой класс не скомпилируется. Валидные имена
+ * возвращаются без изменений (обратная совместимость).
+ */
+export function toValidClassName(input: string): string {
+  const name = toPascalCase(input);
+  if (!name || /^[0-9]/.test(name)) return `Migration${name}`;
+  return name;
+}
+
 export interface CreatedFile {
   filePath: string;
   name: string;
@@ -47,21 +59,53 @@ function writeFile(dir: string, fileName: string, content: string): string {
 }
 
 /**
+ * Последние использованные timestamp и суффикс: защита от коллизии имён
+ * файлов миграций (#102). `Date.now()` имеет миллисекундную точность —
+ * две генерации в пределах одной миллисекунды (или при скачке часов назад)
+ * обязаны получить разные имена, иначе writeFile падает на существующем файле.
+ */
+let lastTimestamp = 0;
+let lastSuffix = 0;
+
+/**
  * Создаёт файл миграции. Без плана — пустой шаблон (migration:create),
  * с планом — заполненный DDL (migration:generate).
+ *
+ * Имя файла — `<timestamp>-<Name>`; повторная генерация в ту же миллисекунду
+ * получает антиколлизионный суффикс `-1`, `-2`, … (#102). Лексикографическая
+ * сортировка загрузчика сохраняется: все timestamps одной длины, короткое
+ * имя (без суффикса) идёт раньше длиннее.
  */
 export function createMigrationFile(
   dir: string,
   name: string,
   plan?: PlannedMigration,
 ): CreatedFile {
-  const timestamp = Date.now();
-  const baseName = `${timestamp}-${toPascalCase(name)}`;
+  const now = Date.now();
+  let timestamp: number;
+  let suffix: number | null = null;
+  if (now > lastTimestamp) {
+    timestamp = now;
+    lastSuffix = 0;
+  } else {
+    timestamp = lastTimestamp;
+    lastSuffix += 1;
+    suffix = lastSuffix;
+  }
+  lastTimestamp = timestamp;
+
+  const pascal = toValidClassName(name);
+  const baseName =
+    suffix === null
+      ? `${timestamp}-${pascal}`
+      : `${timestamp}-${pascal}-${suffix}`;
   const filePath = writeFile(
     dir,
     `${baseName}.ts`,
     renderMigrationFile(
-      `${toPascalCase(name)}${timestamp}`,
+      suffix === null
+        ? `${pascal}${timestamp}`
+        : `${pascal}${timestamp}_${suffix}`,
       baseName,
       plan ?? { up: [], down: [], warnings: [] },
     ),
