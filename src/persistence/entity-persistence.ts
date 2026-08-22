@@ -338,7 +338,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       const enumMeta = enums.find((e) => e.propertyKey === k);
       value = this.convertEnumOut(value, enumMeta);
       value = this.convertJsonOut(k, value);
-      query.parameter(k, mapToYdb(type, value));
+      query.parameter(k, mapToYdb(type, value, k));
     }
   }
 
@@ -1365,7 +1365,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             const enumMeta = enums.find((e) => e.propertyKey === k);
             let value = this.convertEnumOut(row[k], enumMeta);
             value = this.convertJsonOut(k, value);
-            query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], value));
+            query.parameter(`${k}_${i}`, mapToYdb(dbSchema[k], value, k));
           }
         });
 
@@ -1558,7 +1558,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} WHERE ${whereClause} RETURNING *`;
     const query = exec([sql] as unknown as TemplateStringsArray);
     for (const f of pkFields) {
-      query.parameter(paramName(f), mapToYdb(dbSchema[f], filter[f]));
+      query.parameter(paramName(f), mapToYdb(dbSchema[f], filter[f], f));
     }
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
@@ -1705,7 +1705,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     values.forEach((value, i) => {
-      query.parameter(`p${i}`, mapToYdb(columnType, value));
+      query.parameter(`p${i}`, mapToYdb(columnType, value, column));
     });
 
     const rows = await this.executeQuery<Record<string, any>[][]>(

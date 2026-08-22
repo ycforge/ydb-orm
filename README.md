@@ -141,7 +141,7 @@ await UserEntity.findAll({
 ## Декораторы
 
 - `@YdbEntity('table')` — имя таблицы; класс попадает в глобальный реестр сущностей (используется schema sync).
-- `@YdbColumn('Uuid' | 'Utf8' | 'Bytes' | 'Int32' | 'Int64' | 'Bool' | 'Double' | 'Float' | 'Date' | 'Datetime' | 'Timestamp' | 'Json' | 'JsonDocument')` — колонка.
+- `@YdbColumn('Uuid' | 'Utf8' | 'Bytes' | 'Int32' | 'Int64' | 'Bool' | 'Double' | 'Float' | 'Date' | 'Datetime' | 'Timestamp' | 'Json' | 'JsonDocument')` — колонка. Дата-типы принимают `Date`, число (мс от эпохи) или ISO-строку; **точность `Timestamp` ограничена миллисекундами**: JS `Date` хранит только мс, поэтому субмиллисекундные значения (микро-/наносекунды) не сохраняются — при чтении младшие разряды YDB-микросекунд теряются.
 - `@YdbPrimaryColumn(type)` — колонка первичного ключа (поддерживается составной PK: несколько таких колонок). Если PK не объявлен, используется `uuid`.
 - `@YdbEncrypted({ blindIndex, lazy })` — поле шифруется перед записью и дешифруется после чтения; `blindIndex: true` (по умолчанию) добавляет synthetic колонку `{field}_bi` для поиска по хешу. Шифротекст хранится в колонке `Bytes` (raw bytes), тип из `@YdbColumn` для таких полей игнорируется. Опция `lazy: true` откладывает дешифровку: поле не дешифруется при SELECT (экономия CPU), plaintext возвращают `await entity.decryptField('field')` / `await entity.decryptLazyFields()` (результат кешируется в инстансе); `toJSON()`/`JSON.stringify()` бросают ошибку, пока lazy-поля не дешифрованы.
 - `@YdbSecurityAAD()` — незашифрованное поле участвует в AAD (может применяться только к PK-колонкам).
