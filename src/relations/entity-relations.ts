@@ -111,7 +111,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
     const joinQuery = exec([sql] as unknown as TemplateStringsArray);
     ownerPks.forEach((value, i) => {
-      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value));
+      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerPkField));
     });
 
     const joinRows = await this.executeQuery(joinQuery, options);

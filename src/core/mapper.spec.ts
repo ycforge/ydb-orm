@@ -82,6 +82,28 @@ describe('mapToYdb', () => {
       const val = mapToYdb('Int32', null);
       expect(val).toBeInstanceOf(Optional);
     });
+
+    it('accepts the Int32 lower boundary', () => {
+      const val = mapToYdb('Int32', -2147483648);
+      expect(val).toBeInstanceOf(Int32);
+    });
+
+    it('accepts the Int32 upper boundary', () => {
+      const val = mapToYdb('Int32', 2147483647);
+      expect(val).toBeInstanceOf(Int32);
+    });
+
+    it('rejects values above the Int32 range', () => {
+      expect(() => mapToYdb('Int32', 2147483648)).toThrow(/out of range/);
+    });
+
+    it('rejects values below the Int32 range', () => {
+      expect(() => mapToYdb('Int32', -2147483649)).toThrow(/out of range/);
+    });
+
+    it('rejects non-integer values', () => {
+      expect(() => mapToYdb('Int32', 1.5)).toThrow(/must be an integer/);
+    });
   });
 
   describe('Int64', () => {
@@ -103,6 +125,36 @@ describe('mapToYdb', () => {
     it('returns Optional<Int64> for null', () => {
       const val = mapToYdb('Int64', null);
       expect(val).toBeInstanceOf(Optional);
+    });
+
+    it('accepts the Int64 upper boundary', () => {
+      const val = mapToYdb('Int64', 9223372036854775807n);
+      expect(val).toBeInstanceOf(Int64);
+    });
+
+    it('accepts the Int64 lower boundary', () => {
+      const val = mapToYdb('Int64', -9223372036854775808n);
+      expect(val).toBeInstanceOf(Int64);
+    });
+
+    it('rejects values above the Int64 range', () => {
+      expect(() => mapToYdb('Int64', 9223372036854775808n)).toThrow(
+        /out of range/,
+      );
+    });
+
+    it('rejects values below the Int64 range', () => {
+      expect(() => mapToYdb('Int64', -9223372036854775809n)).toThrow(
+        /out of range/,
+      );
+    });
+
+    it('rejects fractional numbers (BigInt throws raw RangeError)', () => {
+      expect(() => mapToYdb('Int64', 4.5)).toThrow(/Failed to convert/);
+    });
+
+    it('rejects NaN as Int64', () => {
+      expect(() => mapToYdb('Int64', Number.NaN)).toThrow(/Failed to convert/);
     });
   });
 
@@ -169,6 +221,41 @@ describe('mapToYdb', () => {
       expect(mapToYdb('Datetime', null)).toBeInstanceOf(Optional);
       expect(mapToYdb('Timestamp', null)).toBeInstanceOf(Optional);
     });
+
+    it('accepts a Date instance with milliseconds', () => {
+      const ms = new global.Date('2026-08-18T12:30:00.123Z');
+      expect(mapToYdb('Timestamp', ms)).toBeInstanceOf(Timestamp);
+      expect(mapToYdb('Datetime', ms)).toBeInstanceOf(Datetime);
+      expect(mapToYdb('Date', ms)).toBeInstanceOf(YdbDate);
+    });
+
+    it('stores Timestamp with millisecond precision (getTime() * 1000n)', () => {
+      const ms = new Date('2026-08-18T12:30:00.123Z');
+      const val = mapToYdb('Timestamp', ms) as any;
+      expect(val.value).toBe(BigInt(ms.getTime()) * 1000n);
+      // Субмиллисекунды не сохраняются: JS Date не может их нести.
+      expect(val.value % 1000n).toBe(0n);
+    });
+
+    it('rejects an invalid Date instance for all temporal types', () => {
+      const invalid = new Date('garbage');
+      expect(Number.isNaN(invalid.getTime())).toBe(true);
+      expect(() => mapToYdb('Date', invalid)).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Datetime', invalid)).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Timestamp', invalid)).toThrow(/Invalid Date/);
+    });
+
+    it('rejects a garbage string for all temporal types', () => {
+      expect(() => mapToYdb('Date', 'not-a-date')).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Datetime', 'not-a-date')).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Timestamp', 'not-a-date')).toThrow(/Invalid Date/);
+    });
+
+    it('rejects NaN epoch ms for all temporal types', () => {
+      expect(() => mapToYdb('Date', Number.NaN)).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Datetime', Number.NaN)).toThrow(/Invalid Date/);
+      expect(() => mapToYdb('Timestamp', Number.NaN)).toThrow(/Invalid Date/);
+    });
   });
 
   describe('Json', () => {
@@ -216,10 +303,52 @@ describe('mapToYdb', () => {
       );
     });
 
+    it('includes the field name on undefined value', () => {
+      expect(() => mapToYdb('Uuid', undefined, 'userId')).toThrow(
+        /field "userId"/,
+      );
+    });
+
     it('throws on unsupported type', () => {
       expect(() => mapToYdb('Foo' as any, 'bar')).toThrow(
         /Unsupported YDB type/,
       );
+    });
+  });
+
+  describe('conversion error context', () => {
+    const captureMessage = (fn: () => unknown): string => {
+      let msg = '';
+      try {
+        fn();
+      } catch (err) {
+        msg = (err as Error).message;
+      }
+      expect(msg).not.toBe('');
+      return msg;
+    };
+
+    it('includes field name, YDB type and value for Int32 overflow', () => {
+      const msg = captureMessage(() => mapToYdb('Int32', 2147483648, 'age'));
+      expect(msg).toContain('field "age"');
+      expect(msg).toContain('YDB type Int32');
+      expect(msg).toContain('2147483648');
+    });
+
+    it('includes field name, YDB type and value for invalid Date', () => {
+      const msg = captureMessage(() =>
+        mapToYdb('Timestamp', 'not-a-date', 'createdAt'),
+      );
+      expect(msg).toContain('field "createdAt"');
+      expect(msg).toContain('YDB type Timestamp');
+      expect(msg).toContain('not-a-date');
+    });
+
+    it('wraps the raw BigInt RangeError with field/type/value context', () => {
+      const msg = captureMessage(() => mapToYdb('Int64', 4.5, 'counter'));
+      expect(msg).toContain('field "counter"');
+      expect(msg).toContain('YDB type Int64');
+      expect(msg).toContain('4.5');
     });
   });
 });

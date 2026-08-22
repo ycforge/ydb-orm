@@ -448,11 +448,11 @@ export class YdbMigrationRunner {
         '(`id`, `timestamp`, `name`, `hash`, `state`) ' +
         'VALUES ($id, $timestamp, $name, $hash, $state)',
     ] as unknown as TemplateStringsArray);
-    query.parameter('id', mapToYdb('Int64', id));
-    query.parameter('timestamp', mapToYdb('Int64', Date.now()));
-    query.parameter('name', mapToYdb('Utf8', name));
-    query.parameter('hash', mapToYdb('Utf8', hash ?? null));
-    query.parameter('state', mapToYdb('Utf8', state));
+    query.parameter('id', mapToYdb('Int64', id, 'id'));
+    query.parameter('timestamp', mapToYdb('Int64', Date.now(), 'timestamp'));
+    query.parameter('name', mapToYdb('Utf8', name, 'name'));
+    query.parameter('hash', mapToYdb('Utf8', hash ?? null, 'hash'));
+    query.parameter('state', mapToYdb('Utf8', state, 'state'));
     await query;
   }
 
@@ -471,9 +471,9 @@ export class YdbMigrationRunner {
     const query = this.executor([
       `UPDATE ${quoteIdentifier(MIGRATIONS_TABLE)} SET \`state\` = $state, \`timestamp\` = $timestamp WHERE \`id\` = $id`,
     ] as unknown as TemplateStringsArray);
-    query.parameter('state', mapToYdb('Utf8', state));
-    query.parameter('timestamp', mapToYdb('Int64', Date.now()));
-    query.parameter('id', mapToYdb('Int64', id));
+    query.parameter('state', mapToYdb('Utf8', state, 'state'));
+    query.parameter('timestamp', mapToYdb('Int64', Date.now(), 'timestamp'));
+    query.parameter('id', mapToYdb('Int64', id, 'id'));
     await query;
   }
 
@@ -481,7 +481,7 @@ export class YdbMigrationRunner {
     const query = this.executor([
       `DELETE FROM ${quoteIdentifier(MIGRATIONS_TABLE)} WHERE \`id\` = $id`,
     ] as unknown as TemplateStringsArray);
-    query.parameter('id', mapToYdb('Int64', id));
+    query.parameter('id', mapToYdb('Int64', id, 'id'));
     await query;
   }
 
