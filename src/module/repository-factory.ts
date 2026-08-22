@@ -12,6 +12,7 @@ import {
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
+import { getActiveRecordInitToken } from '../repository/repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
@@ -27,7 +28,7 @@ export function createActiveRecordEntityProvider(
   entityClass: typeof YdbBaseEntity,
 ): Provider {
   return {
-    provide: `${entityClass.name}_AR_INIT`,
+    provide: getActiveRecordInitToken(entityClass),
     useFactory: (
       db: YdbExecutor,
       opts: YdbModuleOptions,
