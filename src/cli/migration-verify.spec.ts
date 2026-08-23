@@ -7,17 +7,12 @@ import {
 } from './migration-verify.js';
 import { exitCodeOf } from './exit-codes.js';
 import type { YdbMigration } from '../migrations/migration.interface.js';
+import type { AppliedMigration } from '../migrations/migration-runner.js';
+import type { MigrationBookkeepingSnapshot } from '../migrations/migration-bookkeeping.js';
 import type { YdbSchemaIssue } from '../schema/schema-sync.js';
 
-interface RowSpec {
-  name: string;
-  timestamp?: number;
-  hash?: string | null;
-  state?: string;
-}
-
-/** Мок executor-а: только чтение таблицы учёта миграций. */
-function makeReadonlyExecutor(rows: RowSpec[]) {
+/** Мок executor-а: записывает каждый SQL и отдаёт заданные строки. */
+function makeRecordingExecutor(resultRows: Record<string, unknown>[] = []) {
   const executedSql: string[] = [];
 
   const executor: any = jest.fn((strings: TemplateStringsArray) => {
@@ -42,19 +37,7 @@ function makeReadonlyExecutor(rows: RowSpec[]) {
         return Promise.resolve()
           .then(() => {
             executedSql.push(sql);
-            if (sql.includes('SELECT')) {
-              // Probe legacy-колонок и основной SELECT статусов.
-              return [
-                rows.map((r, i) => ({
-                  id: i + 1,
-                  timestamp: r.timestamp ?? 1000,
-                  name: r.name,
-                  hash: r.hash ?? null,
-                  state: r.state ?? 'applied',
-                })),
-              ];
-            }
-            return [];
+            return [resultRows];
           })
           .then(onFulfilled ?? undefined, onRejected ?? undefined);
       },
@@ -62,8 +45,64 @@ function makeReadonlyExecutor(rows: RowSpec[]) {
     return query;
   });
 
-  return { executor: executor as unknown, executedSql };
+  return {
+    executor: executor as unknown,
+    executedSql,
+    /** Ни один SQL не выполнялся — значит, точно не было и DDL. */
+    expectNoSqlAtAll: () => expect(executor).not.toHaveBeenCalled(),
+    /** SQL был, но среди него нет ни одного DDL/DML-оператора. */
+    expectNoDdlOrDml: () => {
+      for (const sql of executedSql) {
+        expect(sql.toUpperCase()).not.toMatch(
+          /^\s*(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|UPSERT|REPLACE)\b/,
+        );
+      }
+    },
+  };
 }
+
+interface RowSpec {
+  name: string;
+  timestamp?: number;
+  hash?: string | null;
+  state?: string;
+}
+
+function recordFromRow(row: RowSpec, id: number): AppliedMigration {
+  return {
+    id,
+    timestamp: row.timestamp ?? 1000,
+    name: row.name,
+    hash: row.hash ?? undefined,
+    state: row.state === 'started' ? 'started' : 'applied',
+  };
+}
+
+/**
+ * Шов inspectBookkeeping: снимок собирается из строк таблицы учёта
+ * БЕЗ обращения к executor-у — как и в реальном read-only потоке,
+ * где метаданные берутся через DescribeTable.
+ */
+function makeInspect(
+  rows: RowSpec[] = [],
+  overrides: Partial<MigrationBookkeepingSnapshot> = {},
+) {
+  const inspect = jest.fn(
+    (_deps: {
+      driver: Driver;
+      executor: unknown;
+    }): Promise<MigrationBookkeepingSnapshot> =>
+      Promise.resolve({
+        exists: true,
+        legacy: false,
+        records: rows.map(recordFromRow),
+        ...overrides,
+      }),
+  );
+  return inspect;
+}
+
+const notInitialized = () => makeInspect([], { exists: false });
 
 function makeIo(): MigrationVerifyIo & {
   stdoutLines: string[];
@@ -112,7 +151,7 @@ function makeConnect(executor: unknown, closed = { count: 0 }) {
     });
 }
 
-const NO_SCHEMA_ISSUES: YdbSchemaIssue[] = [
+const SCHEMA_ISSUES: YdbSchemaIssue[] = [
   {
     tableName: 'users',
     kind: 'missing-column',
@@ -125,7 +164,7 @@ const stubVerifySchema = jest.fn(
     _driver: Driver,
     _executor: unknown,
     _entities: Array<new (...args: any[]) => any>,
-  ): Promise<YdbSchemaIssue[]> => Promise.resolve(NO_SCHEMA_ISSUES),
+  ): Promise<YdbSchemaIssue[]> => Promise.resolve(SCHEMA_ISSUES),
 );
 
 let savedNoColor: string | undefined;
@@ -138,9 +177,8 @@ afterEach(() => {
 describe('runMigrationVerification (#24)', () => {
   it('ready state: everything applied, success text on stdout only', async () => {
     const migrations = makeMigrations([{ name: '1-A' }]);
-    const mock = makeReadonlyExecutor([
-      { name: '1-A', timestamp: 1000, hash: null },
-    ]);
+    const mock = makeRecordingExecutor();
+    const inspect = makeInspect([{ name: '1-A', timestamp: 1000, hash: null }]);
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -148,6 +186,7 @@ describe('runMigrationVerification (#24)', () => {
       migrationsDir: './migrations',
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve(migrations),
+      inspectBookkeeping: inspect,
       io,
     });
 
@@ -160,21 +199,13 @@ describe('runMigrationVerification (#24)', () => {
     // Проверка не выполняет миграций: ни up(), ни down().
     expect(migrations[0].up).not.toHaveBeenCalled();
     expect(migrations[0].down).not.toHaveBeenCalled();
-    // И не пишет в БД: только CREATE TABLE IF NOT EXISTS и SELECT.
-    for (const sql of mock.executedSql) {
-      expect(sql.toUpperCase()).not.toMatch(
-        /^\s*(INSERT|UPDATE|DELETE|ALTER|DROP)/,
-      );
-    }
-    expect(
-      mock.executedSql.some((sql) =>
-        sql.startsWith('CREATE TABLE IF NOT EXISTS'),
-      ),
-    ).toBe(true);
+    // Состояние читается через снимок (DescribeTable), без SQL к учёту.
+    expect(inspect).toHaveBeenCalledTimes(1);
+    mock.expectNoSqlAtAll();
   });
 
   it('pending migrations: problems on stderr, deterministic state', async () => {
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -185,6 +216,7 @@ describe('runMigrationVerification (#24)', () => {
         Promise.resolve(
           makeMigrations([{ name: '1-Pending' }, { name: '2-Too' }]),
         ),
+      inspectBookkeeping: makeInspect(),
       io,
     });
 
@@ -196,12 +228,11 @@ describe('runMigrationVerification (#24)', () => {
     expect(errText).toContain('Not ready: pending migrations');
     // Успех не печатается при неудаче.
     expect(io.stdoutLines.join('\n')).not.toContain('Up to date');
+    mock.expectNoSqlAtAll();
   });
 
   it('interrupted migration (#101): explicit state, not treated as applied', async () => {
-    const mock = makeReadonlyExecutor([
-      { name: '1-Halfway', timestamp: 1000, state: 'started', hash: null },
-    ]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -210,6 +241,9 @@ describe('runMigrationVerification (#24)', () => {
       connect: makeConnect(mock.executor),
       loadMigrations: () =>
         Promise.resolve(makeMigrations([{ name: '1-Halfway' }])),
+      inspectBookkeeping: makeInspect([
+        { name: '1-Halfway', timestamp: 1000, state: 'started' },
+      ]),
       io,
     });
 
@@ -221,15 +255,14 @@ describe('runMigrationVerification (#24)', () => {
     expect(errText).toContain(
       "- 1-Halfway (state='started'; resolve via migration:repair)",
     );
+    mock.expectNoSqlAtAll();
   });
 
   it('modified after apply (#101): own state and hint', async () => {
     const migrations = makeMigrations([
       { name: '1-Tampered', hash: 'hash-new' },
     ]);
-    const mock = makeReadonlyExecutor([
-      { name: '1-Tampered', timestamp: 1000, hash: 'hash-old' },
-    ]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -237,19 +270,20 @@ describe('runMigrationVerification (#24)', () => {
       migrationsDir: './migrations',
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve(migrations),
+      inspectBookkeeping: makeInspect([
+        { name: '1-Tampered', timestamp: 1000, hash: 'hash-old' },
+      ]),
       io,
     });
 
     expect(verdict.state).toBe('modified');
     expect(verdict.modified).toEqual(['1-Tampered']);
     expect(io.stderrLines.join('\n')).toContain('Modified after apply (1)');
+    mock.expectNoSqlAtAll();
   });
 
   it('orphan record alone stays informational: ready=true, exit code 0', async () => {
-    const mock = makeReadonlyExecutor([
-      { name: '1-Alive', timestamp: 1000 },
-      { name: '900-Gone', timestamp: 2000 },
-    ]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -258,21 +292,25 @@ describe('runMigrationVerification (#24)', () => {
       connect: makeConnect(mock.executor),
       loadMigrations: () =>
         Promise.resolve(makeMigrations([{ name: '1-Alive' }])),
+      inspectBookkeeping: makeInspect([
+        { name: '1-Alive', timestamp: 1000 },
+        { name: '900-Gone', timestamp: 2000 },
+      ]),
       io,
     });
 
     expect(verdict.ready).toBe(true);
     expect(verdict.orphaned).toEqual(['900-Gone']);
     expect(io.stderrLines.join('\n')).toContain('Orphan records (1)');
+    mock.expectNoSqlAtAll();
   });
 
   it('schema mismatch: detailed diagnostics preserved, colored by real stream (#103)', async () => {
     savedNoColor = process.env.NO_COLOR;
     delete process.env.NO_COLOR;
 
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
-    const verifySchema = stubVerifySchema;
 
     const verdict = await runMigrationVerification({
       command: 'migration:check',
@@ -280,12 +318,13 @@ describe('runMigrationVerification (#24)', () => {
       entities: [class Users {}],
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve([]),
-      verifySchema,
+      inspectBookkeeping: makeInspect(),
+      verifySchema: stubVerifySchema,
       io,
       streams: { stderr: { isTTY: true }, stdout: { isTTY: false } },
     });
 
-    expect(verifySchema).toHaveBeenCalledWith(fakeDriver, mock.executor, [
+    expect(stubVerifySchema).toHaveBeenCalledWith(fakeDriver, mock.executor, [
       expect.any(Function),
     ]);
     expect(verdict.state).toBe('schema-drift');
@@ -298,13 +337,14 @@ describe('runMigrationVerification (#24)', () => {
     expect(errText).toContain('is missing column "email"');
     // Цвет по реальному потоку вывода (stderr TTY) — #103.
     expect(errText).toContain('\x1b[');
+    mock.expectNoSqlAtAll();
   });
 
   it('non-TTY output: no ANSI codes in schema diff', async () => {
     savedNoColor = process.env.NO_COLOR;
     delete process.env.NO_COLOR;
 
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     const verdict = await runMigrationVerification({
@@ -313,6 +353,7 @@ describe('runMigrationVerification (#24)', () => {
       entities: [class Users {}],
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: makeInspect(),
       verifySchema: stubVerifySchema,
       io,
       streams: { stderr: { isTTY: false } },
@@ -326,7 +367,7 @@ describe('runMigrationVerification (#24)', () => {
     savedNoColor = process.env.NO_COLOR;
     process.env.NO_COLOR = '1';
 
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const io = makeIo();
 
     await runMigrationVerification({
@@ -335,6 +376,7 @@ describe('runMigrationVerification (#24)', () => {
       entities: [class Users {}],
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: makeInspect(),
       verifySchema: stubVerifySchema,
       io,
       streams: { stderr: { isTTY: true } },
@@ -343,9 +385,152 @@ describe('runMigrationVerification (#24)', () => {
     expect(io.stderrLines.join('\n')).not.toContain('\x1b[');
   });
 
+  describe('read-only contract: no DDL/DML from verification commands (#24)', () => {
+    // Матрица из задачи: check / status / show / --json варианты.
+    const cases: Array<{
+      command: 'migration:check' | 'migration:show' | 'migration:status';
+      json: boolean;
+    }> = [
+      { command: 'migration:check', json: false },
+      { command: 'migration:status', json: false },
+      { command: 'migration:show', json: false },
+      { command: 'migration:check', json: true },
+      { command: 'migration:status', json: true },
+      { command: 'migration:show', json: true },
+    ];
+
+    for (const { command, json } of cases) {
+      it(`${command}${json ? ' --json' : ''}: never creates or alters ydb_migrations`, async () => {
+        // Если бы путь ходил в ensureMigrationsTable, executor получил бы
+        // CREATE TABLE IF NOT EXISTS (+ возможный ALTER) — тест падает.
+        const mock = makeRecordingExecutor();
+        const io = makeIo();
+
+        await runMigrationVerification({
+          command,
+          migrationsDir: './migrations',
+          ...(json ? { json: true } : {}),
+          connect: makeConnect(mock.executor),
+          loadMigrations: () =>
+            Promise.resolve(makeMigrations([{ name: '1-A' }])),
+          inspectBookkeeping: makeInspect([{ name: '1-A', timestamp: 1000 }]),
+          io,
+        });
+
+        // Строгое требование: мутирующий путь не просто «не сработал»,
+        // его нет в execution path вовсе — executor не вызывался ни разу.
+        mock.expectNoSqlAtAll();
+        mock.expectNoDdlOrDml();
+      });
+    }
+
+    it('bookkeeping inspection receives driver+executor, not a runner', async () => {
+      const mock = makeRecordingExecutor();
+      const inspect = makeInspect();
+      const io = makeIo();
+
+      await runMigrationVerification({
+        command: 'migration:check',
+        migrationsDir: './migrations',
+        connect: makeConnect(mock.executor),
+        loadMigrations: () => Promise.resolve([]),
+        inspectBookkeeping: inspect,
+        io,
+      });
+
+      expect(inspect).toHaveBeenCalledWith({
+        driver: fakeDriver,
+        executor: mock.executor,
+      });
+    });
+  });
+
+  describe('uninitialized database: ydb_migrations does not exist (#24)', () => {
+    it('check: deterministic "nothing applied" result, table is NOT created', async () => {
+      const mock = makeRecordingExecutor();
+      const io = makeIo();
+
+      const verdict = await runMigrationVerification({
+        command: 'migration:check',
+        migrationsDir: './migrations',
+        connect: makeConnect(mock.executor),
+        loadMigrations: () =>
+          Promise.resolve(makeMigrations([{ name: '1-New' }])),
+        inspectBookkeeping: notInitialized(),
+        io,
+      });
+
+      // Контракт #24: pending → exit 1; ничего не создано.
+      expect(verdict.state).toBe('pending');
+      expect(verdict.pending).toEqual(['1-New']);
+      expect(io.stdoutLines.join('\n')).toContain(
+        'Bookkeeping table ydb_migrations does not exist yet',
+      );
+      expect(io.stderrLines.join('\n')).toContain(
+        'Not ready: pending migrations',
+      );
+      mock.expectNoSqlAtAll();
+    });
+
+    it('check on empty project: ready with zero migrations, still no writes', async () => {
+      const mock = makeRecordingExecutor();
+      const io = makeIo();
+
+      const verdict = await runMigrationVerification({
+        command: 'migration:check',
+        migrationsDir: './migrations',
+        connect: makeConnect(mock.executor),
+        loadMigrations: () => Promise.resolve([]),
+        inspectBookkeeping: notInitialized(),
+        io,
+      });
+
+      expect(verdict.ready).toBe(true);
+      expect(verdict.state).toBe('ok');
+      expect(io.stdoutLines.join('\n')).toContain(
+        'Up to date: 0 migration(s) applied',
+      );
+      mock.expectNoSqlAtAll();
+    });
+
+    it('status --json: bookkeeping.exists=false distinguishes fresh DB', async () => {
+      const mock = makeRecordingExecutor();
+      const io = makeIo();
+
+      await runMigrationVerification({
+        command: 'migration:status',
+        migrationsDir: './migrations',
+        json: true,
+        connect: makeConnect(mock.executor),
+        loadMigrations: () =>
+          Promise.resolve(makeMigrations([{ name: '1-New' }])),
+        inspectBookkeeping: notInitialized(),
+        io,
+      });
+
+      expect(io.stderrLines).toEqual([]);
+      const report = JSON.parse(io.stdoutLines.join('\n'));
+      expect(report.bookkeeping).toEqual({ exists: false, legacy: false });
+      expect(report.ready).toBe(false);
+      expect(report.state).toBe('pending');
+      expect(report.exitCode).toBe(1);
+      expect(report.migrations).toEqual([
+        {
+          name: '1-New',
+          applied: false,
+          appliedAt: null,
+          interrupted: false,
+          orphan: false,
+          contentChanged: false,
+        },
+      ]);
+      mock.expectNoSqlAtAll();
+    });
+  });
+
   describe('--json: machine-readable report on stdout only', () => {
     it('pending state', async () => {
-      const mock = makeReadonlyExecutor([]);
+      const mock = makeRecordingExecutor();
       const io = makeIo();
 
       await runMigrationVerification({
@@ -355,6 +540,7 @@ describe('runMigrationVerification (#24)', () => {
         connect: makeConnect(mock.executor),
         loadMigrations: () =>
           Promise.resolve(makeMigrations([{ name: '1-New' }])),
+        inspectBookkeeping: makeInspect(),
         io,
       });
 
@@ -373,6 +559,7 @@ describe('runMigrationVerification (#24)', () => {
         interrupted: [],
         modified: [],
         orphaned: [],
+        bookkeeping: { exists: true, legacy: false },
         schema: { checked: false },
       });
       expect(report.migrations).toEqual([
@@ -388,9 +575,7 @@ describe('runMigrationVerification (#24)', () => {
     });
 
     it('interrupted: applied=false, explicit flags (#101)', async () => {
-      const mock = makeReadonlyExecutor([
-        { name: '1-Halfway', timestamp: 12345, state: 'started', hash: 'h' },
-      ]);
+      const mock = makeRecordingExecutor();
       const io = makeIo();
 
       await runMigrationVerification({
@@ -400,6 +585,14 @@ describe('runMigrationVerification (#24)', () => {
         connect: makeConnect(mock.executor),
         loadMigrations: () =>
           Promise.resolve(makeMigrations([{ name: '1-Halfway', hash: 'h' }])),
+        inspectBookkeeping: makeInspect([
+          {
+            name: '1-Halfway',
+            timestamp: 12345,
+            state: 'started',
+            hash: 'h',
+          },
+        ]),
         io,
       });
 
@@ -422,7 +615,7 @@ describe('runMigrationVerification (#24)', () => {
     });
 
     it('schema drift: structured issues included', async () => {
-      const mock = makeReadonlyExecutor([]);
+      const mock = makeRecordingExecutor();
       const io = makeIo();
 
       await runMigrationVerification({
@@ -432,6 +625,7 @@ describe('runMigrationVerification (#24)', () => {
         json: true,
         connect: makeConnect(mock.executor),
         loadMigrations: () => Promise.resolve([]),
+        inspectBookkeeping: makeInspect(),
         verifySchema: stubVerifySchema,
         io,
       });
@@ -480,44 +674,17 @@ describe('runMigrationVerification (#24)', () => {
     expect(io.stdoutLines).toEqual([]);
   });
 
-  it('status query failure is also a command error (exit 5)', async () => {
-    const failingExecutor: any = jest.fn((strings: TemplateStringsArray) => {
-      const sql = strings[0];
-      const query: any = {
-        parameter() {
-          return query;
-        },
-        timeout() {
-          return query;
-        },
-        signal() {
-          return query;
-        },
-        cancel() {
-          return query;
-        },
-        then(
-          onFulfilled?: ((value: unknown[][]) => unknown) | null,
-          onRejected?: ((reason: unknown) => unknown) | null,
-        ) {
-          return Promise.resolve()
-            .then(() => {
-              if (sql.startsWith('SELECT')) {
-                throw new Error('table ydb_migrations is unavailable');
-              }
-              return [] as unknown[][];
-            })
-            .then(onFulfilled ?? undefined, onRejected ?? undefined);
-        },
-      };
-      return query;
-    });
+  it('bookkeeping inspection failure is also a command error (exit 5)', async () => {
+    const inspect = jest.fn((): Promise<MigrationBookkeepingSnapshot> =>
+      Promise.reject(new Error('table ydb_migrations is unavailable')),
+    );
 
     const error = await runMigrationVerification({
       command: 'migration:check',
       migrationsDir: './migrations',
-      connect: makeConnect(failingExecutor),
+      connect: makeConnect(makeRecordingExecutor().executor),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: inspect,
       io: makeIo(),
     }).catch((e: unknown) => e);
 
@@ -526,7 +693,7 @@ describe('runMigrationVerification (#24)', () => {
   });
 
   it('closes the connection exactly once', async () => {
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const closed = { count: 0 };
 
     await runMigrationVerification({
@@ -534,6 +701,7 @@ describe('runMigrationVerification (#24)', () => {
       migrationsDir: './migrations',
       connect: makeConnect(mock.executor, closed),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: makeInspect(),
       io: makeIo(),
     });
 
@@ -541,7 +709,7 @@ describe('runMigrationVerification (#24)', () => {
   });
 
   it('entities are passed to schema verification; absent config skips it', async () => {
-    const mock = makeReadonlyExecutor([]);
+    const mock = makeRecordingExecutor();
     const verifySchema = jest.fn(
       (
         _driver: Driver,
@@ -555,10 +723,11 @@ describe('runMigrationVerification (#24)', () => {
       migrationsDir: './migrations',
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: makeInspect(),
       io: makeIo(),
     });
 
-    // Без entities схема не проверяется вовсе (нет вызова verifySchema по умолчанию).
+    // Без entities схема не проверяется вовсе.
     const io2 = makeIo();
     const entities = [class Photos {}];
     await runMigrationVerification({
@@ -567,6 +736,7 @@ describe('runMigrationVerification (#24)', () => {
       entities,
       connect: makeConnect(mock.executor),
       loadMigrations: () => Promise.resolve([]),
+      inspectBookkeeping: makeInspect(),
       verifySchema,
       io: io2,
     });

@@ -256,6 +256,12 @@ export type {
   MigrationCheckState,
   MigrationCheckVerdict,
 } from './migrations/migration-check.js';
+export { readBookkeepingSnapshot } from './migrations/migration-bookkeeping.js';
+export type {
+  MigrationBookkeepingSnapshot,
+  MigrationBookkeepingDeps,
+} from './migrations/migration-bookkeeping.js';
+export { computeMigrationStatuses } from './migrations/migration-runner.js';
 export {
   planMigration,
   renderMigrationFile,

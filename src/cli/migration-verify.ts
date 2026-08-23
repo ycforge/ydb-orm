@@ -2,9 +2,15 @@
  * Единый workflow проверки миграций для `migration:check` и
  * `migration:status` (#24).
  *
- * Команда только ЧИТАЕТ состояние (SELECT из ydb_migrations +
- * DescribeTable для сущностей) — никаких применений миграций и изменений
- * схемы. Различимые состояния и exit-коды см. в
+ * Команда только ЧИТАЕТ состояние и не выполняет НИКАКОГО DDL:
+ *  - существование таблицы учёта `ydb_migrations` определяется через
+ *    DescribeTable (readBookkeepingSnapshot); если её нет — база считается
+ *    не инициализированной («не применено ничего»), таблица НЕ создаётся;
+ *  - записи читаются голым SELECT (без CREATE/ALTER, колонки легаси-таблиц
+ *    учитываются без их изменения);
+ *  - для сущностей из конфига — DescribeTable через YdbSchemaSyncer.verify.
+ *
+ * Различимые состояния и exit-коды см. в
  * migrations/migration-check.ts и cli/exit-codes.ts.
  *
  * Вывод:
@@ -18,11 +24,16 @@
 import type { Driver } from '@ydbjs/core';
 import { YdbExecutor } from '../core/interfaces.js';
 import {
-  YdbMigrationRunner,
+  computeMigrationStatuses,
+  migrationName,
   type YdbMigrationStatus,
 } from '../migrations/migration-runner.js';
 import { loadMigrationsFromDir } from '../migrations/migration-loader.js';
 import type { YdbMigration } from '../migrations/migration.interface.js';
+import {
+  readBookkeepingSnapshot,
+  type MigrationBookkeepingSnapshot,
+} from '../migrations/migration-bookkeeping.js';
 import {
   evaluateMigrationCheck,
   migrationStateExitCode,
@@ -74,6 +85,16 @@ export interface RunMigrationVerificationOptions {
   }>;
   /** Шов для тестов (по умолчанию — загрузка из директории). */
   loadMigrations?: ((dir: string) => Promise<YdbMigration[]>) | undefined;
+  /**
+   * Read-only чтение таблицы учёта миграций (#24): DescribeTable + голый
+   * SELECT, без CREATE/ALTER. Шов для тестов.
+   */
+  inspectBookkeeping?:
+    | ((deps: {
+        driver: Driver;
+        executor: YdbExecutor;
+      }) => Promise<MigrationBookkeepingSnapshot>)
+    | undefined;
   /** Шов для тестов (по умолчанию — YdbSchemaSyncer.verify). */
   verifySchema?:
     | ((
@@ -150,6 +171,11 @@ export function renderStatusLine(status: YdbMigrationStatus): string {
  * Выполняет проверку и рендерит отчёт. Бросает исходную ошибку,
  * помеченную exit-кодом EXIT_COMMAND_ERROR (5): цепочка cause сохраняется.
  * Возвращает вердикт — вызывающий код ставит process.exitCode.
+ *
+ * Read-only контракт (#24): состояние таблицы учёта читается через
+ * readBookkeepingSnapshot (DescribeTable + голый SELECT, без DDL);
+ * YdbMigrationRunner.status с его ensureMigrationsTable() здесь
+ * не вызывается никогда.
  */
 export async function runMigrationVerification(
   options: RunMigrationVerificationOptions,
@@ -163,18 +189,27 @@ export async function runMigrationVerification(
     streams,
     connect,
     loadMigrations = loadMigrationsFromDir,
+    inspectBookkeeping = readBookkeepingSnapshot,
     verifySchema = defaultVerifySchema,
   } = options;
 
   try {
     const { driver, executor, close } = await connect();
     let statuses: YdbMigrationStatus[];
+    let snapshot: MigrationBookkeepingSnapshot;
     let schemaIssues: YdbSchemaIssue[] | undefined;
 
     try {
-      const runner = new YdbMigrationRunner(executor);
       const migrations = await loadMigrations(migrationsDir);
-      statuses = await runner.status(migrations);
+      snapshot = await inspectBookkeeping({ driver, executor });
+      statuses = snapshot.exists
+        ? computeMigrationStatuses(migrations, snapshot.records)
+        : // Таблицы учёта ещё нет: применено не было ничего — все
+          // миграции из файлов считаются ожидающими; таблица НЕ создаётся.
+          migrations.map((migration) => ({
+            name: migrationName(migration),
+            applied: false,
+          }));
       if (entities?.length) {
         schemaIssues = await verifySchema(driver, executor, entities);
       }
@@ -185,9 +220,17 @@ export async function runMigrationVerification(
     const verdict = evaluateMigrationCheck(statuses, { schemaIssues });
 
     if (json) {
-      renderJson(io, command, verdict, statuses, schemaIssues);
+      renderJson(io, command, verdict, statuses, schemaIssues, snapshot);
     } else {
-      renderText(io, streams, command, verdict, statuses, schemaIssues);
+      renderText(
+        io,
+        streams,
+        command,
+        verdict,
+        statuses,
+        schemaIssues,
+        snapshot,
+      );
     }
 
     return verdict;
@@ -217,13 +260,16 @@ interface JsonMigrationEntry {
 /**
  * Машинночитаемый отчёт (#24): стабильная схема, детерминированный порядок
  * ключей и строк, ISO-даты, булевы флаги всегда явные. Парсить нужно это,
- * а не цвет/формулировки текстового режима.
+ * а не цвет/формулировки текстового режима. Блок `bookkeeping` различает
+ * «не инициализированную» базу (таблицы учёта ещё нет) от полностью
+ * применённой.
  */
 export function buildJsonReport(
   command: MigrationVerifyCommand,
   verdict: MigrationCheckVerdict,
   statuses: YdbMigrationStatus[],
   schemaIssues: YdbSchemaIssue[] | undefined,
+  bookkeeping: Pick<MigrationBookkeepingSnapshot, 'exists' | 'legacy'>,
 ): Record<string, unknown> {
   const migrations: JsonMigrationEntry[] = statuses.map((s) => ({
     name: s.name,
@@ -248,6 +294,10 @@ export function buildJsonReport(
     modified: [...verdict.modified],
     orphaned: [...verdict.orphaned],
     migrations,
+    bookkeeping: {
+      exists: bookkeeping.exists,
+      legacy: bookkeeping.legacy,
+    },
     schema:
       schemaIssues === undefined
         ? { checked: false }
@@ -269,10 +319,11 @@ function renderJson(
   verdict: MigrationCheckVerdict,
   statuses: YdbMigrationStatus[],
   schemaIssues: YdbSchemaIssue[] | undefined,
+  bookkeeping: Pick<MigrationBookkeepingSnapshot, 'exists' | 'legacy'>,
 ): void {
   io.stdout(
     JSON.stringify(
-      buildJsonReport(command, verdict, statuses, schemaIssues),
+      buildJsonReport(command, verdict, statuses, schemaIssues, bookkeeping),
       null,
       2,
     ),
@@ -286,10 +337,20 @@ function renderText(
   verdict: MigrationCheckVerdict,
   statuses: YdbMigrationStatus[],
   schemaIssues: YdbSchemaIssue[] | undefined,
+  bookkeeping: Pick<MigrationBookkeepingSnapshot, 'exists' | 'legacy'>,
 ): void {
   // Обёртки-стрелки: не отвязываем методы io от объекта (#103-стиль lint).
   const out = (line: string) => io.stdout(line);
   const err = (line: string) => io.stderr(line);
+
+  if (!bookkeeping.exists) {
+    // Свежая база: таблицы учёта ещё нет. Информация — в stdout; таблица
+    // НЕ создаётся, состояние считается «не применено ничего».
+    out(
+      `Bookkeeping table ydb_migrations does not exist yet — ` +
+        `no migrations have been applied (nothing was created).`,
+    );
+  }
 
   if (command === 'migration:check') {
     // Сводка вместо полного списка: полный список — migration:status.
