@@ -39,6 +39,7 @@ import {
 import { CredentialsProvider } from '@ydbjs/auth';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbTransactionManager } from '../transaction/transaction.manager.js';
+import { configureTransactionContext } from '../transaction/transaction-context.js';
 import { YdbSchemaSyncer } from '../schema/schema-sync.js';
 import {
   createEntityScope,
@@ -271,6 +272,10 @@ export class YdbCoreModule {
             validateYdbModuleOptions(opts);
             claimCoreModuleInit(state);
             state.options = opts;
+            // Настройки транзакций (#98): глобальные для процесса, применяются
+            // при инициализации модуля — даже если YDB_QUERY переопределён
+            // извне (тесты), конфигурация ambient/warn не теряется.
+            configureTransactionContext(opts.transactions);
             return opts;
           },
           inject: options.inject || [],
@@ -296,6 +301,8 @@ export class YdbCoreModule {
           validateYdbModuleOptions(opts);
           claimCoreModuleInit(state);
           state.options = opts;
+          // См. комментарий выше (#98).
+          configureTransactionContext(opts.transactions);
           return opts;
         },
         inject,

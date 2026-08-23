@@ -56,6 +56,21 @@ export interface YdbModuleOptions {
    * Логирует SQL, замаскированные параметры и длительность.
    */
   logQueries?: boolean | QueryLogger;
+  /**
+   * Настройки транзакций (#98):
+   * - ambient — включить ambient-контекст транзакций (AsyncLocalStorage):
+   *   операции репозиториев внутри runInTransaction() без явного { trx }
+   *   автоматически используют активную транзакцию. По умолчанию выключено.
+   * - warnOutsideTransaction — предупреждать (console.warn), когда запрос
+   *   выполняется вне какой бы то ни было транзакции. По умолчанию выключено
+   *   (чтобы не шуметь); включайте осознанно, например в dev-окружении.
+   */
+  transactions?: YdbTransactionsSettings;
+}
+
+export interface YdbTransactionsSettings {
+  ambient?: boolean;
+  warnOutsideTransaction?: boolean;
 }
 
 export interface YdbOptionsFactory {
@@ -77,9 +92,42 @@ export interface YdbQuery {
   then: Promise<any>['then'];
 }
 
+/**
+ * Уровень изоляции транзакции YDB (см. TransactionExecuteOptions в @ydbjs/query).
+ */
+export type YdbIsolationLevel =
+  'serializableReadWrite' | 'snapshotReadOnly' | 'snapshotReadWrite';
+
+/**
+ * Опции исполнения транзакции (#98).
+ *
+ * - isolation — уровень изоляции YDB (по умолчанию 'serializableReadWrite' на
+ *   стороне SDK);
+ * - signal — ГЛОБАЛЬНЫЙ AbortSignal: отменяет операцию целиком, все попытки
+ *   (включая idempotent-retry); пробрасывается в SDK как есть;
+ * - timeout — таймаут в миллисекундах, действует НА КАЖДУЮ ПОПЫТКУ: при
+ *   idempotent-retry каждая попытка получает СВЕЖЕЕ окно таймаута, а не
+ *   истёкший дедлайн первой попытки. Полный дедлайн на всю операцию задаётся
+ *   явно: signal: AbortSignal.timeout(ms);
+ * - idempotent — разрешить SDK повторять тело транзакции при retryable-
+ *   ошибках. ВНИМАНИЕ: при повторе заново выполняется весь колбэк, поэтому
+ *   побочные эффекты и lifecycle hooks могут сработать больше одного раза.
+ */
+export interface YdbTransactionOptions {
+  isolation?: YdbIsolationLevel;
+  signal?: AbortSignal;
+  timeout?: number;
+  idempotent?: boolean;
+}
+
+/** Хэндл открытой (открываемой) транзакции. */
+export interface YdbTransactionHandle {
+  execute<T>(
+    fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
+  ): Promise<T>;
+}
+
 export interface YdbExecutor {
   (strings: TemplateStringsArray, ...args: any[]): YdbQuery;
-  transaction(): {
-    execute<T>(fn: (trx: YdbExecutor) => Promise<T>): Promise<T>;
-  };
+  transaction(options?: YdbTransactionOptions): YdbTransactionHandle;
 }

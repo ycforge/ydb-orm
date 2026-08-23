@@ -13,6 +13,10 @@ export type {
   YdbModuleAsyncOptions,
   YdbQuery,
   YdbExecutor,
+  YdbIsolationLevel,
+  YdbTransactionOptions,
+  YdbTransactionHandle,
+  YdbTransactionsSettings,
   QueryOptions,
   QueryLogger,
   QueryLogEntry,
@@ -193,6 +197,12 @@ export type {
 
 // Транзакции
 export { YdbTransactionManager } from './transaction/transaction.manager.js';
+export type { RunInTransactionOptions } from './transaction/transaction.manager.js';
+export {
+  configureTransactionContext,
+  getActiveTransaction,
+} from './transaction/transaction-context.js';
+export type { ActiveTransactionContext } from './transaction/transaction-context.js';
 
 // Миграции
 export type {
