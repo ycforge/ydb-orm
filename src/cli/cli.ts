@@ -11,7 +11,8 @@ import {
 import { getManyToManyJoinTables } from '../decorators/relation.decorators.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { connectCli, loadCliConfig } from './config.js';
-import { createEntityFile, createMigrationFile } from './generators.js';
+import { createMigrationFile } from './generators.js';
+import { runEntityCreateCommand } from './entity-wizard.js';
 import { renderCompletionScript } from './completion.js';
 import { renderSchemaDiff } from './diff.js';
 import { CliArgsError, formatError, parseArgs, CliArgs } from './args.js';
@@ -27,7 +28,9 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:check             Проверить, все ли миграции применены (exit 1 если нет)
   ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
-  ydb-orm entity:create <name>        Создать сущность
+  ydb-orm entity:create <name>        Создать сущность (в TTY — интерактивный мастер колонок:
+                                      имя → тип YDB → PK/encrypted/enum/date/TTL; вне TTY — шаблон
+                                      по умолчанию без чтения stdin; существующие файлы не перезаписываются)
   ydb-orm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
 
 Опции:
@@ -89,8 +92,20 @@ async function runCommand(args: CliArgs): Promise<void> {
   if (command === 'entity:create') {
     requireName(command, args.positional);
     const dir = args.dir ?? './src';
-    const created = createEntityFile(dir, args.positional as string);
-    console.log(`Entity created: ${created.filePath}`);
+    try {
+      await runEntityCreateCommand(args.positional as string, { dir });
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.name === 'PromptCancelledError' &&
+        process.exitCode === 130
+      ) {
+        // Отмена ввода (EOF/Ctrl+C/Ctrl+D) — чистый выход без записи файла:
+        // сообщение уже напечатано, стек не нужен.
+        return;
+      }
+      throw error;
+    }
     return;
   }
 
