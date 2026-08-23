@@ -3,6 +3,7 @@ import {
   YdbTableDescription,
   YdbTableTtl,
   checkTableSchema,
+  describePrimaryKeyMismatch,
   generateAddColumnsYql,
   generateAddIndexYql,
   generateCreateTableYql,
@@ -106,8 +107,11 @@ export function planMigration(
     const check = checkTableSchema(schema, current);
 
     if (!check.primaryKeyMatches) {
+      // #89: перестановка PK-колонок — тоже расхождение (порядок значим),
+      // но DDL не генерируем: PK в YDB не меняется, только ручная миграция.
       warnings.push(
-        `Table "${schema.tableName}": primary key mismatch — YDB cannot alter it, manual migration required`,
+        `Table "${schema.tableName}": ${describePrimaryKeyMismatch(check)} — ` +
+          `YDB cannot alter a primary key, manual migration required`,
       );
     }
     for (const mismatch of check.typeMismatches) {

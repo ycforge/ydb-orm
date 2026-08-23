@@ -76,6 +76,19 @@ class TestNoPkEntity extends YdbBaseEntity {
   name: string;
 }
 
+// #89: составной PK — порядок колонок значим при сравнении схем
+@YdbEntity('test_composite_pk')
+class TestCompositePkEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  tenant_id: string;
+
+  @YdbPrimaryColumn('Uuid')
+  id: string;
+
+  @YdbColumn('Int64')
+  amount: bigint;
+}
+
 @YdbEntity('test_json')
 class TestJsonEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -337,6 +350,21 @@ const description = (
   indexes,
   ...(ttl ? { ttl } : {}),
 });
+
+// #89: описание таблицы с составным PK; primaryKey передаётся явно,
+// чтобы проверять перестановки порядка
+const compositePkExpected = buildExpectedTableSchema(
+  meta(TestCompositePkEntity),
+);
+const compositePkDescription = (primaryKey: string[]): YdbTableDescription =>
+  description(
+    [
+      ['tenant_id', Type_PrimitiveTypeId.UTF8],
+      ['id', Type_PrimitiveTypeId.UUID],
+      ['amount', Type_PrimitiveTypeId.INT64],
+    ],
+    primaryKey,
+  );
 
 describe('entity registry', () => {
   it('registers classes decorated with @YdbEntity', () => {
@@ -863,6 +891,118 @@ describe('checkTableSchema', () => {
   });
 });
 
+describe('composite primary key comparison (#89)', () => {
+  it('passes for identical composite PKs', () => {
+    const check = checkTableSchema(
+      compositePkExpected,
+      compositePkDescription(['tenant_id', 'id']),
+    );
+
+    expect(check.primaryKeyMatches).toBe(true);
+    expect(check.primaryKeyOrderMismatch).toBe(false);
+    expect(check.missingPrimaryKeyColumns).toEqual([]);
+    expect(check.extraPrimaryKeyColumns).toEqual([]);
+  });
+
+  it('preserves behavior for identical single-column PKs', () => {
+    const check = checkTableSchema(
+      buildExpectedTableSchema(meta(TestUserEntity)),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['name', Type_PrimitiveTypeId.UTF8],
+          ['secret', Type_PrimitiveTypeId.STRING],
+          ['is_active', Type_PrimitiveTypeId.BOOL],
+          ['secret_bi', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+      ),
+    );
+
+    expect(check.primaryKeyMatches).toBe(true);
+    expect(check.missingPrimaryKeyColumns).toEqual([]);
+    expect(check.extraPrimaryKeyColumns).toEqual([]);
+    expect(check.primaryKeyOrderMismatch).toBe(false);
+  });
+
+  it('treats reordered composite PKs as different schemas', () => {
+    const check = checkTableSchema(
+      compositePkExpected,
+      compositePkDescription(['id', 'tenant_id']),
+    );
+
+    expect(check.primaryKeyMatches).toBe(false);
+    // Чистая перестановка: наборы колонок равны — диагностируется именно порядок
+    expect(check.primaryKeyOrderMismatch).toBe(true);
+    expect(check.missingPrimaryKeyColumns).toEqual([]);
+    expect(check.extraPrimaryKeyColumns).toEqual([]);
+  });
+
+  it('distinguishes missing PK columns from reorder', () => {
+    const check = checkTableSchema(
+      compositePkExpected,
+      compositePkDescription(['tenant_id']),
+    );
+
+    expect(check.primaryKeyMatches).toBe(false);
+    expect(check.primaryKeyOrderMismatch).toBe(false);
+    expect(check.missingPrimaryKeyColumns).toEqual(['id']);
+    expect(check.extraPrimaryKeyColumns).toEqual([]);
+  });
+
+  it('distinguishes extra PK columns from reorder', () => {
+    const check = checkTableSchema(
+      compositePkExpected,
+      compositePkDescription(['tenant_id', 'id', 'amount']),
+    );
+
+    expect(check.primaryKeyMatches).toBe(false);
+    expect(check.primaryKeyOrderMismatch).toBe(false);
+    expect(check.missingPrimaryKeyColumns).toEqual([]);
+    expect(check.extraPrimaryKeyColumns).toEqual(['amount']);
+  });
+
+  it('reports reordered PK via diffSchemas with both orders', () => {
+    const issues = diffSchemas(
+      [compositePkExpected],
+      [compositePkDescription(['id', 'tenant_id'])],
+    );
+
+    expect(issues).toContainEqual({
+      tableName: 'test_composite_pk',
+      kind: 'primary-key-mismatch',
+      message:
+        'Table "test_composite_pk" primary key column order mismatch: ' +
+        'expected [tenant_id, id], actual [id, tenant_id]',
+    });
+  });
+
+  it('reports missing and extra PK columns distinctly in issues', () => {
+    const missingIssues = checkToIssues(
+      checkTableSchema(compositePkExpected, compositePkDescription(['id'])),
+    );
+    expect(missingIssues).toContainEqual({
+      tableName: 'test_composite_pk',
+      kind: 'primary-key-mismatch',
+      message:
+        'Table "test_composite_pk" primary key mismatch (missing [tenant_id])',
+    });
+
+    const extraIssues = checkToIssues(
+      checkTableSchema(
+        compositePkExpected,
+        compositePkDescription(['id', 'tenant_id', 'amount']),
+      ),
+    );
+    expect(extraIssues).toContainEqual({
+      tableName: 'test_composite_pk',
+      kind: 'primary-key-mismatch',
+      message:
+        'Table "test_composite_pk" primary key mismatch (unexpected [amount])',
+    });
+  });
+});
+
 describe('checkTableSchema TTL (#88)', () => {
   const ttlExpected = buildExpectedTableSchema(meta(TestSessionEntity));
 
@@ -1279,6 +1419,40 @@ describe('YdbSchemaSyncer', () => {
     await expect(syncer.sync([TestUserEntity])).rejects.toThrow(
       /primary key mismatch/,
     );
+  });
+
+  it('verify reports reordered composite PK as a mismatch (#89)', async () => {
+    mockDescribe(compositePkDescription(['id', 'tenant_id']));
+
+    const issues = await syncer.verify([TestCompositePkEntity]);
+
+    expect(issues).toEqual([
+      {
+        tableName: 'test_composite_pk',
+        kind: 'primary-key-mismatch',
+        message:
+          'Table "test_composite_pk" primary key column order mismatch: ' +
+          'expected [tenant_id, id], actual [id, tenant_id]',
+      },
+    ]);
+    expect(executedSql()).toEqual([]);
+  });
+
+  it('verify passes for identical composite PKs (#89)', async () => {
+    mockDescribe(compositePkDescription(['tenant_id', 'id']));
+
+    const issues = await syncer.verify([TestCompositePkEntity]);
+
+    expect(issues).toEqual([]);
+  });
+
+  it('sync throws on reordered composite PK and executes no DDL (#89)', async () => {
+    mockDescribe(compositePkDescription(['id', 'tenant_id']));
+
+    await expect(syncer.sync([TestCompositePkEntity])).rejects.toThrow(
+      /primary key mismatch \(expected \[tenant_id, id\], actual \[id, tenant_id\]\)/,
+    );
+    expect(executedSql()).toEqual([]);
   });
 
   it('throws on index columns mismatch', async () => {

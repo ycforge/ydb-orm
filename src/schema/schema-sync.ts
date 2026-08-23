@@ -94,6 +94,24 @@ export interface SchemaCheckResult {
   /** Лишние колонки в БД (не удаляются автоматически — потеря данных). */
   extraColumns: string[];
   primaryKeyMatches: boolean;
+  /**
+   * Ожидаемый PK из метаданных сущности — копия входа, нужна для
+   * диагностики перестановок порядка (#89).
+   */
+  expectedPrimaryKey: string[];
+  /** Фактический PK из DescribeTable (для диагностики порядка, #89). */
+  actualPrimaryKey: string[];
+  /** Ожидаемые PK-колонки, которых нет в PK БД (#89). */
+  missingPrimaryKeyColumns: string[];
+  /** PK-колонки БД, не объявленные как PK в сущности (#89). */
+  extraPrimaryKeyColumns: string[];
+  /**
+   * Чистая перестановка: наборы PK-колонок совпадают, но порядок
+   * различается (#89). В YDB порядок колонок PK определяет
+   * партиционирование и сортировку диапазонов, поэтому [tenant, id] и
+   * [id, tenant] — принципиально разные таблицы.
+   */
+  primaryKeyOrderMismatch: boolean;
   /** Индексы, которые есть в метаданных, но нет в БД. */
   missingIndexes: ExpectedIndex[];
   /** Индексы, которые есть в БД, но нет в метаданных. */
@@ -557,9 +575,24 @@ export function checkTableSchema(
   ].filter((name) => !expectedColumns.has(name));
   const uniqueExtraColumns = [...new Set(extraColumns)];
 
+  // Порядок колонок PK значим (#89): в YDB он определяет партиционирование
+  // и сортировку диапазонов, поэтому [tenant, id] и [id, tenant] — разные
+  // таблицы. Сравниваем поэлементно и никогда — как множество.
   const primaryKeyMatches =
     expected.primaryKey.length === existing.primaryKey.length &&
-    expected.primaryKey.every((pk) => existing.primaryKey.includes(pk));
+    expected.primaryKey.every((pk, i) => existing.primaryKey[i] === pk);
+  const missingPrimaryKeyColumns = expected.primaryKey.filter(
+    (pk) => !existing.primaryKey.includes(pk),
+  );
+  const extraPrimaryKeyColumns = existing.primaryKey.filter(
+    (pk) => !expected.primaryKey.includes(pk),
+  );
+  // Чистая перестановка: наборы равны, порядок различается. Если есть
+  // отсутствующие или лишние PK-колонки, случай уже покрыт их списками.
+  const primaryKeyOrderMismatch =
+    !primaryKeyMatches &&
+    missingPrimaryKeyColumns.length === 0 &&
+    extraPrimaryKeyColumns.length === 0;
 
   const existingIndexes = existing.indexes ?? [];
 
@@ -630,6 +663,11 @@ export function checkTableSchema(
     typeMismatches,
     extraColumns: uniqueExtraColumns,
     primaryKeyMatches,
+    expectedPrimaryKey: [...expected.primaryKey],
+    actualPrimaryKey: [...existing.primaryKey],
+    missingPrimaryKeyColumns,
+    extraPrimaryKeyColumns,
+    primaryKeyOrderMismatch,
     missingIndexes,
     extraIndexes,
     uniqueMismatches,
@@ -638,6 +676,32 @@ export function checkTableSchema(
     ttlMismatches,
     extraTtl,
   };
+}
+
+/**
+ * Человекочитаемое описание расхождения первичного ключа (#89):
+ * различает чистую перестановку PK-колонок (порядок значим в YDB) и
+ * отсутствующие/лишние PK-колонки. Используется в issues verify/diffSchemas
+ * и в предупреждениях плана миграций.
+ */
+export function describePrimaryKeyMismatch(check: SchemaCheckResult): string {
+  if (check.primaryKeyOrderMismatch) {
+    return (
+      'primary key column order mismatch: ' +
+      `expected [${check.expectedPrimaryKey.join(', ')}], ` +
+      `actual [${check.actualPrimaryKey.join(', ')}]`
+    );
+  }
+  const parts: string[] = [];
+  if (check.missingPrimaryKeyColumns.length) {
+    parts.push(`missing [${check.missingPrimaryKeyColumns.join(', ')}]`);
+  }
+  if (check.extraPrimaryKeyColumns.length) {
+    parts.push(`unexpected [${check.extraPrimaryKeyColumns.join(', ')}]`);
+  }
+  return parts.length
+    ? `primary key mismatch (${parts.join(', ')})`
+    : 'primary key mismatch';
 }
 
 /**
@@ -651,7 +715,7 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
     issues.push({
       tableName: check.tableName,
       kind: 'primary-key-mismatch',
-      message: `Table "${check.tableName}" primary key does not match entity`,
+      message: `Table "${check.tableName}" ${describePrimaryKeyMismatch(check)}`,
     });
   }
   for (const [column] of check.missingColumns) {
