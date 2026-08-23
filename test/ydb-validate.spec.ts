@@ -3,7 +3,14 @@ import { jest } from '@jest/globals';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
-import type { YdbValidationProvider } from '../src/index.js';
+import type {
+  YdbValidationProvider,
+  YdbValidationErrorItem,
+} from '../src/index.js';
+import {
+  YdbEntityValidationError,
+  normalizeValidationIssues,
+} from '../src/index.js';
 
 function setupEncryption() {
   const provider = new TestOnlyEncryptionProvider();
@@ -22,7 +29,7 @@ describe('YdbValidate — валидация перед записью', () => {
     UserEntity.setExecutor(undefined as any);
     UserEntity.setEncryptionProvider(undefined);
     UserEntity.setBlindIndexProvider(undefined);
-    UserEntity.setValidationProvider(undefined as any);
+    UserEntity.setValidationProvider(undefined);
   });
 
   describe('без validationProvider — обратная совместимость', () => {
@@ -151,7 +158,7 @@ describe('YdbValidate — валидация перед записью', () => {
       );
       const mockProvider: YdbValidationProvider = { validate: validateFn };
       UserEntity.setValidationProvider(mockProvider);
-      UserEntity.setValidationProvider(undefined as any);
+      UserEntity.setValidationProvider(undefined);
 
       const user = new UserEntity();
       user.full_name = 'No Validation';
@@ -159,6 +166,123 @@ describe('YdbValidate — валидация перед записью', () => {
       await UserEntity.save(user);
       expect(user.uuid).toBeDefined();
       expect(validateFn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('структурированные ошибки валидации (#95)', () => {
+    it('save выбрасывает YdbEntityValidationError с сохранённой структурой', async () => {
+      setupEncryption();
+      const { queries } = setupMock();
+
+      const structured: YdbValidationErrorItem[] = [
+        {
+          property: 'full_name',
+          constraint: 'minLength',
+          message: 'full_name must be longer than or equal to 2 characters',
+          value: 'X',
+        },
+        {
+          property: 'email_encrypted',
+          constraint: 'isEmail',
+          message: 'email must be an email',
+          value: 'not-an-email',
+        },
+      ];
+      const mockProvider: YdbValidationProvider = {
+        validate: jest.fn(() => Promise.resolve(structured)),
+      };
+      UserEntity.setValidationProvider(mockProvider);
+
+      const user = new UserEntity();
+      user.full_name = 'X';
+
+      let caught: unknown;
+      await UserEntity.save(user).catch((e) => (caught = e));
+
+      expect(caught).toBeInstanceOf(YdbEntityValidationError);
+      const err = caught as YdbEntityValidationError;
+      expect(err.name).toBe('YdbEntityValidationError');
+      expect(err.entityName).toBe('UserEntity');
+
+      // Структура сохранена: property/constraint/message/value не схлопнуты
+      expect(err.errors).toEqual([
+        normalizeValidationIssues(structured)[0],
+        normalizeValidationIssues(structured)[1],
+      ]);
+      expect(err.errors[0].property).toBe('full_name');
+      expect(err.errors[0].constraint).toBe('minLength');
+      expect(err.errors[0].value).toBe('X');
+
+      // Сообщение человекочитаемо и начинается с прежнего префикса
+      expect(err.message).toContain('Validation failed for UserEntity:');
+      expect(err.message).toContain(
+        'full_name: full_name must be longer than or equal to 2 characters [minLength]',
+      );
+
+      // Запись не выполнена
+      expect(queries).toHaveLength(0);
+    });
+
+    it('insertMany выбрасывает структурную ошибку на невалидной сущности', async () => {
+      setupEncryption();
+      const { queries } = setupMock();
+
+      const mockProvider: YdbValidationProvider = {
+        validate: jest.fn((entity: any) =>
+          Promise.resolve(
+            entity.full_name
+              ? []
+              : [
+                  {
+                    property: 'full_name',
+                    constraint: 'isNotEmpty',
+                    message: 'full_name should not be empty',
+                    value: entity.full_name,
+                  },
+                ],
+          ),
+        ),
+      };
+      UserEntity.setValidationProvider(mockProvider);
+
+      const valid = new UserEntity();
+      valid.full_name = 'Valid';
+      const invalid = new UserEntity();
+
+      const err = await UserEntity.insertMany([valid, invalid]).catch((e) => e);
+      expect(err).toBeInstanceOf(YdbEntityValidationError);
+      expect((err as YdbEntityValidationError).errors).toEqual([
+        {
+          property: 'full_name',
+          constraint: 'isNotEmpty',
+          message: 'full_name should not be empty',
+          value: undefined,
+        },
+      ]);
+      expect(queries).toHaveLength(0);
+    });
+
+    it('legacy-провайдер со строками сохраняет прежний формат сообщения', async () => {
+      setupEncryption();
+      setupMock();
+
+      const mockProvider: YdbValidationProvider = {
+        validate: () => Promise.resolve(['email is required']),
+      };
+      UserEntity.setValidationProvider(mockProvider);
+
+      const user = new UserEntity();
+      user.full_name = 'Legacy';
+
+      const err = await UserEntity.save(user).catch((e) => e);
+      expect(err).toBeInstanceOf(YdbEntityValidationError);
+      // Обратная совместимость: строки нормализуются в { property, constraint, message }
+      expect((err as YdbEntityValidationError).message).toBe(
+        'Validation failed for UserEntity: email is required',
+      );
+      expect((err as YdbEntityValidationError).errors).toEqual([
+        { property: '', constraint: '', message: 'email is required' },
+      ]);
     });
   });
 });

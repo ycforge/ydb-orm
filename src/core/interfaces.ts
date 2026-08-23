@@ -4,6 +4,7 @@ import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { QueryLogger } from './query-logger.js';
 
 export type { QueryOptions } from './query-options.js';
@@ -27,6 +28,11 @@ export interface YdbModuleOptions {
   };
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  /**
+   * Провайдер валидации сущностей перед записью (save/insert/insertMany/update).
+   * Например, ClassValidatorProvider. Без него валидация не выполняется.
+   */
+  validationProvider?: YdbValidationProvider;
   /**
    * Версия генерируемых UUID для первичных ключей: v7 (по умолчанию,
    * время-сортируемые) или v4 (случайные, для переходного периода).
