@@ -89,6 +89,31 @@ class BatchTagEntity extends YdbBaseEntity {
   photos?: any[];
 }
 
+// Составные PK для дедупликации между чанками fetchByColumnIn (#86).
+@YdbEntity('batch86_docs')
+class BatchDocEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  tenant: string;
+
+  @YdbPrimaryColumn('Utf8')
+  code: string;
+
+  @YdbColumn('Utf8')
+  owner: string;
+}
+
+@YdbEntity('batch86_assets')
+class BatchAssetEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Int64')
+  num: bigint;
+
+  @YdbPrimaryColumn('Bytes')
+  blob: Uint8Array;
+
+  @YdbColumn('Utf8')
+  owner: string;
+}
+
 function makeUsers(count: number): BatchUserEntity[] {
   return Array.from({ length: count }, (_, i) => {
     const user = new BatchUserEntity();
@@ -537,6 +562,83 @@ describe('#86: guard-ы fetchByColumnIn', () => {
     expect(mock.queries).toHaveLength(4);
     const ids = result.map((e) => e.uuid);
     expect(ids).toEqual(['x1', 'x2', 'x3']); // полный результат, x1 один раз
+  });
+});
+
+describe('#86: дедупликация составных PK между чанками', () => {
+  it('составные PK с символом-разделителем "|" не склеиваются в один ключ', async () => {
+    const mock = createMockExecutor(
+      [
+        [[{ tenant: 'a|b', code: 'c', owner: 'o0' }]],
+        [
+          [
+            { tenant: 'a', code: 'b|c', owner: 'o1' },
+            { tenant: 'a|b', code: 'c', owner: 'o0' }, // дубль из чанка 1
+          ],
+        ],
+      ],
+      { sequential: true },
+    );
+    BatchDocEntity.setExecutor(mock.executor);
+
+    // > MAX_IN_CLAUSE_VALUES значений → гарантированные два чанка.
+    const values = Array.from(
+      { length: MAX_IN_CLAUSE_VALUES + 50 },
+      (_, i) => `o${i}`,
+    );
+
+    const result = await getOrCreateRepository(
+      BatchDocEntity,
+    ).persistence.fetchByColumnIn('owner', values);
+
+    expect(mock.queries).toHaveLength(2);
+
+    // Регрессия: ключи ('a|b','c') и ('a','b|c') при конкатенации через '|'
+    // совпадали ('a|b|c'), и вторая сущность терялась.
+    expect(result.map((d) => [d.tenant, d.code])).toEqual([
+      ['a|b', 'c'],
+      ['a', 'b|c'],
+    ]);
+  });
+
+  it('bigint и Bytes компоненты PK кодируются без коллизий; идентичные дедуплицируются', async () => {
+    const bytesOf = (...bytes: number[]) => new Uint8Array(bytes);
+
+    const mock = createMockExecutor(
+      [
+        [[{ num: 1n, blob: bytesOf(1, 2), owner: 'o0' }]],
+        [
+          [
+            { num: 1n, blob: bytesOf(1, 2, 3), owner: 'o1' },
+            { num: 2n, blob: bytesOf(1, 2), owner: 'o2' },
+            { num: 1n, blob: bytesOf(1, 2), owner: 'o3' }, // полный дубликат
+          ],
+        ],
+      ],
+      { sequential: true },
+    );
+    BatchAssetEntity.setExecutor(mock.executor);
+
+    const values = Array.from(
+      { length: MAX_IN_CLAUSE_VALUES + 20 },
+      (_, i) => `o${i}`,
+    );
+
+    const result = await getOrCreateRepository(
+      BatchAssetEntity,
+    ).persistence.fetchByColumnIn('owner', values);
+
+    expect(mock.queries).toHaveLength(2);
+
+    // Типы и границы компонентов сохраняются точно: bigint не путается со
+    // строкой '1', а Bytes кодируются побайтово — без опоры на
+    // String()-представления (у TypedArray это join(','), у bigint — '1'),
+    // которые теряют тип значения.
+    expect(result.map((a) => [a.num.toString(), [...a.blob]])).toEqual([
+      ['1', [1, 2]],
+      ['1', [1, 2, 3]],
+      ['2', [1, 2]],
+    ]);
   });
 });
 
