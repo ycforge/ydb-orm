@@ -23,6 +23,13 @@ export interface PlannedMigration {
   up: string[];
   down: string[];
   warnings: string[];
+  /**
+   * Предположения о переименовании колонок (#23): НЕ выполняются и не
+   * применяются автоматически — рендерятся комментариями внутри up()/down()
+   * сгенерированного файла. Для каждой пары соответствующие ADD/DROP
+   * в up/down подавляются: применение переименования — явное решение.
+   */
+  suggestions?: string[];
 }
 
 /** Восстанавливает YdbTtlMetadata из фактических настроек TTL в БД. */
@@ -83,6 +90,14 @@ function validatePlanInputs(
  *  - расхождение существующего индекса (unique/колонки) только
  *    диагностируется — пересоздание индекса небезопасно делать молча;
  *  - PK, типы колонок и лишние колонки не меняются (как раньше).
+ *
+ * Вероятные переименования (#23): если ровно одна лишняя колонка БД и одна
+ * новая колонка сущности совпадают по типу и не затрагивают PK/индексы/TTL/
+ * blind-index, план НЕ генерирует для этой пары ADD/DROP, а кладёт
+ * `ALTER TABLE ... RENAME COLUMN ... TO ...` в suggestions (комментарий
+ * в файле миграции). YQL пока не поддерживает RENAME COLUMN — применение
+ * всегда ручное. При малейшей неоднозначности (несколько кандидатов,
+ * участие ключевых колонок и т.п.) поведение прежнее: ADD/DROP + warning.
  */
 export function planMigration(
   expected: ExpectedTableSchema[],
@@ -93,6 +108,7 @@ export function planMigration(
   const up: string[] = [];
   const down: string[] = [];
   const warnings: string[] = [];
+  const suggestions: string[] = [];
 
   for (let i = 0; i < expected.length; i++) {
     const schema = expected[i];
@@ -127,13 +143,35 @@ export function planMigration(
       );
     }
 
+    // #23: вероятное переименование — только подсказка, ADD/DROP для пары
+    // подавляются. Лишняя колонка по-прежнему не удаляется автоматически.
+    const renamedTargets = new Set(
+      check.likelyRenames.map((rename) => rename.to),
+    );
+    for (const rename of check.likelyRenames) {
+      suggestions.push(
+        `ALTER TABLE ${quoteIdentifier(schema.tableName)} RENAME COLUMN ` +
+          `${quoteIdentifier(rename.from)} TO ${quoteIdentifier(rename.to)}`,
+      );
+      warnings.push(
+        `Table "${schema.tableName}" column "${rename.from}" may have been renamed ` +
+          `to "${rename.to}" — ADD/DROP suppressed for this pair, ` +
+          `see SUGGESTION in the generated migration`,
+      );
+    }
+
     if (check.missingColumns.length) {
-      up.push(generateAddColumnsYql(schema.tableName, check.missingColumns));
-      // down — в обратном порядке через unshift, чтобы up/down были симметричны
-      for (const [column] of check.missingColumns) {
-        down.unshift(
-          `ALTER TABLE ${quoteIdentifier(schema.tableName)} DROP COLUMN ${quoteIdentifier(column)}`,
-        );
+      const autoAdd = check.missingColumns.filter(
+        ([column]) => !renamedTargets.has(column),
+      );
+      if (autoAdd.length) {
+        up.push(generateAddColumnsYql(schema.tableName, autoAdd));
+        // down — в обратном порядке через unshift, чтобы up/down были симметричны
+        for (const [column] of autoAdd) {
+          down.unshift(
+            `ALTER TABLE ${quoteIdentifier(schema.tableName)} DROP COLUMN ${quoteIdentifier(column)}`,
+          );
+        }
       }
     }
 
@@ -194,12 +232,30 @@ export function planMigration(
     }
   }
 
-  return { up, down, warnings };
+  return { up, down, warnings, suggestions };
+}
+
+/**
+ * Рендерит блок комментариев с подсказками о переименовании (#23).
+ * Подсказки никогда не попадают в исполняемые statements: YQL не
+ * поддерживает RENAME COLUMN, применение — только вручную после проверки.
+ */
+function renderSuggestionsBlock(
+  suggestions: string[] | undefined,
+  indent: string,
+): string | null {
+  if (!suggestions?.length) return null;
+  return [
+    `${indent}// SUGGESTION (not applied automatically): possible column rename detected.`,
+    `${indent}// YQL has no ALTER TABLE RENAME COLUMN yet — verify the data and migrate manually:`,
+    ...suggestions.map((sql) => `${indent}//   ${sql};`),
+  ].join('\n');
 }
 
 /**
  * Рендерит файл миграции по плану. Если план пуст — up/down остаются
- * пустыми с комментарием.
+ * пустыми с комментарием. Подсказки о переименовании рендерятся
+ * комментариями внутри up()/down(), а не исполняемыми statements (#23).
  */
 export function renderMigrationFile(
   className: string,
@@ -218,6 +274,18 @@ export function renderMigrationFile(
       ? ''
       : plan.warnings.map((w) => ` * WARNING: ${w}`).join('\n') + '\n';
 
+  const body = (stmts: string[], indent: string): string => {
+    const suggestionComment = renderSuggestionsBlock(plan.suggestions, indent);
+    const parts: string[] = [];
+    if (suggestionComment) {
+      parts.push(suggestionComment);
+    } else if (stmts.length === 0) {
+      parts.push(`${indent}// no statements — fill in manually`);
+    }
+    if (stmts.length) parts.push(statements(stmts, indent));
+    return parts.join('\n');
+  };
+
   return `import type { YdbMigration, YdbExecutor } from '@ycforge/ydb-orm';
 import { executeSql } from '@ycforge/ydb-orm';
 
@@ -228,19 +296,11 @@ export class ${className} implements YdbMigration {
   readonly name = ${JSON.stringify(migrationName)};
 
   async up(executor: YdbExecutor): Promise<void> {
-${
-  plan.up.length
-    ? statements(plan.up, '    ')
-    : '    // no statements — fill in manually'
-}
+${body(plan.up, '    ')}
   }
 
   async down(executor: YdbExecutor): Promise<void> {
-${
-  plan.down.length
-    ? statements(plan.down, '    ')
-    : '    // no statements — fill in manually'
-}
+${body(plan.down, '    ')}
   }
 }
 `;

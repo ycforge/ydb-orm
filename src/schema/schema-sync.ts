@@ -54,6 +54,18 @@ export interface YdbTableTtl {
   unit?: YdbTtlUnit;
 }
 
+/**
+ * Вероятное переименование колонки (#23): `from` — лишняя колонка в БД,
+ * `to` — новая колонка сущности. Только предположение по структурным
+ * признакам схемы; никогда не применяется автоматически.
+ */
+export interface LikelyRename {
+  /** Лишняя колонка в БД (старое имя). */
+  from: string;
+  /** Отсутствующая в БД колонка сущности (новое имя). */
+  to: string;
+}
+
 /** Ожидаемая схема таблицы, построенная по метаданным сущности. */
 export interface ExpectedTableSchema {
   tableName: string;
@@ -93,6 +105,13 @@ export interface SchemaCheckResult {
   typeMismatches: { column: string; expected: YdbPrimitive; actual: string }[];
   /** Лишние колонки в БД (не удаляются автоматически — потеря данных). */
   extraColumns: string[];
+  /**
+   * Вероятные переименования колонок (#23): ровно одна лишняя колонка БД
+   * и ровно одна новая колонка сущности с совпадающим типом, не затронутые
+   * PK/индексами/TTL/blind-index. Диагностическая подсказка — не команда
+   * к действию; ADD/DROP и ручная миграция остаются явными.
+   */
+  likelyRenames: LikelyRename[];
   primaryKeyMatches: boolean;
   /**
    * Ожидаемый PK из метаданных сущности — копия входа, нужна для
@@ -141,6 +160,7 @@ export interface YdbSchemaIssue {
     | 'type-mismatch'
     | 'primary-key-mismatch'
     | 'extra-column'
+    | 'rename-suggestion'
     | 'missing-index'
     | 'extra-index'
     | 'index-columns-mismatch'
@@ -478,6 +498,92 @@ function ttlSettingsMatch(
 }
 
 /**
+ * Синтетические колонки blind index (@YdbEncrypted({ blindIndex: true }))
+ * именуются `{propertyKey}_bi`; участие таких колонок (или их «пар»)
+ * в расхождении — признак изменения метаданных шифрования, а не переименования.
+ */
+const BLIND_INDEX_SUFFIX = '_bi';
+
+/**
+ * Детекция вероятного переименования колонки (#23).
+ *
+ * Консервативная эвристика на структурных признаках схемы, без сравнения
+ * похожести имён. Подсказка выдаётся, только когда выполнено ВСЁ:
+ *  - в БД ровно одна лишняя колонка (`from`) и в сущности ровно одна новая
+ *    (`to`) — однозначное соответствие без кандидатов на выбор;
+ *  - примитивный тип `to` совпадает с фактическим типом `from` в БД
+ *    (колонки неявно неподдерживаемых типов #91 сразу отсекаются);
+ *  - ни `from`, ни `to` не участвуют в PK;
+ *  - ни `from`, ни `to` не упоминаются в колонках индексов (фактических
+ *    и ожидаемых) — иначе это изменение индекса, а не переименование;
+ *  - ни `from`, ни `to` не являются TTL-колонкой (фактической или ожидаемой);
+ *  - расхождение не затрагивает blind index: обе колонки не synthetic `_bi`
+ *    и у каждой нет `_bi`-парта в своей схеме.
+ *
+ * При любом несоответствии возвращается пустой список — остаются прежние
+ * ADD/DROP и предупреждения о ручной миграции.
+ */
+function detectLikelyRenames(
+  expected: ExpectedTableSchema,
+  existing: YdbTableDescription,
+  missingColumns: [string, YdbPrimitive][],
+  extraColumns: string[],
+): LikelyRename[] {
+  if (missingColumns.length !== 1 || extraColumns.length !== 1) return [];
+
+  const from = extraColumns[0];
+  const [to, toType] = missingColumns[0];
+
+  // Совпадение типа: необходимое условие «это та же колонка».
+  const actualTypeId = existing.columns.get(from);
+  if (
+    actualTypeId === undefined ||
+    PRIMITIVE_TO_TYPE_ID[toType] !== actualTypeId
+  ) {
+    return [];
+  }
+
+  // PK: переименование ключевой колонки в YDB невозможно — только ручная миграция.
+  if (existing.primaryKey.includes(from) || expected.primaryKey.includes(to)) {
+    return [];
+  }
+
+  // Индексы: расхождение индексов вокруг пары — это изменение индекса,
+  // а не простое переименование.
+  const referencedByIndex = (columnsList: string[][], name: string) =>
+    columnsList.some((cols) => cols.includes(name));
+  if (
+    referencedByIndex(
+      (existing.indexes ?? []).map((idx) => idx.columns),
+      from,
+    ) ||
+    referencedByIndex(
+      (expected.indexes ?? []).map((idx) => idx.columns),
+      to,
+    )
+  ) {
+    return [];
+  }
+
+  // TTL: перенос TTL-колонки — изменение настроек TTL, не простое переименование.
+  if (existing.ttl?.column === from || expected.ttl?.column === to) return [];
+
+  // Blind index/шифрование: synthetic-колонка либо появление/исчезновение
+  // `_bi`-парта — изменение метаданных шифрования.
+  if (from.endsWith(BLIND_INDEX_SUFFIX) || to.endsWith(BLIND_INDEX_SUFFIX)) {
+    return [];
+  }
+  if (
+    existing.columns.has(`${from}${BLIND_INDEX_SUFFIX}`) ||
+    `${to}${BLIND_INDEX_SUFFIX}` in expected.columns
+  ) {
+    return [];
+  }
+
+  return [{ from, to }];
+}
+
+/**
  * Чистая проверка: сравнивает ожидаемую схему с описанием таблицы из БД.
  * Не ходит в сеть и ничего не меняет.
  */
@@ -617,6 +723,12 @@ export function checkTableSchema(
     missingColumns,
     typeMismatches,
     extraColumns: uniqueExtraColumns,
+    likelyRenames: detectLikelyRenames(
+      expected,
+      existing,
+      missingColumns,
+      uniqueExtraColumns,
+    ),
     primaryKeyMatches,
     expectedPrimaryKey: [...expected.primaryKey],
     actualPrimaryKey: [...existing.primaryKey],
@@ -694,6 +806,18 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
       tableName: check.tableName,
       kind: 'extra-column',
       message: `Table "${check.tableName}" has extra column "${column}"`,
+    });
+  }
+  // #23: подсказка о вероятном переименовании — информационная, схему
+  // самой по себе не исправляет (колонка по-прежнему отсутствует в БД),
+  // поэтому расхождение остаётся и в verify, и в diffSchemas.
+  for (const rename of check.likelyRenames) {
+    issues.push({
+      tableName: check.tableName,
+      kind: 'rename-suggestion',
+      message:
+        `Table "${check.tableName}" column "${rename.from}" may have been renamed to ` +
+        `"${rename.to}" — review the data before migrating manually`,
     });
   }
   for (const idx of check.missingIndexes) {
@@ -888,6 +1012,16 @@ export class YdbSchemaSyncer {
         this.logger.warn(
           `Table "${expected.tableName}" has extra column "${extra}" ` +
             `not present in entity ${expected.tableName} — left as is`,
+        );
+      }
+
+      // #23: переименование никогда не применяется автоматически — sync
+      // по-прежнему добавляет новую колонку, старую не трогает.
+      for (const rename of check.likelyRenames) {
+        this.logger.warn(
+          `Table "${expected.tableName}" column "${rename.from}" may have been ` +
+            `renamed to "${rename.to}" — adding "${rename.to}", keeping ` +
+            `"${rename.from}"; rename/copy the data manually if confirmed`,
         );
       }
 
