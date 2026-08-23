@@ -18,6 +18,7 @@ import {
   YDB_UPDATE_DATE_KEY,
 } from '../decorators/timestamp.decorator.js';
 import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
+import { resolveOperationExecutor } from '../transaction/transaction-context.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
   getYdbEnumMetadata,
@@ -131,7 +132,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor {
-    const db = trx ?? this.executor;
+    // Резолв учитывает ambient-контекст транзакций (#98): auto-join,
+    // запрет смешивания с посторонним trx, предупреждения вне транзакции.
+    const db = resolveOperationExecutor(
+      trx,
+      this.executor,
+      this.entityClass.name,
+    );
     if (!db) {
       throw new Error(
         `YDB executor not set for entity ${this.entityClass.name}. ` +

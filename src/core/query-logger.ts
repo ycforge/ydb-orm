@@ -210,8 +210,12 @@ export function wrapExecutorWithLogging(
     return proxied;
   };
 
-  wrapped.transaction = () => {
-    const tx = executor.transaction();
+  wrapped.transaction = (
+    options?: Parameters<YdbExecutor['transaction']>[0],
+  ) => {
+    // Опции транзакции (#98) пробрасываются как есть — логируется только
+    // executor, семантика исполнения не меняется.
+    const tx = executor.transaction(options);
     return {
       execute: (
         fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<unknown>,

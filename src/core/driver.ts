@@ -4,7 +4,12 @@ import { CredentialsProvider } from '@ydbjs/auth';
 import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
-import { YdbExecutor, YdbModuleOptions } from './interfaces.js';
+import {
+  YdbExecutor,
+  YdbModuleOptions,
+  YdbTransactionHandle,
+  YdbTransactionOptions,
+} from './interfaces.js';
 import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
 
 /**
@@ -76,13 +81,38 @@ export function createExecutor(
   driver: Driver,
   opts: YdbModuleOptions,
 ): YdbExecutor {
-  let executor = query(driver, {
+  const client = query(driver, {
     poolOptions: opts.poolOptions
       ? Object.fromEntries(
           Object.entries(opts.poolOptions).filter(([, v]) => v !== undefined),
         )
       : undefined,
-  }) as unknown as YdbExecutor;
+  });
+
+  // Адаптация клиента @ydbjs/query к интерфейсу YdbExecutor (#98):
+  // client.transaction(options, fn) — функция, возвращающая промис, а
+  // интерфейс ORM ожидает transaction(options?) => { execute(fn) }.
+  // Раньше адаптация существовала только в wrapExecutorWithLogging, из-за
+  // чего runInTransaction на «живом» SDK падал. Опции (isolation/signal/
+  // idempotent) пробрасываются в SDK как есть; timeout снимается менеджером
+  // транзакций и до SDK не доходит.
+  const adapted = ((strings: TemplateStringsArray, ...args: any[]) =>
+    client(strings, ...args)) as unknown as YdbExecutor;
+
+  (adapted as any).transaction = (
+    options?: YdbTransactionOptions,
+  ): YdbTransactionHandle => ({
+    execute: async <T>(
+      fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
+    ): Promise<T> => {
+      const { isolation, signal, idempotent } = options ?? {};
+      return client.transaction({ isolation, idempotent, signal }, (tx, sgn) =>
+        fn(tx as unknown as YdbExecutor, sgn),
+      );
+    },
+  });
+
+  let executor = adapted;
 
   if (opts.logQueries) {
     const logger =

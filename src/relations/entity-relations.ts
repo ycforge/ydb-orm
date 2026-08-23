@@ -18,6 +18,7 @@ import { YdbEntityPersistence } from '../persistence/entity-persistence.js';
 import type { HydrationContext } from '../persistence/entity-persistence.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
+import { resolveOperationExecutor } from '../transaction/transaction-context.js';
 import { mapToYdb } from '../core/mapper.js';
 
 /**
@@ -50,14 +51,19 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor | undefined {
-    return trx ?? this.executor;
+    // Ambient-контекст транзакций (#98): auto-join / запрет смешивания.
+    return resolveOperationExecutor(trx, this.executor, this.entityClass.name);
   }
 
   private createTargetPersistence(
     Target: typeof YdbBaseEntity,
     trx?: YdbExecutor,
   ): YdbEntityPersistence<YdbBaseEntity> {
-    return new YdbEntityPersistence(Target, trx ?? this.executor, this.options);
+    return new YdbEntityPersistence(
+      Target,
+      resolveOperationExecutor(trx, this.executor, this.entityClass.name),
+      this.options,
+    );
   }
 
   /**

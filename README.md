@@ -414,6 +414,93 @@ await this.txManager.runInTransaction(async (trx) => {
 });
 ```
 
+### Опции исполнения (#98)
+
+`runInTransaction(fn, options)` принимает опции, которые пробрасываются в вызов транзакции SDK (`client.transaction(options, ...)`):
+
+```ts
+await this.txManager.runInTransaction(
+  async (trx, signal) => {
+    await OrderEntity.save(order, { trx });
+  },
+  {
+    isolation: 'snapshotReadWrite',   // serializableReadWrite (по умолчанию) | snapshotReadOnly | snapshotReadWrite
+    timeout: 5_000,                    // мс; ORM объединяет с signal через AbortSignal.any
+    signal: controller.signal,         // отмена транзакции извне
+    idempotent: true,                  // см. «Retry-семантика» ниже
+  },
+);
+```
+
+Опции валидируются fail-fast: неизвестный ключ (опечатка), невалидный уровень изоляции, неположительный `timeout`, не-`AbortSignal` — ошибка сразу.
+
+### Вложенные транзакции
+
+Вложенный `runInTransaction()` по умолчанию **запрещён**: второй вызов откроет независимую транзакцию на другой сессии, что почти всегда ошибка. Чтобы присоединиться к активной транзакции (коммит/откат остаются у внешнего вызова), передайте `{ reuse: true }`:
+
+```ts
+await txManager.runInTransaction(async () => {
+  await txManager.runInTransaction(async (trx2) => {
+    // Error: Nested runInTransaction() detected ...
+  });
+});
+
+await txManager.runInTransaction(async () => {
+  await txManager.runInTransaction(async (sameTrx) => {
+    // та же транзакция, что и снаружи
+  }, { reuse: true });
+});
+```
+
+Вложенность определяется по AsyncLocalStorage-цепочке и только для того же executor'а БД; вложенные транзакции на другом драйвере/базе считаются независимыми.
+
+### Ambient-контекст (opt-in)
+
+Один пропущенный `{ trx }` — и запрос молча уйдёт вне транзакции. Ambient-режим решает это: операции репозиториев без явного `{ trx }` автоматически выполняются в активной транзакции.
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    // ...
+    transactions: { ambient: true }, // глобально для процесса
+  }),
+});
+
+// либо точечно, на один вызов:
+await txManager.runInTransaction(async () => {
+  await OrderEntity.save(order);          // уйдёт в транзакцию автоматически
+  await OrderEntity.save(other, { trx }); // явный trx тоже работает
+}, { ambient: true });
+```
+
+Правила безопасности:
+
+- если при активной ambient-транзакции явно передан **другой** `{ trx }` — ошибка смешивания, а не молчаливое расхождение данных;
+- после commit/rollback контекст очищается;
+- параллельные транзакции не перетекают друг в друга;
+- ambient выключен по умолчанию: явный `{ trx }` работает как раньше.
+
+### Запросы вне транзакции
+
+Для отладки можно включить предупреждение о каждом запросе вне какой бы то ни было транзакции:
+
+```ts
+transactions: { warnOutsideTransaction: true } // console.warn на каждый такой запрос
+```
+
+По умолчанию выключено — предупреждения не шумят.
+
+### Retry-семантика (важно!)
+
+SDK (`@ydbjs/query`) при `idempotent: true` повторяет **весь колбэк** транзакции при retryable-ошибках (сбой сети, смерть сессии). Это значит:
+
+- побочные эффекты колбэка выполняются повторно;
+- lifecycle hooks (`@BeforeInsert`, `@AfterInsert`, ...) срабатывают больше одного раза;
+- каждая попытка получает новую сессию/транзакцию (новый `trx`).
+
+Колбэк должен быть устойчив к повтору. Без `idempotent: true` повторов нет.
+
+
 ## Логирование запросов
 
 Опция `logQueries` в `forRootAsync` (`YdbModuleOptions`) включает логирование всех запросов:

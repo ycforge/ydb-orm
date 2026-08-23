@@ -10,6 +10,11 @@ export interface MockExecutor {
   executor: YdbExecutor;
   /** Все выполненные запросы (SQL + параметры). */
   queries: RecordedQuery[];
+  /**
+   * Опции каждого вызова transaction(options) (#98): isolation/signal/
+   * idempotent и т.п. — для проверки проброса опций в SDK.
+   */
+  transactionOptions: Array<Record<string, unknown>>;
 }
 
 /**
@@ -27,6 +32,7 @@ export function createMockExecutor(
   options?: { sequential?: boolean },
 ): MockExecutor {
   const queries: RecordedQuery[] = [];
+  const transactionOptions: Array<Record<string, unknown>> = [];
   let callIndex = 0;
 
   const executor: any = jest.fn((strings: TemplateStringsArray) => {
@@ -58,10 +64,13 @@ export function createMockExecutor(
     return query;
   });
 
-  executor.transaction = () => ({
-    execute: (fn: (trx: YdbExecutor) => Promise<unknown>) =>
-      fn(executor as YdbExecutor),
-  });
+  executor.transaction = (options?: Record<string, unknown>) => {
+    transactionOptions.push(options ?? {});
+    return {
+      execute: async (fn: (trx: YdbExecutor) => Promise<unknown>) =>
+        fn(executor as YdbExecutor),
+    };
+  };
 
-  return { executor: executor as YdbExecutor, queries };
+  return { executor: executor as YdbExecutor, queries, transactionOptions };
 }
