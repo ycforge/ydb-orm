@@ -9,9 +9,9 @@ import {
 } from '@nestjs/common';
 import { Driver } from '@ydbjs/core';
 import {
-  createCredentialsProvider,
   createDriver,
   createExecutor,
+  resolveCredentialsProvider,
   validateYdbModuleOptions,
 } from '../core/driver.js';
 import {
@@ -152,10 +152,13 @@ export class YdbCoreModule {
         },
 
         {
+          // Провайдер учётных данных (#96): явный opts.credentialsProvider
+          // используется как есть; иначе driverOptions.credentialsProvider;
+          // иначе создаётся по auth_type (meta/auth_key/anonymous).
           provide: YDB_CREDENTIALS_PROVIDER,
           useFactory: (opts: YdbModuleOptions) => {
             try {
-              return createCredentialsProvider(opts);
+              return resolveCredentialsProvider(opts);
             } catch (error) {
               // Компиляция упала после claim — освобождаем слот,
               // чтобы следующий бутстрап в этом процессе был возможен.
@@ -250,6 +253,7 @@ export class YdbCoreModule {
         YDB_DRIVER,
         YDB_QUERY,
         YdbTransactionManager,
+        YDB_CREDENTIALS_PROVIDER,
         YDB_ENCRYPTION_PROVIDER,
         YDB_BLIND_INDEX_PROVIDER,
         YDB_VALIDATION_PROVIDER,

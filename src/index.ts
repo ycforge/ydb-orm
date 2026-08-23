@@ -229,6 +229,7 @@ export type { PlannedMigration } from './migrations/migration-generator.js';
 // Подключение без NestJS (CLI, скрипты)
 export {
   createCredentialsProvider,
+  resolveCredentialsProvider,
   createDriver,
   createExecutor,
   validateYdbModuleOptions,
@@ -242,3 +243,7 @@ export type {
   AuthKeyCredentialsProviderOptions,
   IamJWTKeyCredentials,
 } from './credentials/auth-key-credentials-provider.js';
+// Базовый класс провайдера учётных данных из SDK (#96): тип реэкспортируется,
+// чтобы пользователи могли типизировать свои реализации без прямой
+// зависимости от @ydbjs/auth.
+export type { CredentialsProvider } from '@ydbjs/auth';

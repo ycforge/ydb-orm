@@ -30,6 +30,51 @@ export function validateYdbModuleOptions(opts: YdbModuleOptions): void {
         'when auth_type is "auth_key".',
     );
   }
+  assertNoCredentialsProviderConflict(opts);
+}
+
+/**
+ * Конфликт источников CredentialsProvider (#96): если заданы и явный
+ * credentialsProvider, и низкоуровневый driverOptions.credentialsProvider,
+ * приоритет не выбирается молча — это ошибка конфигурации.
+ */
+function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
+  if (
+    opts.credentialsProvider !== undefined &&
+    opts.driverOptions?.credentialsProvider !== undefined
+  ) {
+    throw new Error(
+      'Conflicting YDB credentials configuration: both "credentialsProvider" ' +
+        'and "driverOptions.credentialsProvider" are set. Keep only one source: ' +
+        'either pass the provider via the top-level "credentialsProvider" option ' +
+        'or remove it from "driverOptions".',
+    );
+  }
+}
+
+/**
+ * Разрешает итоговый CredentialsProvider по детерминированному приоритету (#96):
+ *
+ *   1. opts.credentialsProvider — явный провайдер из опций модуля;
+ *   2. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
+ *      переданный аргументом в createDriver();
+ *   3. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера;
+ *   4. создание по auth_type (createCredentialsProvider).
+ *
+ * Комбинация (1) + (3) запрещена — ошибка конфигурации, а не молчаливый
+ * выбор. Используется NestJS-модулем, createDriver() и CLI.
+ */
+export function resolveCredentialsProvider(
+  opts: YdbModuleOptions,
+  injected?: CredentialsProvider,
+): CredentialsProvider {
+  assertNoCredentialsProviderConflict(opts);
+  return (
+    opts.credentialsProvider ??
+    injected ??
+    opts.driverOptions?.credentialsProvider ??
+    createCredentialsProvider(opts)
+  );
 }
 
 /**
@@ -68,9 +113,18 @@ export async function createDriver(
   credentialsProvider?: CredentialsProvider,
 ): Promise<Driver> {
   validateYdbModuleOptions(opts);
+  // Провайдер разрешается по единому правилу приоритета (#96) и передаётся
+  // ПОСЛЕ spread driverOptions: driverOptions.credentialsProvider не может
+  // молча перезатереть уже разрешённый провайдер.
+  const resolvedProvider = resolveCredentialsProvider(
+    opts,
+    credentialsProvider,
+  );
+  const { credentialsProvider: _driverOptionsProvider, ...restDriverOptions } =
+    opts.driverOptions ?? {};
   const driver = new Driver(opts.endpoint, {
-    credentialsProvider: credentialsProvider ?? createCredentialsProvider(opts),
-    ...opts.driverOptions,
+    ...restDriverOptions,
+    credentialsProvider: resolvedProvider,
   });
   await driver.ready();
   return driver;

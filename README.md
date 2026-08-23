@@ -542,6 +542,42 @@ YdbCoreModule.forRootAsync({
 - `auth_key` — authorized key JSON сервисного аккаунта (`authOptions.authorized_key_path`); JWT-обмен реализован на `fetch`, без тяжёлых SDK;
 - `anonymous` — локальная YDB.
 
+### Кастомный CredentialsProvider
+
+Готовый провайдер можно передать напрямую — опция `credentialsProvider`
+(тип `CredentialsProvider` из `@ydbjs/auth`, реэкспортирован из пакета):
+
+```ts
+import { CredentialsProvider } from '@ycforge/ydb-orm';
+
+class OAuthTokenProvider extends CredentialsProvider {
+  getToken(): Promise<string> {
+    return fetchOAuthToken(); // ваша реализация получения токена
+  }
+}
+
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: process.env.YDB_ENDPOINT!,
+    authOptions: {},
+    credentialsProvider: new OAuthTokenProvider(),
+  }),
+});
+```
+
+Провайдер также доступен для инжекции через DI-токен `YDB_CREDENTIALS_PROVIDER`
+(экспортируется ядром). Приоритет источников провайдера детерминирован:
+
+1. `credentialsProvider` — явная опция модуля;
+2. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
+3. `driverOptions.credentialsProvider`;
+4. создание по `auth_type`.
+
+Задание одновременно `credentialsProvider` и `driverOptions.credentialsProvider`
+— ошибка конфигурации (`Conflicting YDB credentials configuration`): молчаливый
+выбор одного из них не выполняется. Без кастомного провайдера поведение
+по умолчанию (`meta` / `auth_key` / `anonymous`) не меняется.
+
 ## Разработка
 
 ```bash
