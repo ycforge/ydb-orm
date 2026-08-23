@@ -710,6 +710,57 @@ describe('YdbMigrationRunner (#101)', () => {
         },
       ]);
     });
+
+    it('marks a record whose content changed after apply (#152)', async () => {
+      // Запись учёта осталась от старого содержимого; файл миграции
+      // теперь с другим хешем — сопоставление по имени даёт 'changed'.
+      const mock = createStatefulExecutor({
+        rows: [
+          {
+            timestamp: 5000,
+            name: '1-Edited',
+            hash: sha256('original content'),
+          },
+        ],
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+
+      const statuses = await runner.status([
+        migrationFactory('1-Edited', { hash: sha256('tampered') }).migration,
+      ]);
+
+      expect(statuses).toEqual([
+        {
+          name: '1-Edited',
+          applied: true,
+          appliedAt: new Date(5000),
+          interrupted: false,
+          contentChanged: true,
+        },
+      ]);
+    });
+
+    it('does not set contentChanged when hashes match (#152)', async () => {
+      const hash = sha256('same');
+      const mock = createStatefulExecutor({
+        rows: [{ timestamp: 6000, name: '1-Same', hash }],
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+
+      const statuses = await runner.status([
+        migrationFactory('1-Same', { hash }).migration,
+      ]);
+
+      expect(statuses).toEqual([
+        {
+          name: '1-Same',
+          applied: true,
+          appliedAt: new Date(6000),
+          interrupted: false,
+          contentChanged: undefined,
+        },
+      ]);
+    });
   });
 
   it('runs pending migrations in order and records stable identity', async () => {
