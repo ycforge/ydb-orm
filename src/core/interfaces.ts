@@ -1,5 +1,6 @@
 import { ModuleMetadata, Type } from '@nestjs/common';
 import { Driver, DriverOptions } from '@ydbjs/core';
+import type { CredentialsProvider } from '@ydbjs/auth';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -20,6 +21,21 @@ export interface YdbModuleOptions {
   endpoint: string;
   auth_type?: YdbAuthMethod;
   authOptions: YdbAuthOptions;
+  /**
+   * Готовый CredentialsProvider (#96) — паттерн useExisting: передаётся
+   * как есть вместо создания провайдера по auth_type (OAuth-токен,
+   * тестовые реализации, переиспользование провайдера из другого модуля).
+   * Динамическое создание — через useFactory в forRootAsync.
+   *
+   * Приоритет источников провайдера (детерминированный, см.
+   * resolveCredentialsProvider):
+   *   credentialsProvider → DI-провайдер YDB_CREDENTIALS_PROVIDER →
+   *   driverOptions.credentialsProvider → создание по auth_type.
+   * Задание одновременно credentialsProvider и
+   * driverOptions.credentialsProvider — ошибка конфигурации:
+   * молчаливый выбор одного из них запрещён.
+   */
+  credentialsProvider?: CredentialsProvider;
   /**
    * Кастомная фабрика драйвера: если задана, используется вместо создания
    * Driver по endpoint/driverOptions. Удобно для тестов и нестандартных
