@@ -29,6 +29,12 @@ import type { YdbValidationProvider } from '../validation/ydb-validate.interface
 import { YdbEntityValidationError } from '../validation/validation-error.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
+import {
+  getYdbRelationsMetadata,
+  resolveRelationJoinColumn,
+  type RelationMetadata,
+} from '../decorators/relation.decorators.js';
+import { resolveManyToManyJoinTable } from '../relations/resolve-join-table.js';
 
 /**
  * Конструктор сущности, совместимый с YdbBaseEntity.
@@ -97,11 +103,23 @@ export function getEntityDbSchema(
   return schema;
 }
 
-interface WhereBuildContext {
+export interface WhereBuildContext {
   values: Record<string, any>;
   keys: string[];
   dbSchema: Record<string, YdbPrimitive>;
   counter: number;
+}
+
+/**
+ * Окружение построения одного WHERE-узла.
+ *
+ * `forbidEncrypted` включается внутри related-предикатов (#17): фильтрация
+ * по колонкам связанных сущностей разрешена только для нешифрованных колонок
+ * (blind index тоже запрещён — подзапрос по связанной таблице не имеет
+ * доступа к провайдеру хешей корневого запроса и усложнил бы семантику).
+ */
+export interface WhereBuildEnv {
+  forbidEncrypted: boolean;
 }
 
 /**
@@ -534,6 +552,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     value: any,
     ctx: WhereBuildContext,
     isRoot: boolean,
+    env: WhereBuildEnv,
   ): Promise<string | undefined> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
@@ -546,11 +565,27 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
+    // Synthetic {field}_bi колонки в related-предикатах запрещены (#17):
+    // это производное шифрованного поля, а не самостоятельная колонка.
+    if (env.forbidEncrypted && isSyntheticColumn(meta, field)) {
+      throw new Error(
+        `Cannot filter related entity ${this.entityClass.name} by blind index column "${field}": ` +
+          `encrypted columns (including their blind indexes) are not allowed in related filters (#17).`,
+      );
+    }
+
     const ef = meta.encryptedFields.find((e) => e.propertyKey === field);
     const fieldType = dbSchema[field];
 
     // Зашифрованные поля ищутся только по blind-index (равенство).
     if (ef) {
+      // В related-предикатах шифрованные поля запрещены полностью (#17).
+      if (env.forbidEncrypted) {
+        throw new Error(
+          `Cannot filter related entity ${this.entityClass.name} by encrypted field "${field}": ` +
+            `related-column filters support only non-encrypted columns (#17).`,
+        );
+      }
       const isEqOperatorObject =
         this.isOperatorObject(value) &&
         Object.keys(value).length === 1 &&
@@ -810,13 +845,19 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
   /**
    * Рекурсивно строит SQL-условие из WHERE-объекта.
+   *
+   * Ключи резолвятся по приоритету: логический комбинатор ($and/$or) →
+   * колонка сущности → related-фильтр (#17, свойство-связь с объектом
+   * условий по колонкам связанной сущности).
    */
   private async buildWhereNode(
     node: Record<string, any>,
     ctx: WhereBuildContext,
     isRoot: boolean,
+    env: WhereBuildEnv,
   ): Promise<string | undefined> {
     const parts: string[] = [];
+    const dbSchema = getEntityDbSchema(this.getMeta());
 
     for (const [key, value] of Object.entries(node)) {
       if (value === undefined) continue;
@@ -836,14 +877,26 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
               `Logical operator "${key}" on entity ${this.entityClass.name} expects objects, got ${typeof sub}.`,
             );
           }
-          const subSql = await this.buildWhereNode(sub, ctx, false);
+          const subSql = await this.buildWhereNode(sub, ctx, false, env);
           if (subSql) subs.push(subSql);
         }
         if (subs.length) {
           parts.push(`(${subs.join(` ${combiner} `)})`);
         }
+      } else if (!dbSchema[key] && this.findRelation(key)) {
+        // Related-фильтр (#17): ключ — свойство-связь, значение — предикат
+        // по колонкам связанной сущности. Колонки проверяются первыми:
+        // существующее поведение для полей не меняется.
+        const sql = await this.buildRelatedCondition(key, value, ctx);
+        parts.push(sql);
       } else {
-        const sql = await this.buildFieldCondition(key, value, ctx, isRoot);
+        const sql = await this.buildFieldCondition(
+          key,
+          value,
+          ctx,
+          isRoot,
+          env,
+        );
         if (sql) parts.push(sql);
       }
     }
@@ -871,7 +924,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       counter: 0,
     };
 
-    const sql = await this.buildWhereNode(where, ctx, true);
+    const sql = await this.buildWhereNode(where, ctx, true, {
+      forbidEncrypted: false,
+    });
 
     return {
       whereClause: sql ? `WHERE ${sql}` : '',
@@ -879,6 +934,223 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       keys: ctx.keys,
       dbSchema: ctx.dbSchema,
     };
+  }
+
+  // ---- Related-фильтры (#17): findAll({ relation: { column: value } }) ----
+
+  /** Ищет связь по имени свойства. */
+  private findRelation(propertyKey: string): RelationMetadata | undefined {
+    return getYdbRelationsMetadata(this.entityClass).find(
+      (r) => r.propertyKey === propertyKey,
+    );
+  }
+
+  /**
+   * @internal Строит WHERE-узел предиката связанной сущности в ОБЩИЙ контекст
+   * параметров родительского запроса (#17). Шифрованные колонки запрещены.
+   * Вызывается на persistence-инстансе целевой сущности, поэтому enum/JSON-
+   * нормализация значений работает по метаданным цели.
+   */
+  async buildRelatedPredicate(
+    node: Record<string, any>,
+    ctx: WhereBuildContext,
+  ): Promise<string | undefined> {
+    return this.buildWhereNode(node, ctx, false, { forbidEncrypted: true });
+  }
+
+  /**
+   * Условие фильтрации корня по колонкам связанной сущности (#17).
+   *
+   * Стратегия — полуслияние через IN с некоррелированным подзапросом:
+   * семантика EXISTS без дубликатов корневых строк. Классический EXISTS
+   * не генерируется намеренно: ядро YQL не поддерживает коррелированные
+   * подзапросы (ссылку на внешний запрос), а некоррелированный EXISTS
+   * менял бы семантику на «существует хотя бы одна строка вообще».
+   *
+   * Join-колонки и пути резолвятся только из существующих метаданных связи
+   * (@OneToMany/@ManyToOne/@OneToOne/@ManyToMany + @JoinTable); произвольные
+   * SQL-фрагменты невозможны. Все значения биндятся через общий контекст
+   * параметров (ctx) — интерполяции пользовательских значений нет.
+   *
+   * Поддержанные формы:
+   * - one-to-many: `root.pk IN (SELECT child.fk FROM target WHERE pred)`
+   * - many-to-one / one-to-one: `root.fk IN (SELECT target.pk FROM target WHERE pred)`
+   * - many-to-many: `root.pk IN (SELECT jt.owner FROM jt WHERE jt.inverse IN
+   *   (SELECT target.pk FROM target WHERE pred))`
+   *
+   * Формы, которые текущая рантайм-модель связей моделирует некорректно
+   * (составные PK на стороне соединения, необъявленные join-колонки,
+   * несовместимые типы, отсутствие @JoinTable), отвергаются с понятной
+   * ошибкой ДО выполнения SQL.
+   */
+  private async buildRelatedCondition(
+    relationPropertyKey: string,
+    predicate: unknown,
+    ctx: WhereBuildContext,
+  ): Promise<string> {
+    if (
+      predicate === null ||
+      typeof predicate !== 'object' ||
+      Array.isArray(predicate)
+    ) {
+      const got =
+        predicate === null
+          ? 'null'
+          : Array.isArray(predicate)
+            ? 'array'
+            : typeof predicate;
+      throw new Error(
+        `Invalid filter on relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+          `expected an object with conditions on the related entity columns, got ${got}.`,
+      );
+    }
+
+    const relation = this.findRelation(relationPropertyKey);
+    if (!relation) {
+      throw new Error(
+        `Unknown relation: "${relationPropertyKey}" on entity ${this.entityClass.name}.`,
+      );
+    }
+
+    const Target = relation.target();
+    const targetMeta = getYdbEntityMetadata(Target);
+    if (!targetMeta) {
+      throw new Error(
+        `Cannot filter by relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+          `target entity ${Target.name} is not decorated with @YdbEntity.`,
+      );
+    }
+
+    const rootMeta = this.getMeta();
+    const relationDesc = `"${relationPropertyKey}" (${relation.type}) of ${this.entityClass.name} -> ${Target.name}`;
+
+    // Предикат по колонкам цели строится persistence-инстансом ЦЕЛИ в общий
+    // контекст параметров родителя: уникальность имён обеспечивает общий
+    // счётчик, конвертация enum/JSON — метаданные цели.
+    const targetPersistence = new YdbEntityPersistence(Target, undefined, {});
+    const innerWhere = await targetPersistence.buildRelatedPredicate(
+      predicate as Record<string, any>,
+      ctx,
+    );
+    const innerSubquery = (selectColumn: string): string =>
+      `SELECT ${quoteIdentifier(selectColumn)} FROM ${quoteIdentifier(targetMeta.tableName)}` +
+      `${innerWhere ? ` WHERE ${innerWhere}` : ''}`;
+
+    switch (relation.type) {
+      case 'one-to-many': {
+        if (rootMeta.primaryKeys.length !== 1) {
+          throw new Error(
+            `Cannot filter by one-to-many relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+              `the entity has a composite primary key (${rootMeta.primaryKeys.join(', ')}). ` +
+              `The current relation model joins children by a single primary key column.`,
+          );
+        }
+        const rootPk = rootMeta.primaryKeys[0];
+        const fkColumn = resolveRelationJoinColumn(relation.joinColumn, {
+          entityName: this.entityClass.name,
+          relationPropertyKey,
+        });
+        const fkType = targetMeta.schema[fkColumn];
+        if (!fkType) {
+          throw new Error(
+            `Invalid one-to-many relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+              `join column "${fkColumn}" is not declared on target entity ${Target.name}.`,
+          );
+        }
+        this.assertCompatibleJoinTypes(
+          relationDesc,
+          `${this.entityClass.name}.${rootPk}`,
+          rootMeta.schema[rootPk],
+          `${Target.name}.${fkColumn}`,
+          fkType,
+        );
+        return `${quoteIdentifier(rootPk)} IN (${innerSubquery(fkColumn)})`;
+      }
+      case 'many-to-one':
+      case 'one-to-one': {
+        const fkColumn = resolveRelationJoinColumn(relation.joinColumn, {
+          entityName: this.entityClass.name,
+          relationPropertyKey,
+        });
+        const fkType = rootMeta.schema[fkColumn];
+        if (!fkType) {
+          throw new Error(
+            `Invalid ${relation.type} relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+              `join column "${fkColumn}" is not declared on the entity.`,
+          );
+        }
+        if (targetMeta.primaryKeys.length !== 1) {
+          throw new Error(
+            `Cannot filter by ${relation.type} relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+              `target entity ${Target.name} has a composite primary key (${targetMeta.primaryKeys.join(', ')}). ` +
+              `The current relation model joins parents by a single primary key column.`,
+          );
+        }
+        const targetPk = targetMeta.primaryKeys[0];
+        this.assertCompatibleJoinTypes(
+          relationDesc,
+          `${this.entityClass.name}.${fkColumn}`,
+          fkType,
+          `${Target.name}.${targetPk}`,
+          targetMeta.schema[targetPk],
+        );
+        return `${quoteIdentifier(fkColumn)} IN (${innerSubquery(targetPk)})`;
+      }
+      case 'many-to-many': {
+        const joinTable = resolveManyToManyJoinTable(
+          this.entityClass,
+          relation,
+        );
+        if (!joinTable) {
+          throw new Error(
+            `Cannot filter by many-to-many relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+              `no @JoinTable is declared for it. Filtering through many-to-many relations ` +
+              `is supported from the owning side that declares the join table.`,
+          );
+        }
+        // resolveManyToManyJoinTable гарантирует одиночные PK обеих сторон:
+        // составной PK дал бы ошибку конфигурации выше по резолву.
+        const rootPk = rootMeta.primaryKeys[0];
+        const targetPk = targetMeta.primaryKeys[0];
+        return (
+          `${quoteIdentifier(rootPk)} IN (` +
+          `SELECT ${quoteIdentifier(joinTable.ownerColumn)} FROM ${quoteIdentifier(joinTable.tableName)} ` +
+          `WHERE ${quoteIdentifier(joinTable.inverseColumn)} IN (${innerSubquery(targetPk)}))`
+        );
+      }
+      default:
+        throw new Error(
+          `Cannot filter by relation "${relationPropertyKey}" of ${this.entityClass.name}: ` +
+            `unsupported relation type "${String(relation.type)}".`,
+        );
+    }
+  }
+
+  /**
+   * Совместимость типов join-колонок для related-фильтра (#17):
+   * сравнение разных YDB-типов в IN (...) упало бы уже на сервере —
+   * сообщаем о конфигурации связи раньше, с именами колонок и типов.
+   */
+  private assertCompatibleJoinTypes(
+    relationDesc: string,
+    outerColumn: string,
+    outerType: YdbPrimitive | undefined,
+    innerColumn: string,
+    innerType: YdbPrimitive | undefined,
+  ): void {
+    if (!outerType || !innerType) {
+      throw new Error(
+        `Cannot filter by relation ${relationDesc}: join column type is not declared ` +
+          `(${outerColumn}, ${innerColumn}). Declare both columns via @YdbColumn/@YdbPrimaryColumn.`,
+      );
+    }
+    if (outerType !== innerType) {
+      throw new Error(
+        `Cannot filter by relation ${relationDesc}: join column types differ — ` +
+          `${outerColumn} is ${outerType}, ${innerColumn} is ${innerType}. ` +
+          `IN (...) between different YDB types would fail at execution.`,
+      );
+    }
   }
 
   private async executeQuery<U>(

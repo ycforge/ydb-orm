@@ -152,6 +152,47 @@ await UserEntity.findAll({
 
 Группы можно вкладывать друг в друга.
 
+### Фильтрация по связанным сущностям (#17)
+
+В WHERE вместо колонки можно указать свойство-связь (`@OneToMany` / `@ManyToOne` / `@OneToOne` / `@ManyToMany`) с объектом условий по колонкам связанной сущности — корневые строки фильтруются по наличию подходящей связанной строки:
+
+```ts
+// Пользователи, у которых есть роль 'admin' (one-to-many)
+await UserEntity.findAll({ userRoles: { is_global: true } });
+
+// Несколько related-предикатов + обычные условия корня (AND)
+await PhotoWithTagsEntity.findAll({
+  title: { $like: '%sunset%' },
+  tags: { name: 'nature' },          // many-to-many через join-таблицу
+  author: { status: 'active' },      // many-to-one
+});
+
+// Логические группы смешивают колонки корня и связи
+await UserEntity.findAll({
+  $or: [
+    { uuid: someUuid },
+    { userRoles: { role_uuid: adminRoleUuid } },
+  ],
+});
+```
+
+Поддержанные формы связи и генерируемый YQL (полуслияние `IN` с некоррелированным подзапросом — семантика `EXISTS`; коррелированные подзапросы ядром YQL не поддерживаются, а такой `IN` не порождает дубликатов корневых строк, поэтому `DISTINCT`/`JOIN` не нужны):
+
+| связь | условие |
+| --- | --- |
+| one-to-many | `root.pk IN (SELECT child.fk FROM target WHERE pred)` |
+| many-to-one / one-to-one | `root.fk IN (SELECT target.pk FROM target WHERE pred)` |
+| many-to-many | `root.pk IN (SELECT jt.owner FROM jt WHERE jt.inverse IN (SELECT target.pk FROM target WHERE pred))` |
+
+Пустой предикат `{ tags: {} }` означает «есть хотя бы одна связанная строка». Связи можно вкладывать (`{ linkedUser: { roles: { role: 'admin' } } }`).
+
+Ограничения и гарантии:
+
+- **Только нешифрованные колонки**: `@YdbEncrypted`-поля связанной сущности (включая их `{field}_bi`) в related-фильтрах запрещены — попытка ищется понятной ошибкой.
+- Валидация путей по метаданным: неизвестная связь/колонка, необъявленная join-колонка, несовместимые типы join-колонок, составной PK на стороне соединения (для one-to-many — у корня, для many-to-one/one-to-one — у цели) или отсутствие `@JoinTable` у many-to-many отвергаются ошибкой **до выполнения SQL**.
+- Все значения биндятся параметрами запроса; литералы в SQL не попадают.
+- Работает во всех методах с общим конвейером WHERE: `find`/`findOneBy`, `findAll`/`findBy`, `count`, `updateBy`, `deleteBy` и в QueryBuilder (`where`/`andWhere`/`orWhere`); `{ trx }`/ambient-транзакции и лимиты сохраняются.
+
 ## Декораторы
 
 - `@YdbEntity('table')` — имя таблицы; класс попадает в глобальный реестр сущностей (используется schema sync).
