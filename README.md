@@ -425,11 +425,25 @@ await this.txManager.runInTransaction(
   },
   {
     isolation: 'snapshotReadWrite',   // serializableReadWrite (по умолчанию) | snapshotReadOnly | snapshotReadWrite
-    timeout: 5_000,                    // мс; ORM объединяет с signal через AbortSignal.any
-    signal: controller.signal,         // отмена транзакции извне
+    timeout: 5_000,                    // таймаут НА КАЖДУЮ ПОПЫТКУ (см. ниже)
+    signal: controller.signal,         // ГЛОБАЛЬНАЯ отмена: вся операция, все попытки
     idempotent: true,                  // см. «Retry-семантика» ниже
   },
 );
+```
+
+**Семантика отмены при `idempotent: true`** — у `signal` и `timeout` разный охват:
+
+- `signal` — **глобальный**: пробрасывается в SDK как есть и отменяет операцию целиком, включая все retry-попытки;
+- `timeout` — **на каждую попытку**: SDK может повторить колбэк заново (`idempotent: true`), и каждая попытка получает свежее окно таймаута — retry никогда не стартует с уже истёкшим дедлайном первой попытки. Сигнал, который получает колбэк (`fn(trx, signal)`), объединяет сигнал попытки от SDK и `AbortSignal.timeout(timeout)` этой попытки.
+
+Полный дедлайн на всю операцию задаётся явно через пользовательский сигнал:
+
+```ts
+await this.txManager.runInTransaction(fn, {
+  idempotent: true,
+  signal: AbortSignal.timeout(30_000), // общий лимит на все попытки
+});
 ```
 
 Опции валидируются fail-fast: неизвестный ключ (опечатка), невалидный уровень изоляции, неположительный `timeout`, не-`AbortSignal` — ошибка сразу.

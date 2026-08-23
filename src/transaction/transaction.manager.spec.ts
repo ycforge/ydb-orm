@@ -78,18 +78,28 @@ function makeFakeDb(
     const trxExecutors = Array.from({ length: attempts }, () =>
       makeQueryExecutor(),
     );
+    // Каждая попытка — свой сигнал отмены (как linkSignals в @ydbjs/query),
+    // связанный с глобальным пользовательским сигналом из опций.
+    const attemptControllers = Array.from(
+      { length: attempts },
+      () => new AbortController(),
+    );
     transactions.push({ options: options ?? {}, trx: trxExecutors[0] });
-    let attempt = 0;
     return {
       async execute(fn) {
-        // Имитация @ydbjs/query: каждая попытка — новый session/tx executor.
-        let result = await fn(trxExecutors[attempt]);
-        attempt += 1;
-        while (attempt < attempts) {
-          result = await fn(trxExecutors[attempt]);
-          attempt += 1;
+        // Имитация @ydbjs/query: каждая попытка — новый session/tx executor
+        // и новый сигнал попытки.
+        let result: unknown;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          const ownSignal = attemptControllers[attempt].signal;
+          const globalSignal = options?.signal;
+          const attemptSignal =
+            globalSignal instanceof AbortSignal
+              ? AbortSignal.any([globalSignal, ownSignal])
+              : ownSignal;
+          result = await fn(trxExecutors[attempt], attemptSignal);
         }
-        return result;
+        return result as any;
       },
     };
   };
@@ -181,7 +191,7 @@ describe('runInTransaction(): options propagation to the SDK call (#98)', () => 
     expect(db.transactions[0].options.idempotent).toBe(true);
   });
 
-  it('propagates an already-aborted user signal', async () => {
+  it('propagates the user signal to the SDK as-is (global, spans retries)', async () => {
     const db = makeFakeDb();
     const manager = new YdbTransactionManager(db.executor);
     const controller = new AbortController();
@@ -191,38 +201,103 @@ describe('runInTransaction(): options propagation to the SDK call (#98)', () => 
       signal: controller.signal,
     });
 
-    const signal = db.transactions[0].options.signal;
-    expect(signal).toBeInstanceOf(AbortSignal);
-    expect(signal?.aborted).toBe(true);
+    // Пользовательский сигнал уходит в SDK без изменений — он глобальный.
+    expect(db.transactions[0].options.signal).toBe(controller.signal);
   });
 
-  it('enforces timeout via a merged AbortSignal that fires after the deadline', async () => {
+  it('timeout is per-attempt: the callback signal fires after the deadline', async () => {
     const db = makeFakeDb();
     const manager = new YdbTransactionManager(db.executor);
 
-    await manager.runInTransaction(() => Promise.resolve(), { timeout: 25 });
+    let attemptSignal: AbortSignal | undefined;
 
-    const signal = db.transactions[0].options.signal;
-    expect(signal).toBeInstanceOf(AbortSignal);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(signal?.aborted).toBe(true);
+    await manager.runInTransaction(
+      async (_trx, signal) => {
+        attemptSignal = signal;
+        await new Promise((resolve) => setTimeout(resolve, 90));
+      },
+      { timeout: 30 },
+    );
+
+    // Таймаут НЕ попадает в SDK как общий дедлайн...
+    expect(db.transactions[0].options.signal).toBeUndefined();
+    // ...а применяется к сигналу конкретной попытки.
+    expect(attemptSignal).toBeInstanceOf(AbortSignal);
+    expect(attemptSignal?.aborted).toBe(true);
   }, 5000);
 
-  it('links user signal with the timeout signal', async () => {
+  it('user signal + timeout: aborting the user signal aborts the current attempt', async () => {
     const db = makeFakeDb();
     const manager = new YdbTransactionManager(db.executor);
     const controller = new AbortController();
 
-    await manager.runInTransaction(async () => {}, {
-      timeout: 60_000,
-      signal: controller.signal,
-    });
-
-    const merged = db.transactions[0].options.signal!;
-    expect(merged.aborted).toBe(false);
-    controller.abort();
-    expect(merged.aborted).toBe(true);
+    await manager.runInTransaction(
+      (_trx, signal) => {
+        expect(signal?.aborted).toBe(false);
+        controller.abort();
+        expect(signal?.aborted).toBe(true);
+        return Promise.resolve();
+      },
+      { timeout: 60_000, signal: controller.signal },
+    );
   });
+});
+
+describe('timeout semantics across retries (#98)', () => {
+  it('a retry receives a FRESH per-attempt signal after a previous attempt timed out', async () => {
+    const db = makeFakeDb({ attemptsPerTransaction: 2 });
+    const manager = new YdbTransactionManager(db.executor);
+
+    const received: AbortSignal[] = [];
+
+    await manager.runInTransaction(
+      async (_trx, signal) => {
+        received.push(signal!);
+        if (received.length === 1) {
+          // Первая попытка «зависла» дольше таймаута.
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        }
+        return Promise.resolve('ok');
+      },
+      { idempotent: true, timeout: 30 },
+    );
+
+    expect(received.length).toBe(2);
+    // Первая попытка упёрлась в таймаут...
+    expect(received[0].aborted).toBe(true);
+    // ...но retry получил СВЕЖИЙ сигнал, а не уже истёкший дедлайн.
+    expect(received[1].aborted).toBe(false);
+    expect(received[1]).not.toBe(received[0]);
+    // Таймаут не просочился в SDK как общий дедлайн операции.
+    expect(db.transactions[0].options.signal).toBeUndefined();
+  }, 5000);
+
+  it('an explicit user AbortSignal is a GLOBAL deadline: it spans retries', async () => {
+    const db = makeFakeDb({ attemptsPerTransaction: 2 });
+    const manager = new YdbTransactionManager(db.executor);
+
+    const received: AbortSignal[] = [];
+
+    await manager.runInTransaction(
+      async (_trx, signal) => {
+        received.push(signal!);
+        if (received.length === 1) {
+          // Глобальный дедлайн истекает, пока выполняется первая попытка.
+          await new Promise((resolve) => setTimeout(resolve, 90));
+        }
+        return Promise.resolve('ok');
+      },
+      // Полный дедлайн на всю операцию задаётся пользователем явно.
+      { idempotent: true, signal: AbortSignal.timeout(30) },
+    );
+
+    expect(received.length).toBe(2);
+    // Оба сигнала прерваны: глобальный дедлайн распространяется на retry.
+    expect(received[0].aborted).toBe(true);
+    expect(received[1].aborted).toBe(true);
+    // При этом сигнал SDK в опциях — именно пользовательский.
+    expect(db.transactions[0].options.signal).toBeDefined();
+  }, 5000);
 });
 
 describe('runInTransaction(): nested call detection (#98)', () => {

@@ -94,8 +94,9 @@ export function createExecutor(
   // интерфейс ORM ожидает transaction(options?) => { execute(fn) }.
   // Раньше адаптация существовала только в wrapExecutorWithLogging, из-за
   // чего runInTransaction на «живом» SDK падал. Опции (isolation/signal/
-  // idempotent) пробрасываются в SDK как есть; timeout снимается менеджером
-  // транзакций и до SDK не доходит.
+  // idempotent) пробрасываются в SDK как есть; timeout реализуется менеджером
+  // транзакций per-attempt (свежее AbortSignal.timeout на каждую попытку)
+  // и до SDK не доходит.
   const adapted = ((strings: TemplateStringsArray, ...args: any[]) =>
     client(strings, ...args)) as unknown as YdbExecutor;
 

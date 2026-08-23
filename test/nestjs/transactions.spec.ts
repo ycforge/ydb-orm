@@ -76,10 +76,14 @@ function createTaggedDb(): TaggedDb {
   ): YdbTransactionHandle => {
     const trx = makeExecutor(`trx-${++txCounter}`);
     transactionOptions.push(options ?? {});
+    // Глобальный пользовательский сигнал виден колбэку каждой попытки
+    // (имитация linkSignals в @ydbjs/query).
+    const globalSignal = options?.signal;
     return {
       execute: async <T>(
         fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
-      ): Promise<T> => fn(trx),
+      ): Promise<T> =>
+        fn(trx, globalSignal instanceof AbortSignal ? globalSignal : undefined),
     };
   };
 
@@ -350,20 +354,28 @@ describe('NestJS integration: transactions (#98)', () => {
         const controller = new AbortController();
         controller.abort();
 
-        await txManager.runInTransaction(async () => {}, {
-          isolation: 'snapshotReadWrite',
-          idempotent: true,
-          timeout: 60_000,
-          signal: controller.signal,
-        });
+        let callbackSignal: AbortSignal | undefined;
+
+        await txManager.runInTransaction(
+          (_trx, signal) => {
+            callbackSignal = signal;
+            return Promise.resolve();
+          },
+          {
+            isolation: 'snapshotReadWrite',
+            idempotent: true,
+            timeout: 60_000,
+            signal: controller.signal,
+          },
+        );
 
         const opts = db.transactionOptions[0];
         expect(opts.isolation).toBe('snapshotReadWrite');
         expect(opts.idempotent).toBe(true);
-        const signal = opts.signal as AbortSignal;
-        expect(signal).toBeInstanceOf(AbortSignal);
-        // Пользовательский сигнал уже прерван — merged-сигнал тоже.
-        expect(signal.aborted).toBe(true);
+        // Пользовательский сигнал уходит в SDK как есть — глобальный.
+        expect(opts.signal).toBe(controller.signal);
+        // Колбэк получает сигнал попытки, в который прокинут глобальный.
+        expect(callbackSignal?.aborted).toBe(true);
       } finally {
         await moduleRef.close();
       }

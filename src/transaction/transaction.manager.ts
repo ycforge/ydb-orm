@@ -141,7 +141,10 @@ export class YdbTransactionManager {
    *
    * @param fn колбэк, получающий executor транзакции и сигнал отмены текущей
    *   попытки. При idempotent-retry вызывается повторно — см. выше.
-   * @param options см. RunInTransactionOptions.
+   * @param options см. RunInTransactionOptions. Семантика отмены:
+   *   `signal` — глобальный (отменяет все попытки), `timeout` — на каждую
+   *   попытку (retry получает свежее окно; полный дедлайн —
+   *   `signal: AbortSignal.timeout(ms)`).
    */
   async runInTransaction<T>(
     fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
@@ -169,31 +172,41 @@ export class YdbTransactionManager {
     const settings = getTransactionContextSettings();
     const ambient = options?.ambient ?? settings.ambient;
 
-    // Таймаут реализуется ORM: объединяем пользовательский сигнал с
-    // AbortSignal.timeout через AbortSignal.any (Node >= 20).
-    let sdkSignal = options?.signal;
-    if (options?.timeout !== undefined) {
-      const signals = [sdkSignal, AbortSignal.timeout(options.timeout)].filter(
-        (s): s is AbortSignal => s instanceof AbortSignal,
-      );
-      sdkSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-    }
+    // Семантика таймаута (#98): timeout действует НА КАЖДУЮ попытку.
+    // При idempotent-retry SDK выполняет колбэк повторно с новой сессией —
+    // каждая попытка получает СВЕЖЕЕ окно таймаута, а не истёкший дедлайн
+    // первой попытки. Пользовательский signal при этом ГЛОБАЛЬНЫЙ: он
+    // передаётся в SDK как есть и отменяет операцию целиком (все попытки).
+    // Полный общий дедлайн задаётся явно: signal: AbortSignal.timeout(ms).
 
     const trxOptions = {
       isolation: options?.isolation,
       idempotent: options?.idempotent,
-      signal: sdkSignal,
+      // Только пользовательский сигнал: таймаут не должен попадать сюда,
+      // иначе он стал бы общим дедлайном для всех попыток.
+      signal: options?.signal,
     };
 
     // Контекст активной транзакции создаётся на каждый вызов execute():
     // при idempotent-retry SDK вызывает execute-колбэк заново с новой
     // сессией/транзакцией — контекст каждой попытки свой.
-    return this.db
-      .transaction(trxOptions)
-      .execute((trx, signal) =>
-        runWithTransactionContext({ trx, db: this.db, signal, ambient }, () =>
-          fn(trx, signal),
-        ),
+    return this.db.transaction(trxOptions).execute((trx, sdkSignal) => {
+      // Сигнал конкретной попытки: сигнал от SDK (уже включает глобальный
+      // пользовательский signal) + свежий AbortSignal.timeout этой попытки.
+      let attemptSignal = sdkSignal;
+      if (options?.timeout !== undefined) {
+        const signals = [
+          sdkSignal,
+          AbortSignal.timeout(options.timeout),
+        ].filter((s): s is AbortSignal => s instanceof AbortSignal);
+        attemptSignal =
+          signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+      }
+
+      return runWithTransactionContext(
+        { trx, db: this.db, signal: attemptSignal, ambient },
+        () => fn(trx, attemptSignal),
       );
+    });
   }
 }
