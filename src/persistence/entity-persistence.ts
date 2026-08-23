@@ -24,6 +24,7 @@ import {
   type YdbEnumMeta,
 } from '../decorators/enum.decorator.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
+import { YdbEntityValidationError } from '../validation/validation-error.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 
@@ -995,9 +996,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     if (!provider) return;
     const errors = await provider.validate(entity);
     if (errors.length) {
-      throw new Error(
-        `Validation failed for ${this.entityClass.name}: ${errors.join('; ')}`,
-      );
+      throw new YdbEntityValidationError(this.entityClass.name, errors);
     }
   }
 
@@ -1314,9 +1313,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       for (const e of entities) {
         const errors = await provider.validate(e);
         if (errors.length) {
-          throw new Error(
-            `Validation failed for ${this.entityClass.name}: ${errors.join('; ')}`,
-          );
+          throw new YdbEntityValidationError(this.entityClass.name, errors);
         }
       }
     }

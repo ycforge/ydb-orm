@@ -13,6 +13,7 @@ import {
   YDB_CREDENTIALS_PROVIDER,
   YDB_ENCRYPTION_PROVIDER,
   YDB_BLIND_INDEX_PROVIDER,
+  YDB_VALIDATION_PROVIDER,
   YDB_SCHEMA_SYNC,
 } from '../core/constants.js';
 import {
@@ -26,6 +27,7 @@ import {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import { CredentialsProvider } from '@ydbjs/auth';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbTransactionManager } from '../transaction/transaction.manager.js';
 import { YdbSchemaSyncer } from '../schema/schema-sync.js';
 import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
@@ -82,6 +84,14 @@ export class YdbCoreModule {
           inject: [YDB_OPTIONS],
         },
 
+        {
+          provide: YDB_VALIDATION_PROVIDER,
+          useFactory: (
+            opts: YdbModuleOptions,
+          ): YdbValidationProvider | undefined => opts.validationProvider,
+          inject: [YDB_OPTIONS],
+        },
+
         /**
          * Синхронизатор схемы БД. При `sync: true` в опциях модуля
          * дожидается создания драйвера и подстраивает схему под все
@@ -111,6 +121,7 @@ export class YdbCoreModule {
         YdbTransactionManager,
         YDB_ENCRYPTION_PROVIDER,
         YDB_BLIND_INDEX_PROVIDER,
+        YDB_VALIDATION_PROVIDER,
         YDB_SCHEMA_SYNC,
       ],
     };

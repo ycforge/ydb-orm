@@ -3,6 +3,7 @@ import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
@@ -12,8 +13,8 @@ import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 /**
  * Конфигурация сущностей для программного использования без NestJS.
  * Валидирует метаданные каждой сущности, устанавливает executor,
- * генератор UUID (uuidVersion) и провайдеры шифрования на каждую
- * переданную сущность и создаёт для неё YdbRepository.
+ * генератор UUID (uuidVersion), провайдеры шифрования и валидации
+ * на каждую переданную сущность и создаёт для неё YdbRepository.
  *
  * Повторный вызов полностью заменяет конфигурацию: если провайдеры
  * не переданы, прошлые сбрасываются (актуально для тестов и hot-restart).
@@ -33,6 +34,7 @@ export function configureEntities(
     executor: YdbExecutor;
     encryptionProvider?: YdbEncryptionProvider;
     blindIndexProvider?: YdbBlindIndexProvider;
+    validationProvider?: YdbValidationProvider;
     /** Версия генерируемых UUID для PK: v7 (по умолчанию) или v4. */
     uuidVersion?: 'v4' | 'v7';
   },
@@ -73,6 +75,7 @@ export function configureEntities(
     entityClass.setExecutor(options.executor);
     entityClass.setEncryptionProvider(options.encryptionProvider);
     entityClass.setBlindIndexProvider(options.blindIndexProvider);
+    entityClass.setValidationProvider(options.validationProvider);
 
     getOrCreateRepository(entityClass);
   }

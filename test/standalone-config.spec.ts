@@ -7,6 +7,7 @@ import {
   YdbBaseEntity,
   YdbEncrypted,
 } from '../src/index.js';
+import type { YdbValidationProvider } from '../src/index.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { configureEntities } from '../src/core/standalone.js';
 import { getEntityRuntime } from '../src/entity/entity-runtime.js';
@@ -89,6 +90,7 @@ describe('configureEntities', () => {
       e.setExecutor(undefined);
       e.setEncryptionProvider(undefined);
       e.setBlindIndexProvider(undefined);
+      e.setValidationProvider(undefined);
     }
   });
 
@@ -258,5 +260,117 @@ describe('configureEntities', () => {
 
     // Валидная соседняя сущность тоже не сконфигурирована
     await expect(AtomicValid.findAll()).rejects.toThrow(/YDB executor not set/);
+  });
+
+  // ---- validationProvider (#95) ----
+
+  function makeTaggedValidationProvider(tag: string) {
+    return {
+      validate: (entity: any) =>
+        Promise.resolve(
+          entity.value === 'bad'
+            ? [
+                {
+                  property: 'value',
+                  constraint: 'isNotEmpty',
+                  message: `invalid:${tag}`,
+                },
+              ]
+            : [],
+        ),
+    } satisfies YdbValidationProvider;
+  }
+
+  it('подключает validationProvider и Active Record его использует (#95)', async () => {
+    // UPDATE ... RETURNING * — мок возвращает строку результата
+    const mock = createMockExecutor([
+      [
+        {
+          uuid: '00000000-0000-4000-8000-000000000002',
+          value: 'ok',
+        },
+      ],
+    ]);
+    const provider = makeTaggedValidationProvider('A');
+
+    configureEntities([TestSimple], {
+      executor: mock.executor,
+      validationProvider: provider,
+    });
+
+    expect(getEntityRuntime(TestSimple).validationProvider).toBe(provider);
+
+    // Невалидная сущность не пишется
+    const bad = Object.assign(new TestSimple(), {
+      uuid: '00000000-0000-4000-8000-000000000001',
+      value: 'bad',
+    });
+    await expect(TestSimple.save(bad)).rejects.toThrow(
+      /Validation failed for TestSimple: value: invalid:A \[isNotEmpty\]/,
+    );
+    expect(mock.queries).toHaveLength(0);
+
+    // Валидная — пишется
+    const good = Object.assign(new TestSimple(), {
+      uuid: '00000000-0000-4000-8000-000000000002',
+      value: 'ok',
+    });
+    await TestSimple.save(good);
+    expect(mock.queries).toHaveLength(1);
+  });
+
+  it('повторный бутстрап подменяет validationProvider новым (#95)', async () => {
+    const mock = createMockExecutor([[]]);
+    const first = makeTaggedValidationProvider('A');
+    const second = makeTaggedValidationProvider('B');
+
+    configureEntities([TestSimple], {
+      executor: mock.executor,
+      validationProvider: first,
+    });
+    configureEntities([TestSimple], {
+      executor: mock.executor,
+      validationProvider: second,
+    });
+
+    expect(getEntityRuntime(TestSimple).validationProvider).toBe(second);
+
+    const bad = Object.assign(new TestSimple(), {
+      uuid: '00000000-0000-4000-8000-000000000001',
+      value: 'bad',
+    });
+    await expect(TestSimple.save(bad)).rejects.toThrow(/invalid:B/);
+  });
+
+  it('повторный бутстрап без validationProvider сбрасывает прошлый (#95)', async () => {
+    // UPDATE ... RETURNING * — мок возвращает строку результата
+    const mock = createMockExecutor([
+      [
+        {
+          uuid: '00000000-0000-4000-8000-000000000001',
+          value: 'bad',
+        },
+      ],
+    ]);
+    const provider = makeTaggedValidationProvider('A');
+
+    configureEntities([TestSimple], {
+      executor: mock.executor,
+      validationProvider: provider,
+    });
+
+    // Повторный бутстрап без провайдера валидации — явный сброс
+    configureEntities([TestSimple], { executor: mock.executor });
+    expect(getEntityRuntime(TestSimple).validationProvider).toBeUndefined();
+
+    // Валидация больше не выполняется: UPDATE проходит и возвращает строку
+    const bad = Object.assign(new TestSimple(), {
+      uuid: '00000000-0000-4000-8000-000000000001',
+      value: 'bad',
+    });
+    const saved = await TestSimple.save(bad);
+    expect(saved).toBeInstanceOf(TestSimple);
+    expect(mock.queries).toHaveLength(1);
+    expect(mock.queries[0].sql).toContain('UPDATE `test_simple`');
   });
 });

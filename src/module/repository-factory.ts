@@ -4,12 +4,14 @@ import {
   YDB_OPTIONS,
   YDB_ENCRYPTION_PROVIDER,
   YDB_BLIND_INDEX_PROVIDER,
+  YDB_VALIDATION_PROVIDER,
 } from '../core/constants.js';
 import type { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
@@ -33,6 +35,7 @@ export function createActiveRecordEntityProvider(
       opts: YdbModuleOptions,
       encryptionProvider?: YdbEncryptionProvider,
       blindIndexProvider?: YdbBlindIndexProvider,
+      validationProvider?: YdbValidationProvider,
     ) => {
       const issues = validateEntityMetadata(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
@@ -54,6 +57,7 @@ export function createActiveRecordEntityProvider(
       // конфигурации — undefined сбрасывает предыдущее значение.
       entityClass.setEncryptionProvider(encryptionProvider);
       entityClass.setBlindIndexProvider(blindIndexProvider);
+      entityClass.setValidationProvider(validationProvider);
 
       getOrCreateRepository(entityClass as any);
 
@@ -64,6 +68,7 @@ export function createActiveRecordEntityProvider(
       YDB_OPTIONS,
       { token: YDB_ENCRYPTION_PROVIDER, optional: true },
       { token: YDB_BLIND_INDEX_PROVIDER, optional: true },
+      { token: YDB_VALIDATION_PROVIDER, optional: true },
     ],
   };
 }

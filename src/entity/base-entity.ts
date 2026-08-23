@@ -60,9 +60,13 @@ export class YdbBaseEntity {
     this.clearRepository();
   }
 
+  /**
+   * Устанавливает validation-провайдер. Передача undefined сбрасывает
+   * провайдер (нужно при повторном бутстрапе и очистке состояния в тестах).
+   */
   static setValidationProvider(
     this: typeof YdbBaseEntity,
-    provider: YdbValidationProvider,
+    provider?: YdbValidationProvider,
   ): void {
     getEntityRuntime(this).validationProvider = provider;
     this.clearRepository();

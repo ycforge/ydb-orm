@@ -24,6 +24,7 @@ export {
   YDB_CREDENTIALS_PROVIDER,
   YDB_ENCRYPTION_PROVIDER,
   YDB_BLIND_INDEX_PROVIDER,
+  YDB_VALIDATION_PROVIDER,
   YDB_SCHEMA_SYNC,
 } from './core/constants.js';
 export { mapToYdb } from './core/mapper.js';
@@ -133,8 +134,14 @@ export type {
 export type {
   YdbValidationProvider,
   YdbValidationOptions,
+  YdbValidationIssue,
+  YdbValidationErrorItem,
 } from './validation/ydb-validate.interface.js';
 export { ClassValidatorProvider } from './validation/ydb-validate.provider.js';
+export {
+  YdbEntityValidationError,
+  normalizeValidationIssues,
+} from './validation/validation-error.js';
 
 // Метаданные и реестр сущностей
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
