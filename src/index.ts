@@ -248,6 +248,21 @@ export type {
 } from './migrations/migration-runner.js';
 export { loadMigrationsFromDir } from './migrations/migration-loader.js';
 export {
+  evaluateMigrationCheck,
+  migrationStateExitCode,
+  MIGRATION_STATE_EXIT_CODES,
+} from './migrations/migration-check.js';
+export type {
+  MigrationCheckState,
+  MigrationCheckVerdict,
+} from './migrations/migration-check.js';
+export { readBookkeepingSnapshot } from './migrations/migration-bookkeeping.js';
+export type {
+  MigrationBookkeepingSnapshot,
+  MigrationBookkeepingDeps,
+} from './migrations/migration-bookkeeping.js';
+export { computeMigrationStatuses } from './migrations/migration-runner.js';
+export {
   planMigration,
   renderMigrationFile,
 } from './migrations/migration-generator.js';

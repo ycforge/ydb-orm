@@ -35,10 +35,17 @@ export interface YdbMigrationStatus {
   orphan?: boolean;
   /** Миграция помечена начатой (`state = 'started'`), но не завершена. */
   interrupted?: boolean;
+  /**
+   * Содержимое файла изменилось после применения (#101): запись учёта
+   * сопоставлена по имени, но хеш различается. Такая миграция считается
+   * «не успешно применённой» для проверок готовности — нужен явный
+   * reconcile (восстановить содержимое или removeMigrationRecord).
+   */
+  contentChanged?: boolean;
 }
 
 /** Имя миграции или понятная ошибка. */
-function migrationName(migration: YdbMigration): string {
+export function migrationName(migration: YdbMigration): string {
   if (!migration.name) {
     throw new Error(
       `Migration ${migration.constructor.name} has no name. ` +
@@ -86,6 +93,13 @@ function appliedFromRow(row: Record<string, any>): AppliedMigration {
     state: row.state === 'started' ? 'started' : 'applied',
   };
 }
+
+/**
+ * Маппинг строки таблицы учёта в запись; экспортируется для read-only
+ * снимка (migration-bookkeeping.ts). Отсутствующие hash/state — легаси-
+ * формат до #101: подразумевается applied, сопоставление по имени.
+ */
+export const appliedRecordFromRow = appliedFromRow;
 
 /**
  * Дубликаты во входном массиве — ошибка (#101): раньше второй дубликат
@@ -187,6 +201,51 @@ function recordMatchesMigration(
       (record.hash != null && m.hash != null && record.hash === m.hash) ||
       record.name === migrationName(m),
   );
+}
+
+/**
+ * Чистое сопоставление «файлы миграций ↔ записи учёта» без обращения к БД:
+ * используется и YdbMigrationRunner.status (обслуживающий путь с ensure),
+ * и read-only проверка готовности (#152, снимок из readBookkeepingSnapshot).
+ */
+export function computeMigrationStatuses(
+  migrations: YdbMigration[],
+  applied: AppliedMigration[],
+): YdbMigrationStatus[] {
+  assertNoDuplicates(migrations);
+  const index = buildAppliedIndex(applied);
+
+  const statuses: YdbMigrationStatus[] = migrations.map((migration) => {
+    const name = migrationName(migration);
+    const match = matchAppliedRecord(index, migration);
+    if (match.kind === 'pending') {
+      return { name, applied: false };
+    }
+    return {
+      name,
+      applied: true,
+      appliedAt: new Date(match.record.timestamp),
+      interrupted: match.record.state === 'started',
+      // Имя совпадает, а хеш содержимого различается (#101): файл меняли
+      // после применения. Для проверки готовности это не «успешно
+      // применённая» миграция — состояние фиксируется явно.
+      contentChanged: match.kind === 'changed' || undefined,
+    };
+  });
+
+  // Orphan-записи (#101): применены, но файла миграции уже нет.
+  for (const record of applied) {
+    if (recordMatchesMigration(record, migrations)) continue;
+    statuses.push({
+      name: record.name,
+      applied: true,
+      appliedAt: new Date(record.timestamp),
+      orphan: true,
+      interrupted: record.state === 'started',
+    });
+  }
+
+  return statuses;
 }
 
 const RECOVERY_HINT =
@@ -364,39 +423,17 @@ export class YdbMigrationRunner {
     return last.name;
   }
 
-  /** Статус по всем переданным миграциям (+ orphan/interrupted записи). */
+  /**
+   * Статус по всем переданным миграциям (+ orphan/interrupted записи).
+   *
+   * ВНИМАНИЕ: это «обслуживающий» путь — он создаёт таблицу учёта, если её
+   * нет (ensureMigrationsTable). Read-only потребители (проверка готовности
+   * #152) должны использовать computeMigrationStatuses поверх снимка из
+   * readBookkeepingSnapshot — без DDL.
+   */
   async status(migrations: YdbMigration[]): Promise<YdbMigrationStatus[]> {
-    assertNoDuplicates(migrations);
     const applied = await this.getAppliedMigrations();
-    const index = buildAppliedIndex(applied);
-
-    const statuses: YdbMigrationStatus[] = migrations.map((migration) => {
-      const name = migrationName(migration);
-      const match = matchAppliedRecord(index, migration);
-      if (match.kind === 'pending') {
-        return { name, applied: false };
-      }
-      return {
-        name,
-        applied: true,
-        appliedAt: new Date(match.record.timestamp),
-        interrupted: match.record.state === 'started',
-      };
-    });
-
-    // Orphan-записи (#101): применены, но файла миграции уже нет.
-    for (const record of applied) {
-      if (recordMatchesMigration(record, migrations)) continue;
-      statuses.push({
-        name: record.name,
-        applied: true,
-        appliedAt: new Date(record.timestamp),
-        orphan: true,
-        interrupted: record.state === 'started',
-      });
-    }
-
-    return statuses;
+    return computeMigrationStatuses(migrations, applied);
   }
 
   /**
