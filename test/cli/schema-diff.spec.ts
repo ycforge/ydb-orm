@@ -224,6 +224,39 @@ describe('diffSchemas + renderSchemaDiff (schema:verify output)', () => {
       '~ index "users__name_age": [age, name] → [name, age]',
     );
   });
+
+  it('reports reordered composite PK as a primary-key order mismatch (#89)', () => {
+    const expected: ExpectedTableSchema = {
+      tableName: 'tenant_users',
+      columns: { tenant_id: 'Utf8', uuid: 'Uuid' },
+      primaryKey: ['tenant_id', 'uuid'],
+      indexes: [],
+    };
+    const existing: YdbTableDescription = {
+      columns: new Map<string, Type_PrimitiveTypeId>([
+        ['tenant_id', Type_PrimitiveTypeId.UTF8],
+        ['uuid', Type_PrimitiveTypeId.UUID],
+      ]),
+      // Порядок переставлен: [tenant, id] и [id, tenant] — разные схемы
+      primaryKey: ['uuid', 'tenant_id'],
+      indexes: [],
+    };
+
+    const issues = diffSchemas([expected], [existing]);
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('primary-key-mismatch');
+    expect(issues[0].message).toBe(
+      'Table "tenant_users" primary key column order mismatch: ' +
+        'expected [tenant_id, uuid], actual [uuid, tenant_id]',
+    );
+
+    const out = renderSchemaDiff(issues, { color: false });
+    expect(out).toContain(
+      '! primary key column order mismatch: ' +
+        'expected [tenant_id, uuid], actual [uuid, tenant_id]',
+    );
+  });
 });
 
 describe('shouldUseColor', () => {

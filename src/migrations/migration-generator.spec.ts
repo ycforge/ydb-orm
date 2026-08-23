@@ -351,6 +351,70 @@ describe('planMigration', () => {
   });
 });
 
+describe('planMigration composite primary key order (#89)', () => {
+  const composite: ExpectedTableSchema = {
+    tableName: 'tenant_objects',
+    columns: { tenant_id: 'Utf8', id: 'Uuid' },
+    primaryKey: ['tenant_id', 'id'],
+    indexes: [],
+  };
+
+  const compositeDescription = (primaryKey: string[]) =>
+    description(
+      [
+        ['tenant_id', Type_PrimitiveTypeId.UTF8],
+        ['id', Type_PrimitiveTypeId.UUID],
+      ],
+      primaryKey,
+    );
+
+  it('plans nothing for identical composite PKs', () => {
+    const plan = planMigration(
+      [composite],
+      [compositeDescription(['tenant_id', 'id'])],
+    );
+
+    expect(plan.up).toEqual([]);
+    expect(plan.down).toEqual([]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it('warns on reordered composite PK without generating DDL (#89)', () => {
+    const plan = planMigration(
+      [composite],
+      [compositeDescription(['id', 'tenant_id'])],
+    );
+
+    expect(plan.up).toEqual([]);
+    expect(plan.down).toEqual([]);
+    // Ручная миграция вместо опасного автогенерируемого DDL
+    expect(plan.warnings).toEqual([
+      'Table "tenant_objects": primary key column order mismatch: ' +
+        'expected [tenant_id, id], actual [id, tenant_id] — ' +
+        'YDB cannot alter a primary key, manual migration required',
+    ]);
+  });
+
+  it('lists missing and extra PK columns in the warning (#89)', () => {
+    const plan = planMigration(
+      [composite],
+      [compositeDescription(['id', 'legacy_id'])],
+    );
+
+    expect(plan.up).toEqual([]);
+    expect(plan.down).toEqual([]);
+    expect(plan.warnings.some((w) => w.includes('missing [tenant_id]'))).toBe(
+      true,
+    );
+    expect(
+      plan.warnings.some((w) => w.includes('unexpected [legacy_id]')),
+    ).toBe(true);
+    expect(plan.warnings.every((w) => w.includes('manual migration'))).toBe(
+      true,
+    );
+  });
+});
+
 describe('planMigration input validation (#102)', () => {
   it('rejects non-array inputs with a clear error', () => {
     const wrongExpected = () =>
