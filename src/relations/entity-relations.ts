@@ -16,7 +16,10 @@ import { YdbEntityPersistence } from '../persistence/entity-persistence.js';
 import type { HydrationContext } from '../persistence/entity-persistence.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
-import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import {
+  resolveOperationExecutor,
+  runWithTransactionContext,
+} from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { mapToYdb } from '../core/mapper.js';
 import {
@@ -219,6 +222,14 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * Для многоуровневых путей afterFind промежуточных инстансов откладывается
    * (afterFind: false в гидратации) и срабатывает в пост-порядке — после
    * загрузки собственных детей — через fireAfterFindOn (см. #83/#107).
+   *
+   * Явный { trx } пробрасывается во ВЕСЬ обход (#16): на время многоуровневого
+   * пути открывается внутренний транзакционный контекст (per-call ambient из
+   * #98), поэтому запросы БЕЗ явного { trx } — включая те, что запускают
+   * afterFind-хуки промежуточных уровней — выполняются через тот же executor
+   * транзакции. Глобальный ambient для этого не нужен и не меняется; новая
+   * транзакция/сессия не создаётся (SDK исполняет повторные вызовы executor'а
+   * транзакции в ней же), commit/rollback остаётся у владельца транзакции.
    */
   private async loadRelationPath(
     items: YdbBaseEntity[],
@@ -241,6 +252,32 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       );
     }
 
+    // Внутренний контекст нужен только для многоуровневых путей с явным
+    // { trx }: одноуровневая eager-load и ambient-режим ведут себя как раньше.
+    if (options?.trx && segments.length > 1) {
+      await runWithTransactionContext(
+        {
+          trx: options.trx,
+          // Executor БД, открывший транзакцию: для детекции вложенности по
+          // ссылке (#98). Базовый executor сущности и есть этот db в wiring.
+          db: this.executor ?? options.trx,
+          ambient: true,
+        },
+        () => this.loadRelationSegments(rel, items, segments, options),
+      );
+      return;
+    }
+
+    await this.loadRelationSegments(rel, items, segments, options);
+  }
+
+  /** Тело обхода пути без управления транзакционным контекстом (#16). */
+  private async loadRelationSegments(
+    rel: RelationMetadata,
+    items: YdbBaseEntity[],
+    segments: string[],
+    options?: QueryOptions,
+  ): Promise<void> {
     const isIntermediate = segments.length > 1;
     const targets = await this.loadRelation(items, rel, options, {
       afterFind: !isIntermediate,
@@ -250,7 +287,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       // Дети этого уровня уже загружены — пост-порядковый afterFind
       // срабатывает для этого уровня после его потомков.
       await this.loadRelationPath(targets, segments.slice(1), options);
-      await this.fireAfterFindOn(targets);
+      await this.fireAfterFindOn(targets, options);
     }
   }
 
@@ -444,11 +481,21 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   /**
    * Пост-порядковый afterFind для инстансов промежуточного уровня
    * вложенного eager-пути (#16): срабатывает после их детей.
+   *
+   * Persistence создаётся с тем же { trx }, что и загрузка связи (#16-fix):
+   * отложенный afterFind промежуточного уровня не теряет транзакцию
+   * вызывающего — любые DB-операции внутри хуков идут через неё.
    */
-  private async fireAfterFindOn(targets: YdbBaseEntity[]): Promise<void> {
+  private async fireAfterFindOn(
+    targets: YdbBaseEntity[],
+    options?: QueryOptions,
+  ): Promise<void> {
     if (!targets.length) return;
     const Target = targets[0].constructor as typeof YdbBaseEntity;
-    const targetPersistence = this.createTargetPersistence(Target);
+    const targetPersistence = this.createTargetPersistence(
+      Target,
+      options?.trx,
+    );
     await targetPersistence.fireAfterFind(targets);
   }
 

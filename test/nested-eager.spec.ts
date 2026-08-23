@@ -248,6 +248,95 @@ class InvalidPathPhoto extends YdbBaseEntity {
   uuid: string;
 }
 
+// ---- Транзакционная пропага afterFind (#16-fix) ----
+// Хуки промежуточного и листового уровней выполняют запросы БЕЗ явного
+// { trx }: они обязаны уйти в executor той транзакции, в которой загружалась
+// связь, а не в базовый executor.
+
+const trxHookCalls: string[] = [];
+
+@YdbEntity('netr_photos')
+@EagerLoad(['tags.owner'])
+class TrxPhoto extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  uuid: string;
+
+  @ManyToMany(() => TrxTag, (t) => t.photos)
+  @JoinTable('netr_photo_tag', {
+    joinColumn: 'photo_uuid',
+    inverseJoinColumn: 'tag_uuid',
+  })
+  tags?: any[];
+
+  @AfterFind
+  onFound() {
+    trxHookCalls.push(`photo:${this.uuid}`);
+  }
+}
+
+@YdbEntity('netr_tags')
+class TrxTag extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  uuid: string;
+
+  @YdbColumn('Utf8')
+  name: string;
+
+  @YdbColumn('Utf8')
+  owner_uuid: string;
+
+  @ManyToOne(() => TrxUser, 'owner_uuid')
+  owner?: any;
+
+  @AfterFind
+  async onFound() {
+    // Отложенный afterFind промежуточного уровня: запрос без { trx }.
+    await TrxUser.count();
+    trxHookCalls.push(`tag:${this.uuid}:owner=${this.owner?.uuid ?? '-'}`);
+  }
+}
+
+@YdbEntity('netr_users')
+class TrxUser extends YdbBaseEntity {
+  @YdbPrimaryColumn('Utf8')
+  uuid: string;
+
+  @YdbColumn('Utf8')
+  login: string;
+
+  @AfterFind
+  async onFound() {
+    // Листовой afterFind: запрос без { trx }.
+    await TrxUser.count();
+    trxHookCalls.push(`user:${this.uuid}`);
+  }
+}
+
+function trxPhoto(uuid: string): TrxPhoto {
+  const p = new TrxPhoto();
+  p.uuid = uuid;
+  return p;
+}
+
+/** Единая раскладка result sets для цепочки p1 -> t1 -> u1 с COUNT-хуками. */
+function trxChainMock(
+  dbMockFactory: typeof createMockExecutor,
+): ReturnType<typeof createMockExecutor> {
+  const linkRows = [{ photo_uuid: 'p1', tag_uuid: 't1' }];
+  const tagRows = [{ uuid: 't1', name: 'x', owner_uuid: 'u1' }];
+  const userRows = [{ uuid: 'u1', login: 'alice' }];
+  return dbMockFactory(
+    [
+      [linkRows],
+      [tagRows],
+      [userRows],
+      [[{ cnt: 1 }]], // COUNT из afterFind user-хука
+      [[{ cnt: 1 }]], // COUNT из отложенного afterFind tag-хука
+    ],
+    { sequential: true },
+  );
+}
+
 function photo(uuid: string): TwoLevelPhoto {
   const p = new TwoLevelPhoto();
   p.uuid = uuid;
@@ -258,6 +347,7 @@ function photo(uuid: string): TwoLevelPhoto {
 describe('#16: вложенная eager-load', () => {
   afterEach(() => {
     afterFindCalls.length = 0;
+    trxHookCalls.length = 0;
     OneLevelPhoto.setExecutor(undefined as any);
     OneLevelTag.setExecutor(undefined as any);
     TwoLevelPhoto.setExecutor(undefined as any);
@@ -272,6 +362,9 @@ describe('#16: вложенная eager-load', () => {
     OrderTag.setExecutor(undefined as any);
     OrderUser.setExecutor(undefined as any);
     InvalidPathPhoto.setExecutor(undefined as any);
+    TrxPhoto.setExecutor(undefined as any);
+    TrxTag.setExecutor(undefined as any);
+    TrxUser.setExecutor(undefined as any);
   });
 
   it('одноуровневая eager-load остаётся без изменений', async () => {
@@ -663,5 +756,126 @@ describe('#16: вложенная eager-load', () => {
     ).rejects.toThrow(/Unknown relation in eager path "nope.owner"/);
 
     expect(mock.queries).toHaveLength(0);
+  });
+
+  it('явный { trx }: каждый afterFind-хук использует тот же executor транзакции (#16-fix)', async () => {
+    const dbMock = createMockExecutor([[]]);
+    const trxMock = trxChainMock(createMockExecutor);
+    // Базовый executor сущностей — db; транзакция передаётся явно.
+    TrxPhoto.setExecutor(dbMock.executor);
+    TrxTag.setExecutor(dbMock.executor);
+    TrxUser.setExecutor(dbMock.executor);
+
+    await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations(
+      [trxPhoto('p1')],
+      { trx: trxMock.executor },
+    );
+
+    // Все 5 запросов (join, tags, users, COUNT из user-хука, COUNT из
+    // tag-хука) прошли через ОДИН tagged executor — транзакцию.
+    expect(trxMock.queries).toHaveLength(5);
+    expect(dbMock.queries).toHaveLength(0);
+    expect(trxMock.queries[0].sql).toContain('FROM `netr_photo_tag`');
+    expect(trxMock.queries[1].sql).toContain('FROM `netr_tags`');
+    expect(trxMock.queries[2].sql).toContain('FROM `netr_users`');
+    expect(trxMock.queries[3].sql).toContain('COUNT(*)');
+    expect(trxMock.queries[4].sql).toContain('COUNT(*)');
+
+    // Хуки увидели присоединённые связи и сработали в порядке leaf → root.
+    expect(trxHookCalls).toEqual(['user:u1', 'tag:t1:owner=u1']);
+  });
+
+  it('запрос из afterFind промежуточного уровня не попадает в базовый executor (#16-fix)', async () => {
+    const dbMock = createMockExecutor([[]]);
+    const trxMock = trxChainMock(createMockExecutor);
+    TrxPhoto.setExecutor(dbMock.executor);
+    TrxTag.setExecutor(dbMock.executor);
+    TrxUser.setExecutor(dbMock.executor);
+
+    await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations(
+      [trxPhoto('p1')],
+      { trx: trxMock.executor },
+    );
+
+    // Последний запрос — COUNT из ОТЛОЖЕННОГО afterFind тега
+    // (промежуточного уровня пути): он должен быть в транзакции.
+    const intermediateHookQuery = trxMock.queries[4];
+    expect(intermediateHookQuery.sql).toContain('COUNT(*)');
+    expect(dbMock.queries).toHaveLength(0);
+    // Хук тега выполнился уже с присоединённым владельцем.
+    expect(trxHookCalls).toContain('tag:t1:owner=u1');
+  });
+
+  it('ambient-режим не изменился: хуки идут в активную транзакцию как раньше', async () => {
+    const dbMock = createMockExecutor([[]]);
+    const trxMock = trxChainMock(createMockExecutor);
+    TrxPhoto.setExecutor(dbMock.executor);
+    TrxTag.setExecutor(dbMock.executor);
+    TrxUser.setExecutor(dbMock.executor);
+
+    configureTransactionContext({ ambient: true });
+    try {
+      await runWithTransactionContext(
+        {
+          trx: trxMock.executor,
+          db: dbMock.executor,
+          ambient: true,
+        },
+        async () => {
+          // Без явного { trx } — прежний ambient auto-join (#98).
+          await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations([
+            trxPhoto('p1'),
+          ]);
+        },
+      );
+    } finally {
+      configureTransactionContext();
+    }
+
+    expect(dbMock.queries).toHaveLength(0);
+    expect(trxMock.queries).toHaveLength(5);
+    expect(trxHookCalls).toEqual(['user:u1', 'tag:t1:owner=u1']);
+  });
+
+  it('exactly-once и порядок leaf → intermediate → root сохраняются при явном { trx }', async () => {
+    const dbMock = createMockExecutor([[]]);
+    const trxMock = trxChainMock(createMockExecutor);
+    TrxPhoto.setExecutor(dbMock.executor);
+    TrxTag.setExecutor(dbMock.executor);
+    TrxUser.setExecutor(dbMock.executor);
+
+    await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations(
+      [trxPhoto('p1')],
+      { trx: trxMock.executor },
+    );
+
+    // Ровно по одному вызову на каждый гидратированный инстанс
+    // (тег + user), leaf раньше intermediate.
+    expect(trxHookCalls).toEqual(['user:u1', 'tag:t1:owner=u1']);
+    expect(trxHookCalls.filter((c) => c === 'user:u1')).toHaveLength(1);
+    expect(trxHookCalls.filter((c) => c.startsWith('tag:'))).toHaveLength(1);
+  });
+
+  it('новая транзакция/сессия не открывается: executor.transaction() не вызывается (#16-fix)', async () => {
+    const dbMock = createMockExecutor([[]]);
+    const trxMock = trxChainMock(createMockExecutor);
+    TrxPhoto.setExecutor(dbMock.executor);
+    TrxTag.setExecutor(dbMock.executor);
+    TrxUser.setExecutor(dbMock.executor);
+
+    await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations(
+      [trxPhoto('p1')],
+      { trx: trxMock.executor },
+    );
+
+    // Ни один executor не открывал транзакцию: BEGIN/COMMIT/ROLLBACK
+    // отсутствуют, transaction() не вызывался ни разу.
+    expect(trxMock.transactionOptions).toHaveLength(0);
+    expect(dbMock.transactionOptions).toHaveLength(0);
+    for (const q of [...trxMock.queries, ...dbMock.queries]) {
+      expect(q.sql.toUpperCase()).not.toContain('BEGIN');
+      expect(q.sql.toUpperCase()).not.toContain('COMMIT');
+      expect(q.sql.toUpperCase()).not.toContain('ROLLBACK');
+    }
   });
 });
