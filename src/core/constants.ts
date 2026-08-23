@@ -6,3 +6,8 @@ export const YDB_ENCRYPTION_PROVIDER = Symbol('YDB_ENCRYPTION_PROVIDER');
 export const YDB_BLIND_INDEX_PROVIDER = Symbol('YDB_BLIND_INDEX_PROVIDER');
 export const YDB_VALIDATION_PROVIDER = Symbol('YDB_VALIDATION_PROVIDER');
 export const YDB_SCHEMA_SYNC = Symbol('YDB_SCHEMA_SYNC');
+/**
+ * Внутренний lifecycle-провайдер YdbCoreModule (schema sync на bootstrap,
+ * закрытие драйвера и снятие с учёта при shutdown). Наружу не экспортируется.
+ */
+export const YDB_CORE_LIFECYCLE = Symbol('YDB_CORE_LIFECYCLE');

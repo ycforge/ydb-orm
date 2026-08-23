@@ -38,7 +38,7 @@ const dupFeature = YdbModule.forFeature([DupEntityA, DupEntityB]);
 class DupFeatureModule {}
 
 describe('NestJS integration: коллизия DI-токенов одноимённых сущностей (#94)', () => {
-  let module: TestingModule;
+  let module: TestingModule | undefined;
   let service: DupService;
   let queries: { sql: string }[];
 
@@ -82,6 +82,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
 
   afterEach(async () => {
     if (module) await module.close();
+    module = undefined;
     DupEntityA.setExecutor(undefined as any);
     DupEntityB.setExecutor(undefined as any);
   });
@@ -122,6 +123,11 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
 
   it('повторная регистрация того же класса идемпотентна', async () => {
     const tokenBefore = getRepositoryToken(DupEntityA);
+
+    // #93: два живых YdbCoreModule одновременно запрещены —
+    // закрываем модуль из beforeEach перед повторным бутстрапом
+    await module?.close();
+    module = undefined;
 
     // Тот же класс дважды в forFeature — провайдеры не конфликтуют
     const mock = createMockExecutor([[{ uuid: UUID_A, title: 'again' }]]);
