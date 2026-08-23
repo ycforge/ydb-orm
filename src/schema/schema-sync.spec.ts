@@ -463,15 +463,15 @@ describe('buildExpectedJoinTableSchema', () => {
     expect(schema.primaryKey).toEqual(['order_ref', 'sku_code']);
   });
 
-  it('derives types from entity metadata when join-table struct carries none (#90)', () => {
+  it('definition always carries explicit column types; schema builds from it as-is (#87)', () => {
+    // Единственный источник имён/типов — resolveRelationJoinTableDefinition:
+    // типы обязательны и выводятся только там (ошибкой конфигурации, без
+    // молчаливого фолбэка). Отдельного пути вывода типов в схеме нет (#87).
     const [jt] = getManyToManyJoinTables([TestOrderEntity, TestSkuEntity]);
-    const bare = {
-      ...jt,
-      joinColumnType: undefined,
-      inverseJoinColumnType: undefined,
-    };
-    const schema = buildExpectedJoinTableSchema(bare);
+    expect(jt.joinColumnType).toBe('Int64');
+    expect(jt.inverseJoinColumnType).toBe('Utf8');
 
+    const schema = buildExpectedJoinTableSchema(jt);
     expect(schema.columns).toEqual({ order_ref: 'Int64', sku_code: 'Utf8' });
   });
 

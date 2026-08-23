@@ -283,70 +283,25 @@ export function buildExpectedTableSchema(
 /**
  * Ожидаемая схема join-таблицы many-to-many.
  *
- * Типы колонок выводятся из фактических PK-метаданных обеих сущностей (#90):
- * getManyToManyJoinTables заполняет joinColumnType/inverseJoinColumnType;
- * для структур, собранных вручную без типов, они выводятся из
- * ownerEntity/inverseEntity здесь — молчаливое предположение Uuid запрещено.
+ * Имена и типы колонок берутся ровно из того определения, которое построил
+ * resolveRelationJoinTableDefinition (#90/#87): типы выводятся из
+ * фактических PK-метаданных обеих сущностей, а невыводимый тип — ошибка
+ * конфигурации в самом резолве. Отдельного пути вывода типов здесь нет:
+ * сгенерированная схема по построению совпадает с тем, что читает
+ * relations-код (см. ResolvedJoinTable в entity-relations.ts).
  */
 export function buildExpectedJoinTableSchema(
   joinTable: ManyToManyJoinTable,
 ): ExpectedTableSchema {
-  const joinColumnType =
-    joinTable.joinColumnType ??
-    joinTablePkColumnType(joinTable.ownerEntity, 'owner');
-  const inverseJoinColumnType =
-    joinTable.inverseJoinColumnType ??
-    joinTablePkColumnType(joinTable.inverseEntity, 'inverse');
-
   return {
     tableName: joinTable.tableName,
     columns: {
-      [joinTable.joinColumn]: joinColumnType,
-      [joinTable.inverseJoinColumn]: inverseJoinColumnType,
+      [joinTable.joinColumn]: joinTable.joinColumnType,
+      [joinTable.inverseJoinColumn]: joinTable.inverseJoinColumnType,
     },
     primaryKey: [joinTable.joinColumn, joinTable.inverseJoinColumn],
     indexes: [],
   };
-}
-
-/**
- * Тип PK-колонки сущности для join-таблицы (#90).
- * Ровно один PK, объявленный через @YdbPrimaryColumn; иначе — явная ошибка,
- * чтобы sync/CLI не сгенерировали схему, несовместимую с relations-кодом.
- */
-function joinTablePkColumnType(
-  entity: ManyToManyJoinTable['ownerEntity'],
-  side: 'owner' | 'inverse',
-): YdbPrimitive {
-  const meta = getYdbEntityMetadata(entity);
-  if (!meta) {
-    throw new Error(
-      `Cannot derive ${side} join-table column type: ` +
-        `${entity.name} is not decorated with @YdbEntity`,
-    );
-  }
-  if (meta.primaryKeys.length === 0) {
-    throw new Error(
-      `Cannot derive ${side} join-table column type for entity ${entity.name}: ` +
-        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
-    );
-  }
-  if (meta.primaryKeys.length > 1) {
-    throw new Error(
-      `Cannot derive ${side} join-table column type for entity ${entity.name}: ` +
-        `composite primary keys (${meta.primaryKeys.join(', ')}) are not supported ` +
-        `in many-to-many relations.`,
-    );
-  }
-  const pk = meta.primaryKeys[0];
-  const type = meta.schema[pk];
-  if (!type) {
-    throw new Error(
-      `Cannot derive ${side} join-table column type for entity ${entity.name}: ` +
-        `primary key column "${pk}" is not declared via @YdbColumn.`,
-    );
-  }
-  return type;
 }
 
 /**

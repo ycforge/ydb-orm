@@ -52,12 +52,14 @@ export {
   getYdbRelationsMetadata,
   getYdbJoinTableMetadata,
   getManyToManyJoinTables,
+  resolveRelationJoinColumn,
 } from './decorators/relation.decorators.js';
 export type {
   RelationMetadata,
   RelationType,
   JoinTableMetadata,
   ManyToManyJoinTable,
+  JoinColumnResolutionContext,
 } from './decorators/relation.decorators.js';
 export { EagerLoad, getEagerRelations } from './decorators/eager.decorator.js';
 export { YdbJson, getJsonColumns } from './decorators/json.decorator.js';
