@@ -1,5 +1,5 @@
 import { ModuleMetadata, Type } from '@nestjs/common';
-import { DriverOptions } from '@ydbjs/core';
+import { Driver, DriverOptions } from '@ydbjs/core';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -20,6 +20,13 @@ export interface YdbModuleOptions {
   endpoint: string;
   auth_type?: YdbAuthMethod;
   authOptions: YdbAuthOptions;
+  /**
+   * Кастомная фабрика драйвера: если задана, используется вместо создания
+   * Driver по endpoint/driverOptions. Удобно для тестов и нестандартных
+   * транспортов. Драйвер, возвращённый фабрикой, считается принадлежащим
+   * модулю: при graceful shutdown модуль закроет его через driver.close().
+   */
+  driverFactory?: () => Driver | Promise<Driver>;
   driverOptions?: DriverOptions;
   poolOptions?: {
     minSize?: number;

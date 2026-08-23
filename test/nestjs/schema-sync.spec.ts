@@ -93,9 +93,17 @@ describe('NestJS integration: schema sync on bootstrap', () => {
       .useValue(mock.executor)
       .compile();
 
+    // #93: schema sync больше не выполняется в DI-фабрике —
+    // до бутстрапа DDL не выполняется ни одного
+    expect(mock.queries).toEqual([]);
+    expect(driver.createClient).not.toHaveBeenCalled();
+
+    await module.init();
+
     const ddl = mock.queries.map((q) => q.sql);
 
-    // Все три таблицы созданы во время инициализации модуля
+    // Все три таблицы созданы в onApplicationBootstrap, после регистрации
+    // сущностей всех модулей
     expect(ddl.some((sql) => sql.startsWith('CREATE TABLE `users`'))).toBe(
       true,
     );
@@ -157,6 +165,9 @@ describe('NestJS integration: schema sync on bootstrap', () => {
       .overrideProvider(YDB_QUERY)
       .useValue(mock.executor)
       .compile();
+
+    // Полный бутстрап: даже после init DDL не выполняется
+    await module.init();
 
     expect(mock.queries).toEqual([]);
     expect(driver.createClient).not.toHaveBeenCalled();

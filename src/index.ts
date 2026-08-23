@@ -26,6 +26,7 @@ export {
   YDB_BLIND_INDEX_PROVIDER,
   YDB_VALIDATION_PROVIDER,
   YDB_SCHEMA_SYNC,
+  YDB_CORE_SCOPE,
 } from './core/constants.js';
 export { mapToYdb } from './core/mapper.js';
 export { quoteIdentifier, validateIdentifier } from './core/sql-utils.js';
