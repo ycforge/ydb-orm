@@ -429,6 +429,43 @@ ydb-orm completion bash                   # скрипт shell-автодопо�
 
 Текстовый режим: сводка/список — в stdout, проблемы и diff схемы — в stderr, итоговая строка начинается с `Up to date:` или `Not ready:`. Цвет diff определяется по реальному потоку вывода и отключается вне TTY и по `NO_COLOR`. Для машинного разбора используйте `--json`: весь отчёт — в stdout со стабильной схемой (`ready`, `state`, `states`, `exitCode`, `pending`/`interrupted`/`modified`/`orphaned`, детальный массив `migrations` и блок `schema` со списком issues); не полагайтесь на цвет и формулировки текстового вывода.
 
+#### Интерактивный `entity:create` (#24)
+
+В TTY команда запускает мастер генерации сущности: имя таблицы → колонки
+(имя → тип YDB → PK / `@YdbEncrypted` + blind index / `@YdbEnum` со значениями и хранилищем /
+`@YdbCreateDateColumn`/`@YdbUpdateDateColumn`) → опциональный TTL (`@YdbTtl`, ISO 8601 duration,
+для date-like колонок) → предпросмотр и подтверждение записи.
+
+Гарантии:
+
+- все введённые определения валидируются **до** записи файла (имя таблицы, имена свойств,
+  наличие PK, значения enum, типы date-колонок, интервал TTL);
+- существующий файл никогда не перезаписывается — коллизия завершается ошибкой до старта вопросов;
+- отмена (Ctrl+C) и EOF (Ctrl+D) — чистый выход (exit-код 130), файл не создаётся;
+- никаких обращений к БД и DDL — только локальная генерация файла;
+- вне TTY (CI, скрипты, закрытый stdin) ввод не читается вовсе: детерминированно создаётся
+  шаблон по умолчанию (`uuid` PK + `name`), команда не зависает.
+
+Программная генерация (для скриптов и инструментов) — через публичный API:
+
+```ts
+import { createEntityFileFromSpec } from '@ycforge/ydb-orm';
+
+const created = createEntityFileFromSpec('./src', {
+  className: 'OrderEntity',
+  tableName: 'orders',
+  columns: [
+    { name: 'uuid', type: 'Uuid', primary: true },
+    { name: 'status', type: 'Utf8', enumValues: ['active'], enumStorage: 'Utf8' },
+    { name: 'created_at', type: 'Timestamp', createDate: true },
+  ],
+});
+```
+
+Также экспортируются `validateEntitySpec`, `renderEntityFile`, `buildDefaultEntitySpec`,
+`runEntityCreateCommand`/`runEntityCreateWizard` (интерактивный мастер над произвольными
+потоками ввода/вывода).
+
 `migration:generate` и `schema:verify` печатают цветной diff расхождений «сущности vs БД», сгруппированный по таблицам; цвет определяется по потоку, куда попадает вывод (для `schema:verify` это stderr), отключается при выводе не в TTY или переменной `NO_COLOR`.
 
 Автодополнение команд и флагов для шелла:

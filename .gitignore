@@ -18,6 +18,8 @@ lerna-debug.log*
 # Tests
 /coverage
 /.nyc_output
+/.tmp-entity-check
+/.tmp-entity-runtime-*
 
 # IDEs and editors
 /.idea

@@ -278,6 +278,33 @@ export {
 } from './core/driver.js';
 export { configureEntities } from './core/standalone.js';
 export type { YdbCliConfig } from './cli/config.js';
+// Генерация сущности без CLI (#24): программный вход для скриптов/инструментов.
+export type {
+  YdbEntitySpec,
+  YdbEntityColumnSpec,
+  YdbEntityTtlSpec,
+  YdbEnumStorage,
+  CreatedFile,
+} from './cli/generators.js';
+export {
+  createEntityFile,
+  createEntityFileFromSpec,
+  validateEntitySpec,
+  renderEntityFile,
+  buildDefaultEntitySpec,
+  entityFilePath,
+  ENTITY_CREATE_TYPES,
+  toEnumMemberName,
+} from './cli/generators.js';
+export {
+  runEntityCreateCommand,
+  runEntityCreateWizard,
+} from './cli/entity-wizard.js';
+export type {
+  EntityCreateCommandOptions,
+  EntityCreateWizardOptions,
+} from './cli/entity-wizard.js';
+export { PromptCancelledError } from './cli/prompt.js';
 
 // Credentials
 export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';
