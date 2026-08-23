@@ -1,6 +1,8 @@
 import {
   getYdbJoinTableMetadata,
   getYdbRelationsMetadata,
+  resolveRelationJoinColumn,
+  resolveRelationJoinTableDefinition,
   RelationMetadata,
 } from '../decorators/relation.decorators.js';
 import { getYdbIndexesMetadata } from '../decorators/index.decorator.js';
@@ -140,9 +142,25 @@ function validateRelation(
     return issues;
   }
 
+  // Строгий резолв join-колонки (#87): тот же резолвер, что и в рантайме
+  // relations. Невалидный селектор или отсутствие join-колонки — issue с
+  // понятным описанием, а не молчаливо угаданная строка.
+  let joinColumn: string | undefined;
+  if (rel.type !== 'many-to-many') {
+    try {
+      joinColumn = resolveRelationJoinColumn(rel.joinColumn, {
+        entityName: entity.name,
+        relationPropertyKey: rel.propertyKey,
+      });
+    } catch (err) {
+      issues.push(
+        `${rel.type} "${rel.propertyKey}": ${(err as Error).message}`,
+      );
+    }
+  }
+
   if (rel.type === 'one-to-many') {
-    const joinColumn = resolveJoinColumnName(rel);
-    if (joinColumn && !targetMeta.schema[joinColumn]) {
+    if (joinColumn !== undefined && !targetMeta.schema[joinColumn]) {
       issues.push(
         `one-to-many "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${Target.name}`,
       );
@@ -150,8 +168,7 @@ function validateRelation(
   }
 
   if (rel.type === 'many-to-one' || rel.type === 'one-to-one') {
-    const joinColumn = resolveJoinColumnName(rel);
-    if (joinColumn && !schema[joinColumn]) {
+    if (joinColumn !== undefined && !schema[joinColumn]) {
       issues.push(
         `${rel.type} "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${entity.name}`,
       );
@@ -181,16 +198,21 @@ function validateRelation(
         `many-to-many "${rel.propertyKey}" requires @JoinTable on one of the sides ` +
           `(${entity.name} or ${Target.name})`,
       );
+    } else {
+      // Ошибки конфигурации m2m (нет PK, составной PK, невыводимый тип
+      // join-колонки и т.п.) обнаруживаются тем же резолвером, который
+      // строит схему и читает рантайм (#87): module init падает с той же
+      // ошибкой, что позже дали бы schema sync/verify/relations.
+      try {
+        resolveRelationJoinTableDefinition(
+          ownJoin ? entity : Target,
+          ownJoin ? rel : inverseRel!,
+        );
+      } catch (err) {
+        issues.push((err as Error).message);
+      }
     }
   }
 
   return issues;
-}
-
-/** Извлекает имя колонки из строки или селектора (x) => x.field. */
-function resolveJoinColumnName(rel: RelationMetadata): string | undefined {
-  if (!rel.joinColumn) return undefined;
-  if (typeof rel.joinColumn === 'string') return rel.joinColumn;
-  const proxy = new Proxy({}, { get: (_, prop) => prop as string });
-  return rel.joinColumn(proxy);
 }

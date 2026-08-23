@@ -5,6 +5,7 @@ import {
   assertNoForeignJoinTableConflicts,
   getManyToManyJoinTables,
   getYdbRelationsMetadata,
+  resolveRelationJoinColumn,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbExecutor } from '../core/interfaces.js';
@@ -175,7 +176,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       const Target = rel.target();
 
       if (rel.type === 'one-to-many') {
-        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
+        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+          entityName: constructor.name,
+          relationPropertyKey: rel.propertyKey,
+        });
         const pks = items
           .map((item) => (item as any)[pkField])
           .filter((v) => v !== undefined);
@@ -223,7 +227,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
           (item as any)[name] = related.get((item as any)[pkField]) ?? [];
         }
       } else {
-        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
+        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+          entityName: constructor.name,
+          relationPropertyKey: rel.propertyKey,
+        });
         const fks = items
           .map((item) => (item as any)[joinColumnName])
           .filter((v) => v !== undefined);
@@ -277,7 +284,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       const Target = rel.target();
 
       if (rel.type === 'one-to-many') {
-        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
+        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+          entityName: constructor.name,
+          relationPropertyKey: rel.propertyKey,
+        });
         const pkField = getPrimaryKey(constructor);
 
         for (const item of items) {
@@ -329,7 +339,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
           (item as any)[name] = related.get(pkValue) ?? [];
         }
       } else {
-        const joinColumnName = resolveJoinColumn(rel.joinColumn!);
+        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+          entityName: constructor.name,
+          relationPropertyKey: rel.propertyKey,
+        });
         const targetPk = getPrimaryKey(Target);
 
         for (const item of items) {
@@ -367,21 +380,6 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     }
     return await query;
   }
-}
-
-/** Извлекает имя свойства из стрелочной функции вида (x) => x.field */
-function resolveJoinColumn(
-  joinColumn: string | ((target: any) => any),
-): string {
-  if (typeof joinColumn === 'string') return joinColumn;
-
-  const proxy = new Proxy(
-    {},
-    {
-      get: (_, prop) => prop as string,
-    },
-  );
-  return joinColumn(proxy);
 }
 
 /** Возвращает первый PK из метаданных. Бросает ошибку, если PK не объявлен. */
@@ -439,7 +437,10 @@ function resolveManyToManyJoinTable(
       tableName: own.tableName,
       ownerColumn: own.joinColumn,
       inverseColumn: own.inverseJoinColumn,
-      ownerColumnType: own.joinColumnType as YdbPrimitive,
+      // Имя, тип и сущности берутся из того же определения, по которому
+      // строится схема join-таблицы (#87): расхождений между рантаймом
+      // и schema sync быть не может.
+      ownerColumnType: own.joinColumnType,
       ownerEntity: owner,
       inverseEntity,
     };
@@ -457,7 +458,7 @@ function resolveManyToManyJoinTable(
       ownerColumn: inverseOwned.inverseJoinColumn,
       inverseColumn: inverseOwned.joinColumn,
       // Тип owner-колонки = тип PK владельца = тип её колонки в объявлении.
-      ownerColumnType: inverseOwned.inverseJoinColumnType as YdbPrimitive,
+      ownerColumnType: inverseOwned.inverseJoinColumnType,
       ownerEntity: owner,
       inverseEntity,
     };

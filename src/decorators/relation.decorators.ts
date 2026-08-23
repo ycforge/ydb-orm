@@ -23,9 +23,15 @@ export interface RelationMetadata {
 export interface JoinTableMetadata {
   propertyKey: string;
   tableName: string;
-  /** Колонка, ссылающаяся на владеющую сущность (по умолчанию `{ownerTable}_uuid`). */
+  /**
+   * Колонка, ссылающаяся на владеющую сущность
+   * (по умолчанию `{ownerTable}_{pkProperty}`, #90).
+   */
   joinColumn?: string;
-  /** Колонка, ссылающаяся на обратную сущность (по умолчанию `{inverseTable}_uuid`). */
+  /**
+   * Колонка, ссылающаяся на обратную сущность
+   * (по умолчанию `{inverseTable}_{pkProperty}`, #90).
+   */
   inverseJoinColumn?: string;
 }
 
@@ -35,12 +41,14 @@ export interface ManyToManyJoinTable {
   joinColumn: string;
   inverseJoinColumn: string;
   /**
-   * YDB-тип колонки, ссылающейся на владельца (#90): выводится из
-   * фактического PK owner-сущности, а не жёстко Uuid.
+   * YDB-тип колонки, ссылающейся на владельца (#90/#87): выводится из
+   * фактического PK owner-сущности. Обязателен: резолв всегда выводит тип
+   * из PK или бросает понятную ошибку конфигурации — молчаливого фолбэка
+   * на Uuid не существует (#87).
    */
-  joinColumnType?: YdbPrimitive;
-  /** YDB-тип колонки, ссылающейся на inverse-сущность (аналогично #90). */
-  inverseJoinColumnType?: YdbPrimitive;
+  joinColumnType: YdbPrimitive;
+  /** YDB-тип колонки, ссылающейся на inverse-сущность (аналогично #87). */
+  inverseJoinColumnType: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
   ownerTableName: string;
   ownerProperty: string;
@@ -59,6 +67,124 @@ export function defaultJoinColumnName(
   pkProperty: string,
 ): string {
   return `${tableName}_${pkProperty}`;
+}
+
+/** Контекст для сообщений об ошибках конфигурации join-колонки (#87). */
+export interface JoinColumnResolutionContext {
+  /** Имя класса-владельца связи. */
+  entityName: string;
+  /** Свойство связи (@OneToMany/@ManyToOne/@OneToOne). */
+  relationPropertyKey: string;
+}
+
+/**
+ * Строгий резолв декларации join-колонки связи (#87).
+ *
+ * Поддерживается ровно две формы:
+ *  - непустая строка — имя колонки;
+ *  - селектор свойства: `(target) => target.property` (точка или скобочная
+ *    запись с одним чтением свойства).
+ *
+ * Всё остальное — ошибка конфигурации, а не молчаливая угаданная строка:
+ * цепочки свойств (`x.a.b`), вызовы методов (`x.getFk()`), константы
+ * (`() => 'col'`) и неиспользованный аргумент отвергаются с ошибкой,
+ * называющей сущность и связь.
+ *
+ * Единственная точка резолва: используется рантаймом relations и
+ * validateEntityMetadata — расхождений между путями нет (#87).
+ */
+export function resolveRelationJoinColumn(
+  joinColumn: string | ((target: any) => any) | undefined | null,
+  ctx: JoinColumnResolutionContext,
+): string {
+  const where = `relation "${ctx.relationPropertyKey}" on ${ctx.entityName}`;
+
+  if (joinColumn === undefined || joinColumn === null) {
+    throw new Error(
+      `Join column is required for ${where}: ` +
+        `pass a column name or a property selector (target) => target.property.`,
+    );
+  }
+
+  if (typeof joinColumn === 'string') {
+    if (joinColumn.trim().length === 0) {
+      throw new Error(
+        `Invalid join column declaration for ${where}: ` +
+          `column name must be a non-empty string.`,
+      );
+    }
+    return joinColumn;
+  }
+
+  if (typeof joinColumn !== 'function') {
+    throw new Error(
+      `Invalid join column declaration for ${where}: ` +
+        `expected a non-empty string or a property selector ` +
+        `(target) => target.property, got ${typeof joinColumn}.`,
+    );
+  }
+
+  return resolvePropertySelector(joinColumn, where);
+}
+
+/**
+ * Резолвит селектор `(target) => target.property`: прокси-рекордер читает
+ * ровно одно обращение к свойству. Любая другая форма (цепочка, вызов,
+ * символ, вычисленное значение) даёт понятную ошибку вместо угаданной
+ * строки колонки (#87).
+ */
+function resolvePropertySelector(
+  selector: (target: any) => any,
+  where: string,
+): string {
+  const accessedProps: string[] = [];
+  let lastNode: unknown;
+
+  /** Маркер внутренней ошибки рекордера: отличаем её от ошибок пользователя. */
+  class SelectorRejected extends Error {}
+
+  const makeNode = (): unknown =>
+    new Proxy(function joinColumnSelectorTarget() {}, {
+      get: (_target, prop) => {
+        if (typeof prop === 'symbol') throw new SelectorRejected();
+        accessedProps.push(prop);
+        lastNode = makeNode();
+        return lastNode;
+      },
+      apply: () => {
+        throw new SelectorRejected();
+      },
+      construct: () => {
+        throw new SelectorRejected();
+      },
+    });
+
+  let result: unknown;
+  try {
+    result = selector(makeNode());
+  } catch (err) {
+    if (!(err instanceof SelectorRejected)) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(`${invalidSelectorMessage(where)} (${detail}).`);
+    }
+    throw new Error(invalidSelectorMessage(where));
+  }
+
+  if (accessedProps.length !== 1 || result !== lastNode) {
+    const detail = accessedProps.length
+      ? `unsupported selector form (target.${accessedProps.join('.')})`
+      : 'the target argument was not used to select a property';
+    throw new Error(`${invalidSelectorMessage(where)} — ${detail}.`);
+  }
+
+  return accessedProps[0];
+}
+
+function invalidSelectorMessage(where: string): string {
+  return (
+    `Invalid join column selector for ${where}: ` +
+    `only direct property access is supported — (target) => target.property`
+  );
 }
 
 function defineRelation(prototype: object, metadata: RelationMetadata): void {
@@ -195,35 +321,46 @@ export function resolveRelationJoinTableDefinition(
     );
   }
 
+  // Контекст связи для ошибок конфигурации (#87): ошибка всегда называет
+  // сущности, свойство связи и join-таблицу, а не только одну сущность.
+  const relationDesc =
+    `${Entity.name}.${relation.propertyKey} -> ${InverseEntity.name} ` +
+    `(join table "${joinTable.tableName}")`;
+
   if (meta.primaryKeys.length === 0) {
     throw new Error(
-      `Cannot build many-to-many join table for entity ${Entity.name}: ` +
-        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+      `Cannot build many-to-many join table for relation "${relationDesc}": ` +
+        `owner entity ${Entity.name} declares no primary key. ` +
+        `Mark at least one column with @YdbPrimaryColumn.`,
     );
   }
   if (inverseMeta.primaryKeys.length === 0) {
     throw new Error(
-      `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
-        `no primary key is declared. Mark at least one column with @YdbPrimaryColumn.`,
+      `Cannot build many-to-many join table for relation "${relationDesc}": ` +
+        `inverse entity ${InverseEntity.name} declares no primary key. ` +
+        `Mark at least one column with @YdbPrimaryColumn.`,
     );
   }
 
   // Рантайм-модель many-to-many связывает строки ровно по одному
   // значению PK с каждой стороны; составной PK породил бы join-таблицу,
-  // не совпадающую с тем, что читает relations-код, — отказываем явно (#90).
+  // не совпадающую с тем, что читает relations-код, — отказываем явно
+  // (#90/#87). Отказ детерминирован: один и тот же резолвер используется
+  // генерацией схемы, валидацией метаданных, eager loading, loadRelations
+  // и рантаймом join-таблицы — частичной поддержки ни в одном пути нет.
   if (meta.primaryKeys.length > 1) {
     throw new Error(
-      `Cannot build many-to-many join table "${joinTable.tableName}" ` +
-        `for entity ${Entity.name}: composite primary keys ` +
-        `(${meta.primaryKeys.join(', ')}) are not supported in ` +
+      `Cannot build many-to-many join table for relation "${relationDesc}": ` +
+        `owner entity ${Entity.name} has composite primary keys ` +
+        `(${meta.primaryKeys.join(', ')}) that are not supported in ` +
         `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
     );
   }
   if (inverseMeta.primaryKeys.length > 1) {
     throw new Error(
-      `Cannot build many-to-many join table "${joinTable.tableName}" ` +
-        `for entity ${InverseEntity.name}: composite primary keys ` +
-        `(${inverseMeta.primaryKeys.join(', ')}) are not supported in ` +
+      `Cannot build many-to-many join table for relation "${relationDesc}": ` +
+        `inverse entity ${InverseEntity.name} has composite primary keys ` +
+        `(${inverseMeta.primaryKeys.join(', ')}) that are not supported in ` +
         `many-to-many relations. Declare a single-column @YdbPrimaryColumn.`,
     );
   }
@@ -231,32 +368,42 @@ export function resolveRelationJoinTableDefinition(
   const ownerPk = meta.primaryKeys[0];
   const inversePk = inverseMeta.primaryKeys[0];
 
+  // Имена по умолчанию выводятся из фактических PK-колонок (#90):
+  // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
+  const resolvedJoinColumn =
+    joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk);
+  const resolvedInverseJoinColumn =
+    joinTable.inverseJoinColumn ??
+    defaultJoinColumnName(inverseMeta.tableName, inversePk);
+
+  // Тип join-колонки = точный тип PK-колонки сущности (#90/#87).
+  // Вывести тип невозможно — ошибка конфигурации; молчаливого фолбэка на
+  // Uuid не существует: он породил бы схему, несовместимую с данными.
   const ownerPkType = meta.schema[ownerPk];
   if (!ownerPkType) {
     throw new Error(
-      `Cannot build many-to-many join table for entity ${Entity.name}: ` +
-        `primary key column "${ownerPk}" is not declared via @YdbColumn. ` +
-        `Declare it or mark another column with @YdbPrimaryColumn.`,
+      `Cannot derive type of join column "${resolvedJoinColumn}" ` +
+        `for relation "${relationDesc}": primary key "${ownerPk}" of ` +
+        `${Entity.name} is not declared via @YdbColumn/@YdbPrimaryColumn. ` +
+        `Join-table columns reuse the exact primary key type — ` +
+        `there is no implicit fallback.`,
     );
   }
   const inversePkType = inverseMeta.schema[inversePk];
   if (!inversePkType) {
     throw new Error(
-      `Cannot build many-to-many join table for entity ${InverseEntity.name}: ` +
-        `primary key column "${inversePk}" is not declared via @YdbColumn. ` +
-        `Declare it or mark another column with @YdbPrimaryColumn.`,
+      `Cannot derive type of inverse join column "${resolvedInverseJoinColumn}" ` +
+        `for relation "${relationDesc}": primary key "${inversePk}" of ` +
+        `${InverseEntity.name} is not declared via @YdbColumn/@YdbPrimaryColumn. ` +
+        `Join-table columns reuse the exact primary key type — ` +
+        `there is no implicit fallback.`,
     );
   }
 
-  // Имена по умолчанию выводятся из фактических PK-колонок (#90):
-  // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
   return {
     tableName: joinTable.tableName,
-    joinColumn:
-      joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk),
-    inverseJoinColumn:
-      joinTable.inverseJoinColumn ??
-      defaultJoinColumnName(inverseMeta.tableName, inversePk),
+    joinColumn: resolvedJoinColumn,
+    inverseJoinColumn: resolvedInverseJoinColumn,
     joinColumnType: ownerPkType,
     inverseJoinColumnType: inversePkType,
     ownerEntity: Entity as typeof YdbBaseEntity,
