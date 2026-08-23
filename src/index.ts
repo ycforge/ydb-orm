@@ -116,6 +116,24 @@ export {
   dedupeInValues,
 } from './core/query-limits.js';
 
+// Retry-политика по типу ошибки (#27)
+export {
+  runWithRetry,
+  computeRetryDelayMs,
+  classifyYdbError,
+  isTransientYdbError,
+  validateYdbRetryPolicyOptions,
+  TRANSIENT_YDB_STATUSES,
+  DEFAULT_YDB_RETRY_POLICY_OPTIONS,
+} from './core/retry.js';
+export type {
+  YdbRetryPolicyOptions,
+  YdbRetryAttemptContext,
+  YdbErrorKind,
+  YdbRetrySleepFn,
+  YdbRetryRng,
+} from './core/retry.js';
+
 // Репозитории / EntityManager (DI-вариант поверх Active Record)
 export {
   YdbRepository,
