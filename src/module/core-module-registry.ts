@@ -1,5 +1,9 @@
 import { Driver } from '@ydbjs/core';
 import type { YdbModuleOptions } from '../core/interfaces.js';
+import {
+  beginEntityScope,
+  endEntityScope,
+} from '../metadata/entity-registry.js';
 
 /**
  * Состояние одного экземпляра YdbCoreModule (создаётся в forRootAsync и
@@ -47,9 +51,13 @@ export function claimCoreModuleInit(state: CoreModuleState): void {
     );
   }
   activeCoreModules.add(state);
+  // Скоуп реестра сущностей (#142): всё, что зарегистрировано к этому
+  // моменту (и зарегистрируется до shutdown), принадлежит этому приложению.
+  beginEntityScope();
 }
 
-/** Снимает экземпляр с учёта (идемпотентно). */
+/** Снимает экземпляр с учёта (идемпотентно) вместе со скоупом его сущностей. */
 export function releaseCoreModuleInit(state: CoreModuleState): void {
   activeCoreModules.delete(state);
+  endEntityScope();
 }
