@@ -460,13 +460,17 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     query: any,
     options?: QueryOptions,
   ): Promise<any[][]> {
-    const { signal, timeout } = options ?? {};
+    const { signal, timeout, idempotent } = options ?? {};
     if (signal) {
       if (signal.aborted) throw new Error('Query aborted by signal');
       query.signal(signal);
     }
     if (timeout && timeout > 0) {
       query.timeout(timeout);
+    }
+    // Пометка идемпотентности (#27): см. core/retry-executor.
+    if (idempotent === true) {
+      query.idempotent?.(true);
     }
     return await query;
   }
