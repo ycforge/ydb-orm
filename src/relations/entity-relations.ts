@@ -2,14 +2,11 @@ import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
-  assertNoForeignJoinTableConflicts,
-  getManyToManyJoinTables,
   getYdbRelationsMetadata,
   resolveRelationJoinColumn,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbExecutor } from '../core/interfaces.js';
-import type { YdbPrimitive } from '../core/types.js';
 import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -21,6 +18,10 @@ import { quoteIdentifier } from '../core/sql-utils.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { mapToYdb } from '../core/mapper.js';
+import {
+  resolveManyToManyJoinTable,
+  type ResolvedJoinTable,
+} from './resolve-join-table.js';
 
 /**
  * Зависимости relations-модуля.
@@ -483,80 +484,4 @@ function getPrimaryKey(target: typeof YdbBaseEntity): string {
     throw new Error(`Entity ${target.name} must declare a primary key`);
   }
   return meta.primaryKeys[0];
-}
-
-/**
- * Находит метаданные join-таблицы для many-to-many,
- * ориентированные относительно запрашиваемой сущности (owner).
- *
- * Валидация и разрешение конфликтов выполняются тем же кодом, что и при
- * генерации схемы: getManyToManyJoinTables для пары сущностей. Поэтому
- * рантайм не может молча выбрать одно из расходящихся объявлений таблицы —
- * он упадёт с той же ошибкой конфликта, что и schema sync/migrations (#139).
- */
-interface ResolvedJoinTable {
-  tableName: string;
-  ownerColumn: string;
-  inverseColumn: string;
-  /**
-   * YDB-тип owner-колонки join-таблицы (#90): тип PK owner-сущности.
-   * Схема join-таблицы (schema sync) выводит те же имена и типы, поэтому
-   * чтение всегда совместимо со сгенерированной таблицей.
-   */
-  ownerColumnType: YdbPrimitive;
-  ownerEntity: typeof YdbBaseEntity;
-  inverseEntity: typeof YdbBaseEntity;
-}
-
-function resolveManyToManyJoinTable(
-  owner: typeof YdbBaseEntity,
-  relation: { propertyKey: string; target: () => typeof YdbBaseEntity },
-): ResolvedJoinTable | undefined {
-  const ownerMeta = getYdbEntityMetadata(owner);
-  const inverseEntity = relation.target();
-  const inverseMeta = getYdbEntityMetadata(inverseEntity);
-  if (!ownerMeta || !inverseMeta) return undefined;
-
-  // Все объявления join-таблиц, видимые для пары (владелец, inverse):
-  // здесь же проверяются PK и конфликты объявлений одного имени (#90/#139).
-  const definitions = getManyToManyJoinTables([owner, inverseEntity]);
-
-  // Декларация на самом владельце для этой связи.
-  const own = definitions.find(
-    (d) => d.ownerEntity === owner && d.ownerProperty === relation.propertyKey,
-  );
-  if (own) {
-    assertNoForeignJoinTableConflicts(own);
-    return {
-      tableName: own.tableName,
-      ownerColumn: own.joinColumn,
-      inverseColumn: own.inverseJoinColumn,
-      // Имя, тип и сущности берутся из того же определения, по которому
-      // строится схема join-таблицы (#87): расхождений между рантаймом
-      // и schema sync быть не может.
-      ownerColumnType: own.joinColumnType,
-      ownerEntity: owner,
-      inverseEntity,
-    };
-  }
-
-  // Зеркальная декларация на обратной стороне: колонки разворачиваются —
-  // joinColumn объявления принадлежит inverse-сущности, inverseJoinColumn — владельцу.
-  const inverseOwned = definitions.find(
-    (d) => d.ownerEntity === inverseEntity && d.inverseEntity === owner,
-  );
-  if (inverseOwned) {
-    assertNoForeignJoinTableConflicts(inverseOwned);
-    return {
-      tableName: inverseOwned.tableName,
-      ownerColumn: inverseOwned.inverseJoinColumn,
-      inverseColumn: inverseOwned.joinColumn,
-      // Тип owner-колонки = тип PK владельца = тип её колонки в объявлении.
-      ownerColumnType: inverseOwned.inverseJoinColumnType,
-      ownerEntity: owner,
-      inverseEntity,
-    };
-  }
-
-  return undefined;
 }
