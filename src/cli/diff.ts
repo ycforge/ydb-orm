@@ -27,6 +27,7 @@ const KIND_STYLE: Record<
   'unique-mismatch': { marker: '~', color: RED },
   'ttl-mismatch': { marker: '~', color: RED },
   'primary-key-mismatch': { marker: '!', color: RED },
+  'rename-suggestion': { marker: '~', color: YELLOW },
   'extra-column': { marker: '-', color: GRAY },
   'extra-index': { marker: '-', color: BLUE },
   'ttl-extra': { marker: '-', color: BLUE },

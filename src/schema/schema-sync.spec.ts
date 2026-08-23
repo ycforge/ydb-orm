@@ -17,6 +17,7 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
 import { YdbExecutor } from '../core/interfaces.js';
+import { YdbPrimitive } from '../core/types.js';
 import {
   buildExpectedTableSchema,
   buildExpectedJoinTableSchema,
@@ -2282,5 +2283,237 @@ describe('DescribeTable non-primitive column types (#91)', () => {
       /column type mismatch \(price: expected Utf8, actual decimal\(22,9\)\)/,
     );
     expect((executor as unknown as jest.Mock).mock.calls).toEqual([]);
+  });
+});
+
+/**
+ * #23: детекция вероятных переименований колонок. Чистые литеральные
+ * схемы — без декораторов, чтобы точно управлять PK/индексами/TTL.
+ */
+describe('checkTableSchema: column rename hints (#23)', () => {
+  // Сущность переименовала label -> title; в БД осталась label
+  const renameExpected = (overrides: Partial<ExpectedTableSchema> = {}) => ({
+    tableName: 'photos',
+    columns: { uuid: 'Uuid', title: 'Utf8' } as Record<string, YdbPrimitive>,
+    primaryKey: ['uuid'],
+    indexes: [],
+    ...overrides,
+  });
+
+  it('suggests a rename for one missing + one extra column of the same type', () => {
+    const check = checkTableSchema(
+      renameExpected(),
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+
+    expect(check.missingColumns).toEqual([['title', 'Utf8']]);
+    expect(check.extraColumns).toEqual(['label']);
+    expect(check.likelyRenames).toEqual([{ from: 'label', to: 'title' }]);
+  });
+
+  it('does not guess when several candidates exist (#23)', () => {
+    const ambiguousExpected: ExpectedTableSchema = {
+      tableName: 'photos',
+      columns: { uuid: 'Uuid', title: 'Utf8', flag: 'Bool' },
+      primaryKey: ['uuid'],
+      indexes: [],
+    };
+    const check = checkTableSchema(
+      ambiguousExpected,
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+        ['legacy_flag', Type_PrimitiveTypeId.BOOL],
+      ]),
+    );
+
+    expect(check.extraColumns).toEqual(['label', 'legacy_flag']);
+    expect(check.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename when types differ', () => {
+    const check = checkTableSchema(
+      renameExpected({ columns: { uuid: 'Uuid', title: 'Int32' } }),
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+
+    expect(check.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename for primary key columns (#23)', () => {
+    const pkInDb = checkTableSchema(
+      renameExpected(),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid', 'label'],
+      ),
+    );
+    expect(pkInDb.likelyRenames).toEqual([]);
+
+    const pkInEntity = checkTableSchema(
+      renameExpected({ primaryKey: ['uuid', 'title'] }),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid', 'label'],
+      ),
+    );
+    expect(pkInEntity.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename when columns participate in indexes (#23)', () => {
+    const indexedInDb = checkTableSchema(
+      renameExpected(),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [{ name: 'photos__label', columns: ['label'], unique: false }],
+      ),
+    );
+    expect(indexedInDb.likelyRenames).toEqual([]);
+
+    const indexedInEntity = checkTableSchema(
+      renameExpected({
+        indexes: [{ name: 'photos__title', columns: ['title'], unique: false }],
+      }),
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+    expect(indexedInEntity.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename when columns are TTL columns (#23)', () => {
+    const ttlInDb = checkTableSchema(
+      renameExpected(),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [],
+        { column: 'label', expireAfterSeconds: 3600 },
+      ),
+    );
+    expect(ttlInDb.likelyRenames).toEqual([]);
+
+    const ttlInEntity = checkTableSchema(
+      renameExpected({ ttl: { interval: 'PT1H', column: 'title' } }),
+      description(
+        [
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+        ],
+        ['uuid'],
+        [],
+        { column: 'label', expireAfterSeconds: 3600 },
+      ),
+    );
+    expect(ttlInEntity.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename when blind-index metadata is involved (#23)', () => {
+    const biSiblingInDb = checkTableSchema(
+      renameExpected({ columns: { uuid: 'Uuid', title: 'Utf8' } }),
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+        ['label_bi', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+    expect(biSiblingInDb.likelyRenames).toEqual([]);
+
+    const syntheticTarget = checkTableSchema(
+      {
+        tableName: 'photos',
+        columns: { uuid: 'Uuid', title: 'Utf8', title_bi: 'Utf8' },
+        primaryKey: ['uuid'],
+        indexes: [],
+      },
+      description([
+        ['uuid', Type_PrimitiveTypeId.UUID],
+        ['label', Type_PrimitiveTypeId.UTF8],
+      ]),
+    );
+    expect(syntheticTarget.likelyRenames).toEqual([]);
+  });
+
+  it('does not suggest a rename for unsupported actual types (#91)', () => {
+    const withUnsupported: YdbTableDescription = {
+      columns: new Map([['uuid', Type_PrimitiveTypeId.UUID]]),
+      primaryKey: ['uuid'],
+      unsupportedColumns: new Map([['label', 'decimal(22,9)']]),
+    };
+
+    const result = checkTableSchema(renameExpected(), withUnsupported);
+    // Тип label неизвестен (#91) — сравнение типов невозможно, подсказки нет.
+    expect(result.extraColumns).toEqual(['label']);
+    expect(result.missingColumns).toEqual([['title', 'Utf8']]);
+    expect(result.typeMismatches).toEqual([]);
+    expect(result.likelyRenames).toEqual([]);
+  });
+});
+
+describe('rename-suggestion diagnostics consistency (#23)', () => {
+  const expected: ExpectedTableSchema = {
+    tableName: 'photos',
+    columns: { uuid: 'Uuid', title: 'Utf8' },
+    primaryKey: ['uuid'],
+    indexes: [],
+  };
+  const existing: YdbTableDescription = {
+    columns: new Map([
+      ['uuid', Type_PrimitiveTypeId.UUID],
+      ['label', Type_PrimitiveTypeId.UTF8],
+    ]),
+    primaryKey: ['uuid'],
+  };
+
+  it('reports missing + extra + suggestion together via checkToIssues', () => {
+    const issues = checkToIssues(checkTableSchema(expected, existing));
+
+    expect(issues.map((i) => i.kind)).toEqual([
+      'missing-column',
+      'extra-column',
+      'rename-suggestion',
+    ]);
+    expect(issues[2].message).toBe(
+      'Table "photos" column "label" may have been renamed to "title" — ' +
+        'review the data before migrating manually',
+    );
+  });
+
+  it('diffSchemas includes the same suggestion issue', () => {
+    const issues = diffSchemas([expected], [existing]);
+
+    expect(issues.filter((i) => i.kind === 'rename-suggestion')).toHaveLength(
+      1,
+    );
+    // Расхождение само по себе не «закрыто» подсказкой: колонки по-прежнему
+    // числятся отсутствующей и лишней.
+    expect(issues.filter((i) => i.kind === 'missing-column')).toHaveLength(1);
+    expect(issues.filter((i) => i.kind === 'extra-column')).toHaveLength(1);
+  });
+
+  it('emits no suggestion without a likely rename', () => {
+    const issues = diffSchemas([expected], [null]);
+
+    expect(issues.map((i) => i.kind)).toEqual(['missing-table']);
   });
 });

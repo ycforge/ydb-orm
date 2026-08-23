@@ -399,6 +399,8 @@ export default {
 
 `migration:generate` строит diff по всем `entities` из конфига: нет таблицы → `CREATE TABLE` (+ `DROP TABLE` в `down`), нет колонок → `ADD COLUMN` (+ `DROP COLUMN` в `down`). Расхождения типа/PK и лишние колонки не меняются автоматически — попадают в миграцию как `WARNING`-комментарии.
 
+Если расхождение выглядит как переименование (ровно одна лишняя колонка БД и одна новая колонка сущности с тем же типом, без участия PK/индексов/TTL/blind-index), генератор не делает ADD/DROP молча: в `up()`/`down()` добавляется комментарий-подсказка вида `ALTER TABLE ... RENAME COLUMN ... TO ...`, а применение остаётся ручным — YQL пока не поддерживает `RENAME COLUMN`. При неоднозначности (несколько кандидатов, ключевые колонки, метаданные шифрования) поведение прежнее: `ADD COLUMN` + `WARNING`.
+
 ### Программный API
 
 `YdbMigrationRunner` (run/revert/status, восстановление после сбоев — `markMigrationApplied`/`removeMigrationRecord`), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.

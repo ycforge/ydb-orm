@@ -448,6 +448,153 @@ describe('planMigration input validation (#102)', () => {
   });
 });
 
+/**
+ * #23: вероятные переименования колонок в migration:generate.
+ */
+describe('planMigration: rename suggestions (#23)', () => {
+  // Сущность переименовала label -> title (тип сохранён)
+  const renameExpected: ExpectedTableSchema = {
+    tableName: 'photos',
+    columns: { uuid: 'Uuid', title: 'Utf8' },
+    primaryKey: ['uuid'],
+    indexes: [],
+  };
+  const dbWithLabel = description([
+    ['uuid', Type_PrimitiveTypeId.UUID],
+    ['label', Type_PrimitiveTypeId.UTF8],
+  ]);
+
+  it('emits a suggestion and suppresses ADD/DROP for a likely rename', () => {
+    const plan = planMigration([renameExpected], [dbWithLabel]);
+
+    expect(plan.suggestions).toEqual([
+      'ALTER TABLE `photos` RENAME COLUMN `label` TO `title`',
+    ]);
+    // ADD для переименованной колонки не генерируется
+    expect(plan.up).toEqual([]);
+    expect(plan.down).toEqual([]);
+    expect(
+      plan.warnings.some((w) => w.includes('may have been renamed to "title"')),
+    ).toBe(true);
+    // Лишняя колонка по-прежнему честно числится лишней и не удаляется
+    expect(plan.warnings.some((w) => w.includes('extra column "label"'))).toBe(
+      true,
+    );
+  });
+
+  it('does not guess with several candidates and keeps ADD/DROP', () => {
+    const plan = planMigration(
+      [
+        {
+          tableName: 'photos',
+          columns: { uuid: 'Uuid', title: 'Utf8', flag: 'Bool' },
+          primaryKey: ['uuid'],
+          indexes: [],
+        },
+      ],
+      [
+        description([
+          ['uuid', Type_PrimitiveTypeId.UUID],
+          ['label', Type_PrimitiveTypeId.UTF8],
+          ['legacy_flag', Type_PrimitiveTypeId.BOOL],
+        ]),
+      ],
+    );
+
+    expect(plan.suggestions).toEqual([]);
+    expect(plan.up).toEqual([
+      'ALTER TABLE `photos` ADD COLUMN `title` Utf8, ADD COLUMN `flag` Bool',
+    ]);
+    expect(plan.down).toEqual([
+      'ALTER TABLE `photos` DROP COLUMN `flag`',
+      'ALTER TABLE `photos` DROP COLUMN `title`',
+    ]);
+    expect(plan.warnings.filter((w) => w.includes('renamed'))).toEqual([]);
+  });
+
+  it('keeps plain ADD/DROP behavior when types differ (unrelated add/drop)', () => {
+    const plan = planMigration(
+      [{ ...renameExpected, columns: { uuid: 'Uuid', title: 'Int32' } }],
+      [dbWithLabel],
+    );
+
+    expect(plan.suggestions).toEqual([]);
+    expect(plan.up).toEqual(['ALTER TABLE `photos` ADD COLUMN `title` Int32']);
+    expect(plan.down).toEqual(['ALTER TABLE `photos` DROP COLUMN `title`']);
+    expect(plan.warnings).toEqual([
+      'Table "photos" has extra column "label" — not dropped automatically',
+    ]);
+  });
+
+  it('does not treat PK changes as a rename (#23)', () => {
+    const plan = planMigration(
+      [{ ...renameExpected, primaryKey: ['uuid', 'title'] }],
+      [
+        description(
+          [
+            ['uuid', Type_PrimitiveTypeId.UUID],
+            ['label', Type_PrimitiveTypeId.UTF8],
+          ],
+          ['uuid', 'label'],
+        ),
+      ],
+    );
+
+    expect(plan.suggestions).toEqual([]);
+    // Подсказки нет — расхождение PK обрабатывается прежним путём:
+    // колонка добавляется обычным ADD, PK требует ручной миграции.
+    expect(plan.up).toEqual(['ALTER TABLE `photos` ADD COLUMN `title` Utf8']);
+    expect(plan.down).toEqual(['ALTER TABLE `photos` DROP COLUMN `title`']);
+    expect(plan.warnings.some((w) => w.includes('primary key mismatch'))).toBe(
+      true,
+    );
+    expect(plan.warnings.some((w) => w.includes('renamed'))).toBe(false);
+  });
+
+  it('does not treat TTL changes as a rename (#23)', () => {
+    const plan = planMigration(
+      [
+        {
+          ...renameExpected,
+          ttl: { interval: 'PT1H', column: 'title' },
+        },
+      ],
+      [dbWithLabel],
+    );
+
+    expect(plan.suggestions).toEqual([]);
+    // Обычный путь: ADD колонки + установка TTL из метаданных
+    expect(plan.up).toEqual([
+      'ALTER TABLE `photos` ADD COLUMN `title` Utf8',
+      'ALTER TABLE `photos` SET (TTL = Interval("PT1H") ON `title`)',
+    ]);
+    expect(plan.down).toEqual([
+      'ALTER TABLE `photos` RESET (TTL)',
+      'ALTER TABLE `photos` DROP COLUMN `title`',
+    ]);
+  });
+
+  it('does not treat index changes as a rename (#23)', () => {
+    const plan = planMigration(
+      [
+        {
+          ...renameExpected,
+          indexes: [
+            { name: 'photos__title', columns: ['title'], unique: false },
+          ],
+        },
+      ],
+      [dbWithLabel],
+    );
+
+    expect(plan.suggestions).toEqual([]);
+    expect(plan.up).toEqual([
+      'ALTER TABLE `photos` ADD COLUMN `title` Utf8',
+      'ALTER TABLE `photos` ADD INDEX `photos__title` GLOBAL SYNC ON (`title`)',
+    ]);
+  });
+});
+
 describe('renderMigrationFile', () => {
   it('renders a migration class with up/down statements', () => {
     const content = renderMigrationFile(
@@ -479,5 +626,55 @@ describe('renderMigrationFile', () => {
     });
 
     expect(content.match(/no statements — fill in manually/g)).toHaveLength(2);
+  });
+
+  it('#23: renders rename as a comment suggestion only — never executable', () => {
+    const content = renderMigrationFile('RenameLabel1000', '1000-RenameLabel', {
+      up: [],
+      down: [],
+      warnings: [
+        'Table "photos" column "label" may have been renamed to "title" — ' +
+          'ADD/DROP suppressed for this pair, see SUGGESTION in the generated migration',
+      ],
+      suggestions: ['ALTER TABLE `photos` RENAME COLUMN `label` TO `title`'],
+    });
+
+    // Подсказка видна в обоих направлениях и явно помечена как неприменённая
+    expect(content).toContain(
+      '// SUGGESTION (not applied automatically): possible column rename detected.',
+    );
+    expect(
+      content.match(
+        /\/\/ {3}ALTER TABLE `photos` RENAME COLUMN `label` TO `title`;/g,
+      ),
+    ).toHaveLength(2);
+    // RENAME не исполняется автоматически
+    expect(content.match(/await executeSql/g) ?? []).toHaveLength(0);
+    // Плейсхолдер «no statements» не нужен — тело занято подсказкой
+    expect(content).not.toContain('no statements');
+  });
+
+  it('#23: keeps executable statements alongside the suggestion block', () => {
+    const content = renderMigrationFile('Mixed1000', '1000-Mixed', {
+      up: [
+        'ALTER TABLE `photos` ADD INDEX `photos__uuid` GLOBAL SYNC ON (`uuid`)',
+      ],
+      down: ['ALTER TABLE `photos` DROP INDEX `photos__uuid`'],
+      warnings: [],
+      suggestions: ['ALTER TABLE `photos` RENAME COLUMN `a` TO `b`'],
+    });
+
+    expect(content).toContain(
+      'await executeSql(executor, "ALTER TABLE `photos` ADD INDEX',
+    );
+    expect(content).toContain(
+      'await executeSql(executor, "ALTER TABLE `photos` DROP INDEX',
+    );
+    // Ни один executeSql не содержит RENAME COLUMN
+    for (const line of content.split('\n')) {
+      if (line.includes('await executeSql')) {
+        expect(line.includes('RENAME COLUMN')).toBe(false);
+      }
+    }
   });
 });
