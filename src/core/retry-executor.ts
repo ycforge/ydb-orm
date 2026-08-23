@@ -60,6 +60,13 @@ function policyToOptions(
  * Создаёт прокси-запрос под политикой: операции билдера запоминаются и
  * воспроизводятся на КАЖДОЙ попытке политики (у SDK-запроса результат
  * выполнения кешируется в инстансе — переиспользовать его нельзя).
+ *
+ * Правило безопасности (#27): повторять можно ТОЛЬКО запрос, явно
+ * помеченный идемпотентным (`.idempotent(true) / { idempotent: true }).
+ * Непомеченный запрос выполняется РОВНО ОДИН раз даже при включённой
+ * политике: у SDK внутренний цикл тоже гасится, чтобы двусмысленный
+ * сбой транспорта не привёл к повтору записи. SDK-запросу пометка
+ * пробрасывается как `.idempotent(true).
  */
 function createPolicyQuery(
   makeBase: () => YdbQuery,
@@ -68,6 +75,9 @@ function createPolicyQuery(
   const params: Array<[string, unknown]> = [];
   let timeoutMs: number | undefined;
   let userSignal: AbortSignal | undefined;
+  // undefined = пользователь не вызывал .idempotent() — считаем НЕ
+  // идемпотентным (fail-safe); true = помечен; false = помечен явно.
+  let markedIdempotent: boolean | undefined;
   let current: YdbQuery | undefined;
 
   const proxy: YdbQuery = {
@@ -83,21 +93,27 @@ function createPolicyQuery(
       userSignal = signal;
       return proxy;
     },
+    idempotent(flag?: boolean): YdbQuery {
+      markedIdempotent = flag !== false;
+      return proxy;
+    },
     cancel(): YdbQuery {
       current?.cancel();
       return proxy;
     },
     then(onFulfilled?, onRejected?) {
-      return runWithRetry(async (policySignal) => {
+      const runOnce = async (policySignal?: AbortSignal): Promise<unknown> => {
         const query = makeBase();
         current = query;
         for (const [name, value] of params) query.parameter(name, value);
         if (timeoutMs !== undefined) query.timeout(timeoutMs);
+        if (markedIdempotent === true) query.idempotent?.(true);
 
         // Гашение внутреннего ретрая SDK: после первой неудачи SDK хочет
         // повторить (событие 'retry' после своей задержки) — отменяем сигнал
         // попытки, SDK бросает AbortError ДО следующего обращения к БД, а мы
-        // подменяем его исходной ошибкой из контекста события.
+        // подменяем его исходной ошибкой из контекста события. Для
+        // непомеченного запроса это даёт строго однократное исполнение.
         const attemptController = new AbortController();
         let captured = false;
         let capturedError: unknown;
@@ -122,7 +138,15 @@ function createPolicyQuery(
           if (captured && isAbortLike(error)) throw capturedError;
           throw error;
         }
-      }, policyToOptions(policy)).then(onFulfilled, onRejected);
+      };
+
+      // Fail-safe (#27): без явной пометки идемпотентности политика НЕ
+      // применяется — ровно одна попытка БД.
+      const result =
+        markedIdempotent === true
+          ? runWithRetry(runOnce, policyToOptions(policy))
+          : Promise.resolve().then(() => runOnce());
+      return result.then(onFulfilled, onRejected);
     },
   };
   return proxy;
@@ -132,8 +156,16 @@ function createPolicyQuery(
  * Подключает retry-политику (#27) к executor'у: каждый запрос через
  * возвращённый executor выполняется под политикой (классификация по
  * статусам ABORTED/UNAVAILABLE/OVERLOADED, bounded backoff + jitter,
- * отмена сигналом). `transaction()` пробрасывается как есть — повторами
- * тела транзакции управляет опция `retry` в runInTransaction().
+ * отмена сигналом). `transaction() пробрасывается как есть — повторами
+ * тела транзакции управляет опция `retry в runInTransaction().
+ *
+ * ПРАВИЛО ИДЕМПОТЕНТНОСТИ (#27, fail-safe): политика ретраит только
+ * запросы, ЯВНО помеченные идемпотентными — `.idempotent(true) на цепочке
+ * или `{ idempotent: true } в QueryOptions. Непомеченный запрос (в т.ч.
+ * любой INSERT/UPSERT/UPDATE/DELETE по умолчанию) выполняется РОВНО ОДИН
+ * раз даже при включённой политике: внутренний цикл SDK для него тоже
+ * гасится, чтобы двусмысленный сбой транспорта не продублировал запись.
+ * Повторять можно только операции, устойчивые к повтору.
  *
  * Выключенная политика (`false`/`undefined`) возвращает executor без
  * изменений — поведение идентично #98.

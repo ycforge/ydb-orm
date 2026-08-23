@@ -86,18 +86,23 @@ export interface YdbModuleOptions {
   /**
    * Retry-политика по типу ошибки (#27) для операций executor'а.
    *
-   * - `undefined` / `false` (по умолчанию) — политика выключена: повторами
+   * - `undefined / `false (по умолчанию) — политика выключена: повторами
    *   одиночных запросов владеет только внутренний ретрай SDK (как в #98);
-   * - `true` — политика с дефолтами (maxAttempts: 3, bounded backoff
-   *   100..5000 мс, jitter 0.25); повторяются только статусы
-   *   ABORTED/UNAVAILABLE/OVERLOADED;
-   * - объект `YdbRetryPolicyOptions` — кастомная политика.
+   * - `true — политика с дефолтами (maxAttempts: 3, bounded backoff
+   *   100..5000 мс, jitter 0.25);
+   * - объект `YdbRetryPolicyOptions — кастомная политика.
    *
-   * Когда политика включена, ORM владеет ретраями запросов через этот
-   * executor и ГАСИТ внутренний цикл SDK (одна попытка SDK на попытку
-   * ORM) — попытки не перемножаются, максимум обращений к БД равен
-   * maxAttempts. Для транзакций используется отдельная опция retry
-   * в runInTransaction(). См. README «Retry-политика по типу ошибки».
+   * ПРАВИЛО ИДЕМПОТЕНТНОСТИ (fail-safe): политика повторяет только
+   * запросы, явно помеченные идемпотентными — `.idempotent(true) на
+   * цепочке или `{ idempotent: true } в QueryOptions. Непомеченный
+   * запрос (включая все записи по умолчанию) выполняется ровно один раз:
+   * внутренний цикл SDK гасится, двусмысленный сбой транспорта не
+   * приводит к повтору записи. Для транзакций — отдельная опция retry
+   * в runInTransaction() (колбэк обязан быть идемпотентным, #98).
+   * Когда политика включена и запрос помечен, ORM владеет ретраями
+   * через этот executor и ГАСИТ внутренний цикл SDK (одна попытка SDK
+   * на попытку ORM) — попытки не перемножаются. Статусы повтора:
+   * только ABORTED/UNAVAILABLE/OVERLOADED. См. README «Retry-политика».
    */
   retry?: YdbRetryPolicyInput;
 }
@@ -122,6 +127,13 @@ export interface YdbQuery {
   parameter(name: string, value: unknown): YdbQuery;
   timeout(timeout: number): YdbQuery;
   signal(signal: AbortSignal): YdbQuery;
+  /**
+   * Пометка идемпотентности одиночного запроса (#27): разрешает
+   * retry-политике ORM (и условно-retryable статусам SDK) повторять
+   * этот запрос. По умолчанию запросы НЕ считаются идемпотентными:
+   * без пометки политика ORM выполняет запрос ровно один раз.
+   */
+  idempotent(flag?: boolean): YdbQuery;
   cancel(): YdbQuery;
   /**
    * SDK-события запроса (#27): у реального Query из @ydbjs/query есть

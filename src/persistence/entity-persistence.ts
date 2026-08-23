@@ -885,7 +885,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     query: YdbQuery,
     options?: QueryOptions,
   ): Promise<U> {
-    const { signal, timeout } = options ?? {};
+    const { signal, timeout, idempotent } = options ?? {};
 
     if (signal) {
       if (signal.aborted) throw new Error('Query aborted by signal');
@@ -894,6 +894,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     if (timeout && timeout > 0) {
       query.timeout(timeout);
+    }
+
+    // Пометка идемпотентности (#27): разрешает retry-политике повторять
+    // этот запрос. Без явной пометки запрос выполняется ровно один раз.
+    if (idempotent === true) {
+      query.idempotent?.(true);
     }
 
     return (await query) as U;

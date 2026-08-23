@@ -98,7 +98,9 @@ describe('createExecutor(): подключение retry-политики из �
       retry: true,
     });
 
-    await expect(executor`SELECT 1`).resolves.toEqual([[{ ok: 1 }]]);
+    await expect(executor`SELECT 1`.idempotent(true)).resolves.toEqual([
+      [{ ok: 1 }],
+    ]);
     // Политика довела операцию до успеха: ровно 3 обращения к БД.
     expect(executions).toHaveLength(3);
   });

@@ -346,3 +346,45 @@ describe('runInTransaction({ retry }): умножение попыток иск�
     expect(db.executes()).toBe(2);
   });
 });
+
+describe('контракт #98 остаётся неизменным (#27)', () => {
+  it('без опции retry тело транзакции выполняется ровно один раз', async () => {
+    const db = makeSimpleDb((n) =>
+      n === 1 ? { error: ydbErr(Code.ABORTED) } : { ok: 'nope' },
+    );
+    const manager = new YdbTransactionManager(db.executor);
+
+    await expect(
+      manager.runInTransaction(() => Promise.resolve('x')),
+    ).rejects.toBeInstanceOf(YDBError);
+    // Ни скрытого ORM-ретрая, ни требований к пометкам запросов:
+    // повторами тела владеет только SDK (#98).
+    expect(db.bodyInvocations()).toBe(1);
+    expect(db.transactions).toHaveLength(1);
+  });
+
+  it('retry транзакции ретраит колбэк как целое — пометки отдельных запросов не требуются', async () => {
+    const { sleep } = recordingSleep();
+    // Внутри тела никакие .idempotent() не вызываются: контракт
+    // идемпотентности относится к КОЛБЭКУ целиком (#98), а не к запросам.
+    const db = makeSdkLikeDb();
+    const manager = new YdbTransactionManager(db.executor);
+
+    let userCalls = 0;
+    await expect(
+      manager.runInTransaction(
+        () => {
+          userCalls += 1;
+          return userCalls === 1
+            ? Promise.reject(ydbErr(Code.OVERLOADED))
+            : Promise.resolve('replayed');
+        },
+        {
+          idempotent: true,
+          retry: { maxAttempts: 3, jitterRatio: 0, rng: () => 0, sleep },
+        },
+      ),
+    ).resolves.toBe('replayed');
+    expect(userCalls).toBe(2);
+  });
+});
