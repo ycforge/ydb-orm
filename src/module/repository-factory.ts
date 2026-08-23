@@ -17,6 +17,7 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getActiveRecordInitToken } from '../repository/repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import { requestEntitiesForApp } from '../metadata/entity-registry.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
@@ -38,6 +39,12 @@ export function createActiveRecordEntityProvider(
       blindIndexProvider?: YdbBlindIndexProvider,
       validationProvider?: YdbValidationProvider,
     ) => {
+      // forFeature явно объявляет сущности этого приложения (#142): декоратор
+      // @YdbEntity уже отработал при первом импорте класса и больше не
+      // выполнится (кеш модулей), поэтому повторный бутстрап должен сам
+      // восстановить видимость сущности в скоупе для schema sync.
+      requestEntitiesForApp([entityClass]);
+
       const issues = validateEntityMetadata(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
         blindIndexProviderConfigured: Boolean(blindIndexProvider),

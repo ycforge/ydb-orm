@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { Test, TestingModule } from '@nestjs/testing';
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module, Type } from '@nestjs/common';
 import { Driver } from '@ydbjs/core';
 import { create } from '@bufbuild/protobuf';
 import { anyPack } from '@bufbuild/protobuf/wkt';
@@ -173,10 +173,9 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
     const mock = createMockExecutor();
     const { driver, tableClient } = createFakeDriver();
 
-    // Скоуп предыдущих тестов уже закрыт: регистрируем нужные сущности
-    // явно (регистрация идемпотентна, #142)
-    registerYdbEntity(UserEntity);
-    registerYdbEntity(PhotoEntity);
+    // Сущности объявлены только через TestFeatureModule (forFeature):
+    // декораторы уже выполнились при импорте файла и больше не сработают —
+    // видимость в скоупе приложения восстанавливает сама forFeature (#142)
 
     const module = await Test.createTestingModule({
       imports: coreImports(true),
@@ -214,8 +213,6 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
 
   it('ошибка schema sync доходит до init() как исходная ошибка схемы', async () => {
     const mock = createMockExecutor();
-    // Скоуп предыдущих тестов закрыт — users нужна в скоупе этого приложения
-    registerYdbEntity(UserEntity);
     // Таблица users «существует», но колонка uuid имеет тип String вместо Uuid:
     // sync обязан бросить исходную ошибку о расхождении типов.
     // Остальные таблицы не существуют — для них вернётся not-found и CREATE TABLE.
@@ -370,12 +367,42 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
   });
 
   describe('изоляция реестра сущностей между приложениями (#142)', () => {
-    /** Приложение с sync:true на фейковом драйвере; возвращает DDL-запросы. */
-    async function bootstrappSyncedApp(): Promise<string[]> {
+    type AppImport = DynamicModule | Type<unknown>;
+
+    /** Ядро с sync:true — базовый импорт приложения в этих тестах. */
+    function syncedCoreImport(): DynamicModule {
+      return YdbCoreModule.forRootAsync({
+        useFactory: () => ({
+          endpoint: 'grpc://localhost:2136/local',
+          auth_type: 'anonymous' as const,
+          authOptions: {},
+          encryptionProvider: new TestOnlyEncryptionProvider(),
+          blindIndexProvider: new TestOnlyEncryptionProvider(),
+          sync: true,
+        }),
+      });
+    }
+
+    /** Закрывает все открытые приложения теста. */
+    async function closeOpenModules(): Promise<void> {
+      // close() модуля с неудачным init() повторно выбрасывает ошибку
+      // бутстрапа (Nest хранит initializationPromise) — глотаем её
+      for (const m of openModules.splice(0)) {
+        await m.close().catch(() => undefined);
+      }
+    }
+
+    /**
+     * Приложение с ядром syncedCoreImport() и заданными feature-импортами;
+     * бутстрап на фейковом драйвере, возвращает DDL-запросы.
+     */
+    async function bootstrappSyncedApp(
+      featureImports: AppImport[] = [],
+    ): Promise<string[]> {
       const mock = createMockExecutor();
       const { driver } = createFakeDriver();
       const module = await Test.createTestingModule({
-        imports: coreImports(true),
+        imports: [syncedCoreImport(), ...featureImports],
       })
         .overrideProvider(YDB_DRIVER)
         .useValue(driver)
@@ -387,31 +414,42 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       return mock.queries.map((q) => q.sql);
     }
 
+    it('повторное приложение видит уже импортированную сущность из forFeature', async () => {
+      // Регрессия #142: UserEntity импортирован на уровне файла, его декоратор
+      // больше не выполнится (кеш ESM-модулей). Оба приложения объявляют его
+      // только через forFeature — второе обязано восстановить видимость
+      // самостоятельно.
+      await bootstrappSyncedApp([YdbModule.forFeature([UserEntity])]);
+      await closeOpenModules();
+
+      const ddl = await bootstrappSyncedApp([
+        YdbModule.forFeature([UserEntity]),
+      ]);
+      expect(ddl.some((sql) => sql.startsWith('CREATE TABLE `users`'))).toBe(
+        true,
+      );
+      await closeOpenModules();
+    });
+
     it('закрытое приложение не протекает сущностями в следующее', async () => {
-      // Сущность приложения A декларируется внутри теста: она регистрируется
-      // декоратором только сейчас и принадлежит только этому приложению
       @YdbEntity('scoped_a_only')
       class ScopedA extends YdbBaseEntity {
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(ScopedA);
 
-      await bootstrappSyncedApp(); // A: sync создаёт scoped_a_only
-      for (const m of openModules.splice(0)) {
-        await m.close();
-      }
+      await bootstrappSyncedApp([YdbModule.forFeature([ScopedA])]); // A
+      await closeOpenModules();
 
       @YdbEntity('scoped_b_only')
       class ScopedB extends YdbBaseEntity {
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(ScopedB);
 
-      // Приложение B: в его sync есть B и нет ни A, ни общих фикстур файла,
-      // принятых (и отпущенных) скоупом приложения A
-      const ddl = await bootstrappSyncedApp();
+      // B объявляет только ScopedB: в его sync нет ни scoped_a_only,
+      // ни файловых фикстур (users), принятых и отпущенных скоупом A
+      const ddl = await bootstrappSyncedApp([YdbModule.forFeature([ScopedB])]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_b_only`')),
       ).toBe(true);
@@ -419,6 +457,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       expect(ddl.some((sql) => sql.startsWith('CREATE TABLE `users`'))).toBe(
         false,
       );
+      await closeOpenModules();
     });
 
     it('после неудачного бутстрапа следующий стартует с чистым набором сущностей', async () => {
@@ -427,7 +466,6 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(ScopedFail);
 
       // Sync падает на таблице scoped_fail (mismatch типов uuid) — init() отклоняется
       const { driver: failingDriver } = createFakeDriver((path) => {
@@ -459,7 +497,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
 
       const mockFailing = createMockExecutor();
       const failedModule = await Test.createTestingModule({
-        imports: coreImports(true),
+        imports: [syncedCoreImport(), YdbModule.forFeature([ScopedFail])],
       })
         .overrideProvider(YDB_DRIVER)
         .useValue(failingDriver)
@@ -484,19 +522,16 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(ScopedAfterFail);
 
-      const ddl = await bootstrappSyncedApp();
+      const ddl = await bootstrappSyncedApp([
+        YdbModule.forFeature([ScopedAfterFail]),
+      ]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_after_fail`')),
       ).toBe(true);
       expect(ddl.some((sql) => sql.includes('scoped_fail'))).toBe(false);
 
-      // close() неудачного модуля повторно выбрасывает ошибку init()
-      // (Nest хранит initializationPromise) — глотаем её здесь
-      for (const m of openModules.splice(0)) {
-        await m.close().catch(() => {});
-      }
+      await closeOpenModules();
     });
 
     it('сущности нескольких forFeature-модулей одного приложения видны sync', async () => {
@@ -505,14 +540,12 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(FeatOne);
 
       @YdbEntity('scoped_feat_two')
       class FeatTwo extends YdbBaseEntity {
         @YdbPrimaryColumn('Uuid')
         uuid!: string;
       }
-      registerYdbEntity(FeatTwo);
 
       @Module({
         imports: [YdbModule.forFeature([FeatOne])],
@@ -524,20 +557,10 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       })
       class FeatureTwoModule {}
 
-      const mock = createMockExecutor();
-      const { driver } = createFakeDriver();
-      const module = await Test.createTestingModule({
-        imports: [...coreImports(true), FeatureOneModule, FeatureTwoModule],
-      })
-        .overrideProvider(YDB_DRIVER)
-        .useValue(driver)
-        .overrideProvider(YDB_QUERY)
-        .useValue(mock.executor)
-        .compile();
-      openModules.push(module);
-      await module.init();
-
-      const ddl = mock.queries.map((q) => q.sql);
+      const ddl = await bootstrappSyncedApp([
+        FeatureOneModule,
+        FeatureTwoModule,
+      ]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_feat_one`')),
       ).toBe(true);
@@ -545,13 +568,11 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_feat_two`')),
       ).toBe(true);
 
-      await module.close();
-      openModules.pop();
+      await closeOpenModules();
     });
 
     it('повторная регистрация той же сущности идемпотентна', () => {
-      // Последний тест файла: класс попадает в detached-набор и никого
-      // не загрязняет после себя
+      // Класс попадает в detached-набор и никого не загрязняет после себя
       @YdbEntity('scoped_dup_reg')
       class DupReg extends YdbBaseEntity {
         @YdbPrimaryColumn('Uuid')
@@ -564,6 +585,16 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       expect(
         getRegisteredYdbEntities().filter((c) => c === DupReg),
       ).toHaveLength(1);
+    });
+
+    it('вне Nest-приложения реестр по-прежнему глобальный', () => {
+      // Ни одно приложение не живо: getRegisteredYdbEntities отдаёт весь
+      // накопленный за жизнь процесса реестр, включая классы закрытых
+      // приложений — поведение CLI/standalone не изменилось (#142)
+      const entities = getRegisteredYdbEntities();
+      expect(entities).toContain(UserEntity);
+      expect(entities).toContain(UserRoleEntity);
+      expect(entities).toContain(PhotoEntity);
     });
   });
 });
