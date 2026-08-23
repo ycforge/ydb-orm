@@ -89,6 +89,20 @@ const VARIANTS: Record<string, YdbEntitySpec> = {
       },
     ],
   },
+  // Нормализация имён членов lossy, но члены остаются уникальными:
+  // пунктуация, регистр и цифровой префикс не должны ломать компиляцию (#153).
+  enumNormalization: {
+    className: 'WorkflowEntity',
+    tableName: 'workflows_wizard',
+    columns: [
+      { name: 'uuid', type: 'Uuid', primary: true },
+      {
+        name: 'stage',
+        type: 'Utf8',
+        enumValues: ['draft-review', 'wip.draft', '2nd-class', 'v 1'],
+      },
+    ],
+  },
   encryption: {
     className: 'SecretEntity',
     tableName: 'secrets_wizard',

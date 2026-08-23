@@ -194,6 +194,79 @@ describe('validateEntitySpec (#24)', () => {
     expect(validateEntitySpec(ok)).toEqual([]);
   });
 
+  it('rejects enum values colliding after member-name normalization (#153)', () => {
+    // Пунктуация нормализуется в '_': "a-b" и "a_b" → один член A_B.
+    const punct: YdbEntitySpec = validSpec();
+    punct.columns.push({
+      name: 'status',
+      type: 'Utf8',
+      enumValues: ['a-b', 'a_b'],
+    });
+    const punctIssues = validateEntitySpec(punct);
+    expect(
+      punctIssues.some((i) => /same TypeScript member "A_B"/.test(i)),
+    ).toBe(true);
+    expect(
+      punctIssues.some((i) => i.includes('"a-b"') && i.includes('"a_b"')),
+    ).toBe(true);
+
+    // Пунктуация + регистр: "foo.bar" и "FOO-BAR" → FOO_BAR.
+    const mixed: YdbEntitySpec = validSpec();
+    mixed.columns.push({
+      name: 'status',
+      type: 'Utf8',
+      enumValues: ['foo.bar', 'FOO-BAR'],
+    });
+    expect(
+      validateEntitySpec(mixed).some((i) =>
+        /same TypeScript member "FOO_BAR"/.test(i),
+      ),
+    ).toBe(true);
+
+    // Префикс цифры не спасает: "1" и "v_1" → V_1.
+    const digit: YdbEntitySpec = validSpec();
+    digit.columns.push({
+      name: 'status',
+      type: 'Utf8',
+      enumValues: ['1', 'v_1'],
+    });
+    expect(
+      validateEntitySpec(digit).some((i) =>
+        /same TypeScript member "V_1"/.test(i),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps current member names for values that normalize uniquely (#153)', () => {
+    const spec: YdbEntitySpec = validSpec();
+    spec.columns.push({
+      name: 'status',
+      type: 'Utf8',
+      enumValues: ['active', 'new_order', 'in-progress', '2fa'],
+    });
+    expect(validateEntitySpec(spec)).toEqual([]);
+
+    const rendered = renderEntityFile(spec);
+    for (const member of ['ACTIVE', 'NEW_ORDER', 'IN_PROGRESS', 'V_2FA']) {
+      expect(rendered).toContain(`  ${member} = `);
+    }
+  });
+
+  it('rejects two columns whose derived enum type names collide (#153)', () => {
+    const spec: YdbEntitySpec = validSpec();
+    spec.columns.push(
+      { name: 'foo_bar', type: 'Utf8', enumValues: ['a', 'b'] },
+      { name: 'fooBar', type: 'Utf8', enumValues: ['c', 'd'] },
+    );
+    expect(
+      validateEntitySpec(spec).some((i) =>
+        /columns "foo_bar" and "fooBar" produce the same enum type name "FooBarEnum"/.test(
+          i,
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('requires date-like types for create/update date columns (one per entity)', () => {
     const wrongType = validSpec();
     wrongType.columns.push({
@@ -361,6 +434,19 @@ describe('createEntityFileFromSpec (#24)', () => {
         columns: [],
       }),
     ).toThrow(/Invalid entity spec/);
+    expect(fs.readdirSync(dir)).toHaveLength(0);
+
+    // Коллизия нормализованных членов enum — тоже до записи файла (#153).
+    expect(() =>
+      createEntityFileFromSpec(dir, {
+        className: 'BadEnum',
+        tableName: 'bad_enums',
+        columns: [
+          { name: 'uuid', type: 'Uuid', primary: true },
+          { name: 'status', type: 'Utf8', enumValues: ['a-b', 'a_b'] },
+        ],
+      }),
+    ).toThrow(/same TypeScript member "A_B"/);
     expect(fs.readdirSync(dir)).toHaveLength(0);
   });
 

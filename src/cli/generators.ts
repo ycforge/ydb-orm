@@ -265,6 +265,10 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
   }
 
   const seen = new Set<string>();
+  // Имя enum-типа выводится из имени колонки: карта для детекта коллизий
+  // ('foo_bar' и 'fooBar' → FooBarEnum) — два объявления одного типа
+  // не компилируются.
+  const seenEnumTypeNames = new Map<string, string>();
   let primaryCount = 0;
   let createDateCount = 0;
   let updateDateCount = 0;
@@ -322,6 +326,39 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
             issues.push(`${label}: enum values must be non-empty strings`);
             break;
           }
+        }
+        // Нормализация имени члена lossy ("a-b" и "a_b" → A_B): дубликаты
+        // членов в одном объявлении enum не компилируются (duplicate
+        // identifier), поэтому ловим их до записи файла (#24).
+        const valuesByMember = new Map<string, string[]>();
+        for (const value of column.enumValues) {
+          if (typeof value !== 'string') continue;
+          const member = toEnumMemberName(value);
+          const list = valuesByMember.get(member) ?? [];
+          list.push(value);
+          valuesByMember.set(member, list);
+        }
+        for (const [member, conflicting] of valuesByMember) {
+          if (conflicting.length > 1) {
+            issues.push(
+              `${label}: enum values ${conflicting.map((v) => JSON.stringify(v)).join(' and ')} ` +
+                `all normalize to the same TypeScript member "${member}" — ` +
+                `make the values distinguishable`,
+            );
+          }
+        }
+        // Имена enum-типов выводятся из колонки тоже lossy ('foo_bar' и
+        // 'fooBar' → FooBarEnum): два объявления одного типа в файле —
+        // duplicate identifier.
+        const typeName = enumTypeName(column.name);
+        const typeNameOwner = seenEnumTypeNames.get(typeName);
+        if (typeNameOwner !== undefined && typeNameOwner !== column.name) {
+          issues.push(
+            `columns "${typeNameOwner}" and "${column.name}" produce the same ` +
+              `enum type name "${typeName}"`,
+          );
+        } else {
+          seenEnumTypeNames.set(typeName, column.name);
         }
         if (
           column.enumStorage !== undefined &&
