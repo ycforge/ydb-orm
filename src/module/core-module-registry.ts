@@ -1,20 +1,21 @@
 import { Driver } from '@ydbjs/core';
 import type { YdbModuleOptions } from '../core/interfaces.js';
-import {
-  beginEntityScope,
-  endEntityScope,
-} from '../metadata/entity-registry.js';
+import type { YdbEntityAppScope } from '../metadata/entity-registry.js';
 
 /**
  * Состояние одного экземпляра YdbCoreModule (создаётся в forRootAsync и
- * живёт в замыкании его провайдеров). Хранит опции и ссылку на драйвер,
- * созданный самим модулем — его модуль закрывает при graceful shutdown.
+ * живёт в замыкании его провайдеров). Хранит опции, ссылку на драйвер,
+ * созданный самим модулем — его модуль закрывает при graceful shutdown —
+ * и скоуп сущностей этого приложения (#142).
  */
 export interface CoreModuleState {
   options?: YdbModuleOptions;
   /** Драйвер, созданный самим модулем. Если драйвер подменён снаружи
    * (overrideProvider/useValue), поле остаётся undefined и не закрывается. */
   ownedDriver?: Driver;
+  /** Сущности ЭТОГО приложения: их привязывают провайдеры forFeature через
+   * DI-токен YDB_CORE_SCOPE, поэтому чужие приложения сюда не попадают. */
+  readonly entityScope: YdbEntityAppScope;
 }
 
 /**
@@ -51,13 +52,11 @@ export function claimCoreModuleInit(state: CoreModuleState): void {
     );
   }
   activeCoreModules.add(state);
-  // Скоуп реестра сущностей (#142): всё, что зарегистрировано к этому
-  // моменту (и зарегистрируется до shutdown), принадлежит этому приложению.
-  beginEntityScope();
 }
 
-/** Снимает экземпляр с учёта (идемпотентно) вместе со скоупом его сущностей. */
+/** Снимает экземпляр с учёта (идемпотентно). Скоуп сущностей живёт в
+ * состоянии экземпляра и уходит в GC вместе с ним — глобально чистить
+ * нечего (#142). */
 export function releaseCoreModuleInit(state: CoreModuleState): void {
   activeCoreModules.delete(state);
-  endEntityScope();
 }

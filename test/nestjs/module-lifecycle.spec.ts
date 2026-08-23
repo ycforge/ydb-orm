@@ -14,6 +14,7 @@ import { TypeSchema, Type_PrimitiveTypeId } from '@ydbjs/api/value';
 import {
   YdbCoreModule,
   YdbModule,
+  YDB_CORE_SCOPE,
   YDB_DRIVER,
   YDB_QUERY,
   YdbBaseEntity,
@@ -428,6 +429,64 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       expect(ddl.some((sql) => sql.startsWith('CREATE TABLE `users`'))).toBe(
         true,
       );
+      await closeOpenModules();
+    });
+
+    it('живое приложение A не заражается сущностями неудачного B', async () => {
+      @YdbEntity('scoped_own_a')
+      class EntityA extends YdbBaseEntity {
+        @YdbPrimaryColumn('Uuid')
+        uuid!: string;
+      }
+
+      @YdbEntity('scoped_foreign_b')
+      class EntityB extends YdbBaseEntity {
+        @YdbPrimaryColumn('Uuid')
+        uuid!: string;
+      }
+
+      // 1. Приложение A успешно бутстрапится со своей сущностью
+      const mockA = createMockExecutor();
+      const { driver: drvA } = createFakeDriver();
+      const appA = await Test.createTestingModule({
+        imports: [syncedCoreImport(), YdbModule.forFeature([EntityA])],
+      })
+        .overrideProvider(YDB_DRIVER)
+        .useValue(drvA)
+        .overrideProvider(YDB_QUERY)
+        .useValue(mockA.executor)
+        .compile();
+      openModules.push(appA);
+      await appA.init();
+
+      // 2-3. Компиляция B при живом A падает с ошибкой дубля ядра —
+      // в любом порядке резолва провайдеров
+      const mockB = createMockExecutor();
+      await expect(
+        Test.createTestingModule({
+          imports: [syncedCoreImport(), YdbModule.forFeature([EntityB])],
+        })
+          .overrideProvider(YDB_DRIVER)
+          .useValue({})
+          .overrideProvider(YDB_QUERY)
+          .useValue(mockB.executor)
+          .compile(),
+      ).rejects.toThrow(/Duplicate YDB module initialization/);
+
+      // 4. В реестре живого A — только его собственная сущность; EntityB,
+      // привязавшийся к неактивированному скоупу B, сюда попасть не может
+      const scopeA: Parameters<typeof getRegisteredYdbEntities>[0] =
+        appA.get(YDB_CORE_SCOPE);
+      expect(getRegisteredYdbEntities(scopeA)).toContain(EntityA);
+      expect(getRegisteredYdbEntities(scopeA)).not.toContain(EntityB);
+
+      // 5. После закрытия A свежее приложение видит тот же уже импортированный
+      // класс EntityB и нормально синкается
+      await closeOpenModules();
+      const ddl = await bootstrappSyncedApp([YdbModule.forFeature([EntityB])]);
+      expect(
+        ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_foreign_b`')),
+      ).toBe(true);
       await closeOpenModules();
     });
 

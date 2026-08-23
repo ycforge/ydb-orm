@@ -1,93 +1,74 @@
 /**
- * Глобальный реестр сущностей: декоратор @YdbEntity регистрирует класс
- * в момент загрузки модуля. Нужен schema sync (опция `sync` в forRoot),
- * чтобы находить все сущности без явного списка entities в опциях модуля.
+ * Реестр сущностей: декоратор @YdbEntity регистрирует класс в момент
+ * загрузки модуля. Нужен schema sync (опция `sync` в forRoot), чтобы
+ * находить все сущности без явного списка entities в опциях модуля.
  *
  * Важно: класс попадает в реестр только если его файл был импортирован
  * (обычно это происходит через YdbModule.forFeature / импорты модулей NestJS).
  *
- * Жизненный цикл (#142): у реестра есть граница владения, привязанная к
- * YdbCoreModule (см. module/core-module-registry). Пока приложение живо,
- * sync видит только его сущности; после shutdown набор сбрасывается, и
- * следующее независимое приложение в том же процессе не наследует чужие
- * сущности. Повторная регистрация одного класса идемпотентна (Set).
- * Вне активного приложения (CLI, standalone, unit-тесты) getRegistered...()
- * возвращает весь глобальный реестр — прежнее поведение.
+ * Владение сущностями (#142): у каждого экземпляра YdbCoreModule (то есть
+ * у каждого Nest-приложения) есть собственный скоуп — createEntityScope()
+ * вызывается на статической стороне forRootAsync, а провайдеры forFeature
+ * привязывают сущности к скоупу СВОЕГО приложения через DI-токен
+ * YDB_CORE_SCOPE. Порядок резолва провайдеров роли не играет: сущность
+ * физически не может попасть в чужое приложение. Приложение, упавшее
+ * с Duplicate YDB module initialization, уносит свои привязки с собой.
+ *
+ * Вне активного приложения (CLI, standalone, unit-тесты)
+ * getRegisteredYdbEntities() без аргумента возвращает весь глобальный
+ * реестр — прежнее поведение; повторная регистрация идемпотентна (Set).
  */
 type EntityCtor = new (...args: any[]) => any;
 
 /** Все задекорированные классы за жизнь процесса (никогда не чистится). */
 const registry = new Set<EntityCtor>();
 
-/**
- * Сущности активного приложения (создаётся beginEntityScope при claim ядра).
- * Классы, задекорированные уже ПОСЛЕ claim (поздние импорты), попадают сюда
- * же — они часть текущего приложения и видны его schema sync.
- */
-let activeScope: Set<EntityCtor> | null = null;
+/** Скоуп сущностей одного приложения: обычный Set, им владеет его ядро. */
+export type YdbEntityAppScope = Set<EntityCtor>;
 
-/** Сущности, зарегистрированные вне активного приложения. */
-const detached = new Set<EntityCtor>();
+/** Создаёт пустой скоуп для нового экземпляра ядра (вызов из forRootAsync). */
+export function createEntityScope(): YdbEntityAppScope {
+  return new Set<EntityCtor>();
+}
 
 export function registerYdbEntity(target: EntityCtor): void {
+  // Декоратор выполняется при загрузке модуля и не знает ни про одно
+  // приложение — регистрация только процессно-глобальная. Привязку к
+  // конкретному приложению делает YdbModule.forFeature (#142).
   registry.add(target);
-  if (activeScope) {
-    activeScope.add(target);
-  } else {
-    detached.add(target);
-  }
 }
 
 /**
- * Явно привязывает сущности к текущему/следующему приложению (#142).
+ * Явно привязывает сущности к скоупу конкретного приложения (#142).
  *
  * Вызывается из фабрики AR-провайдера (YdbModule.forFeature): декоратор
  * @YdbEntity выполняется один раз за жизнь процесса (кеш ESM-модулей),
  * поэтому повторное приложение в том же процессе не «перерегистрирует»
  * свои сущности само — без явной привязки schema sync увидел бы пустой
- * набор. Фабрика зависит от токенов ядра (YDB_QUERY), поэтому выполняется
- * после claim — скоуп к этому моменту обычно открыт и класс попадает прямо
- * в него; если скоуп ещё не открыт, класс ждёт в detached и будет принят
- * ближайшим beginEntityScope(). Чужие сущности закрытых приложений сюда не
- * попадают: привязываются только явно объявленные классы.
+ * набор. Скоуп приходит через DI-токен YDB_CORE_SCOPE и гарантированно
+ * принадлежит контейнеру того приложения, в котором создан провайдер,
+ * поэтому привязка корректна и ДО claim ядра (сущность просто ждёт в
+ * скоупе будущего приложения), и после него.
  */
-export function requestEntitiesForApp(entities: readonly EntityCtor[]): void {
+export function requestEntitiesForApp(
+  scope: YdbEntityAppScope,
+  entities: readonly EntityCtor[],
+): void {
   for (const entity of entities) {
     registry.add(entity);
-    if (activeScope) {
-      activeScope.add(entity);
-    } else {
-      detached.add(entity);
-    }
+    scope.add(entity);
   }
 }
 
 /**
- * Открывает скоуп сущностей для нового экземпляра ядра: забирает всё,
- * что накопилось вне приложений (обычно импорты forFeature перед compile).
+ * Сущности для schema sync/verify. С аргументом — набор конкретного
+ * приложения; без аргумента (CLI, standalone) — весь глобальный реестр.
  */
-export function beginEntityScope(): void {
-  if (!activeScope) {
-    activeScope = new Set<EntityCtor>();
+export function getRegisteredYdbEntities(
+  scope?: YdbEntityAppScope,
+): EntityCtor[] {
+  if (scope) {
+    return [...scope];
   }
-  for (const entity of detached) {
-    activeScope.add(entity);
-  }
-  detached.clear();
-}
-
-/**
- * Закрывает скоуп приложения: его сущности больше не видны schema sync —
- * следующее приложение в этом процессе стартует с чистым набором.
- */
-export function endEntityScope(): void {
-  activeScope = null;
-  detached.clear();
-}
-
-export function getRegisteredYdbEntities(): EntityCtor[] {
-  if (!activeScope) {
-    return [...registry];
-  }
-  return [...new Set([...activeScope, ...detached])];
+  return [...registry];
 }

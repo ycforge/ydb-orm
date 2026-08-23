@@ -5,6 +5,7 @@ import {
   YDB_ENCRYPTION_PROVIDER,
   YDB_BLIND_INDEX_PROVIDER,
   YDB_VALIDATION_PROVIDER,
+  YDB_CORE_SCOPE,
 } from '../core/constants.js';
 import type { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import {
@@ -17,7 +18,10 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getActiveRecordInitToken } from '../repository/repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
-import { requestEntitiesForApp } from '../metadata/entity-registry.js';
+import {
+  requestEntitiesForApp,
+  type YdbEntityAppScope,
+} from '../metadata/entity-registry.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
@@ -38,12 +42,16 @@ export function createActiveRecordEntityProvider(
       encryptionProvider?: YdbEncryptionProvider,
       blindIndexProvider?: YdbBlindIndexProvider,
       validationProvider?: YdbValidationProvider,
+      entityScope?: YdbEntityAppScope,
     ) => {
-      // forFeature явно объявляет сущности этого приложения (#142): декоратор
+      // forFeature явно объявляет сущности ЭТОГО приложения (#142): декоратор
       // @YdbEntity уже отработал при первом импорте класса и больше не
-      // выполнится (кеш модулей), поэтому повторный бутстрап должен сам
-      // восстановить видимость сущности в скоупе для schema sync.
-      requestEntitiesForApp([entityClass]);
+      // выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
+      // из контейнера своего приложения, поэтому привязка корректна при любом
+      // порядке резолва провайдеров и не затрагивает чужие приложения.
+      if (entityScope) {
+        requestEntitiesForApp(entityScope, [entityClass]);
+      }
 
       const issues = validateEntityMetadata(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
@@ -77,6 +85,9 @@ export function createActiveRecordEntityProvider(
       { token: YDB_ENCRYPTION_PROVIDER, optional: true },
       { token: YDB_BLIND_INDEX_PROVIDER, optional: true },
       { token: YDB_VALIDATION_PROVIDER, optional: true },
+      // Скоуп опционален для устойчивости к экзотическим контейнерам без
+      // ядра: без него привязка невозможна, но executor всё равно отсутствует
+      { token: YDB_CORE_SCOPE, optional: true },
     ],
   };
 }

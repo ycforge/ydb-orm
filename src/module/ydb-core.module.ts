@@ -24,6 +24,7 @@ import {
   YDB_VALIDATION_PROVIDER,
   YDB_SCHEMA_SYNC,
   YDB_CORE_LIFECYCLE,
+  YDB_CORE_SCOPE,
 } from '../core/constants.js';
 import {
   YdbModuleAsyncOptions,
@@ -39,7 +40,10 @@ import { CredentialsProvider } from '@ydbjs/auth';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbTransactionManager } from '../transaction/transaction.manager.js';
 import { YdbSchemaSyncer } from '../schema/schema-sync.js';
-import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
+import {
+  createEntityScope,
+  getRegisteredYdbEntities,
+} from '../metadata/entity-registry.js';
 import {
   claimCoreModuleInit,
   releaseCoreModuleInit,
@@ -75,7 +79,11 @@ class YdbCoreModuleLifecycle
   async onApplicationBootstrap(): Promise<void> {
     if (!this.state.options?.sync) return;
     try {
-      await this.schemaSyncer.sync(getRegisteredYdbEntities());
+      // Sync видит только сущности СВОЕГО приложения (#142): привязанные
+      // провайдерами forFeature этого контейнера через YDB_CORE_SCOPE.
+      await this.schemaSyncer.sync(
+        getRegisteredYdbEntities(this.state.entityScope),
+      );
     } catch (error) {
       // После неудачного бутстрапа приложение не стартовало: снимаем
       // экземпляр с учёта и закрываем драйвер сразу — NestJS вызывает
@@ -125,7 +133,10 @@ export class YdbCoreModule {
   static forRootAsync(options: YdbModuleAsyncOptions): DynamicModule {
     // Состояние конкретного экземпляра модуля: живёт в замыкании провайдеров,
     // по нему выполняется claim/release и учитывается владение драйвером.
-    const state: CoreModuleState = {};
+    // Скоуп сущностей создаётся здесь же — один на экземпляр DynamicModule:
+    // провайдеры forFeature привязывают сущности к нему через DI-токен
+    // YDB_CORE_SCOPE и не зависят от порядка резолва (#142).
+    const state: CoreModuleState = { entityScope: createEntityScope() };
     const asyncProviders = this.createAsyncProviders(options, state);
 
     return {
@@ -133,6 +144,11 @@ export class YdbCoreModule {
       imports: [...(options.imports || [])],
       providers: [
         ...asyncProviders,
+
+        {
+          provide: YDB_CORE_SCOPE,
+          useValue: state.entityScope,
+        },
 
         {
           provide: YDB_CREDENTIALS_PROVIDER,
@@ -237,6 +253,7 @@ export class YdbCoreModule {
         YDB_BLIND_INDEX_PROVIDER,
         YDB_VALIDATION_PROVIDER,
         YDB_SCHEMA_SYNC,
+        YDB_CORE_SCOPE,
       ],
     };
   }
