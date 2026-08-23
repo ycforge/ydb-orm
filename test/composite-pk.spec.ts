@@ -283,9 +283,10 @@ describe('Composite PK CRUD', () => {
 
       expect(membership.user).toBeInstanceOf(UserEntity);
       expect(membership.user?.uuid).toBe(userRow.uuid);
+      // #86: many-to-one грузится одним батч-IN по PK вместо find() на элемент.
       const [q] = mock.queries;
       expect(q.sql).toContain('SELECT * FROM `users`');
-      expect(q.sql).toContain('WHERE `uuid` = $uuid');
+      expect(q.sql).toContain('WHERE `uuid` IN ($p0)');
     });
   });
 });

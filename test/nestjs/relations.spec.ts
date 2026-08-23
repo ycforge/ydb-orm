@@ -88,8 +88,8 @@ describe('NestJS integration: relations', () => {
     expect(mock.queries[0].sql).toContain('FROM `photos_with_tags`');
     expect(mock.queries[1].sql).toContain('FROM `photo_tag`');
     expect(mock.queries[1].sql).toContain('`photos_with_tags_uuid` IN');
-    expect(mock.queries[2].sql).toContain('FROM `tags`');
-    expect(mock.queries[2].sql).toContain('WHERE `uuid` IN');
+    // #86: join-таблица вернула ноль ссылок — выборка тегов не выполняется.
+    expect(mock.queries).toHaveLength(2);
 
     await module.close();
   });
@@ -103,7 +103,8 @@ describe('NestJS integration: relations', () => {
     await photo.loadRelations(['tags']);
 
     expect(mock.queries[0].sql).toContain('FROM `photo_tag`');
-    expect(mock.queries[1].sql).toContain('FROM `tags`');
+    // #86: join-таблица вернула ноль ссылок — выборка тегов не выполняется.
+    expect(mock.queries).toHaveLength(1);
 
     await module.close();
   });

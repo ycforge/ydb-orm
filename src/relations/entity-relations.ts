@@ -19,6 +19,7 @@ import type { HydrationContext } from '../persistence/entity-persistence.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { mapToYdb } from '../core/mapper.js';
 
 /**
@@ -91,6 +92,13 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   /**
    * Batch-загрузка many-to-many: join-таблица + инверсные сущности.
    * Возвращает Map<owner PK, related entities[]>.
+   *
+   * Батчинг и guard-ы (#86): пустой список владельцев — ноль запросов;
+   * дубликаты PK владельцев убираются; join-select чанкуется по
+   * MAX_IN_CLAUSE_VALUES (чанки по owner-PK не пересекаются, поэтому
+   * link-строки уникальны без дополнительной дедупликации); выборка
+   * инверсных сущностей идёт через fetchByColumnIn (дедупликация FK,
+   * чанкинг, слияние без дубликатов).
    */
   private async loadManyToManyRelation(
     items: T[],
@@ -106,27 +114,37 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       );
     }
 
-    const inParams = ownerPks.map((_, i) => `$p${i}`).join(', ');
+    const uniqueOwnerPks = dedupeInValues(ownerPks);
+    if (!uniqueOwnerPks.length) return new Map();
+
     const ownerPkType = joinTable.ownerColumnType;
 
-    const sql =
-      `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
-      `${quoteIdentifier(joinTable.inverseColumn)} ` +
-      `FROM ${quoteIdentifier(joinTable.tableName)} ` +
-      `WHERE ${quoteIdentifier(joinTable.ownerColumn)} IN (${inParams})`;
+    const links: { [key: string]: any }[] = [];
+    for (const chunk of chunkInValues(uniqueOwnerPks)) {
+      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
 
-    const joinQuery = exec([sql] as unknown as TemplateStringsArray);
-    ownerPks.forEach((value, i) => {
-      joinQuery.parameter(
-        `p${i}`,
-        mapToYdb(ownerPkType, value, joinTable.ownerColumn),
-      );
-    });
+      const sql =
+        `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
+        `${quoteIdentifier(joinTable.inverseColumn)} ` +
+        `FROM ${quoteIdentifier(joinTable.tableName)} ` +
+        `WHERE ${quoteIdentifier(joinTable.ownerColumn)} IN (${inParams})`;
 
-    const joinRows = await this.executeQuery(joinQuery, options);
-    const links = (joinRows[0] ?? []) as {
-      [key: string]: any;
-    }[];
+      const joinQuery = exec([sql] as unknown as TemplateStringsArray);
+      chunk.forEach((value, i) => {
+        joinQuery.parameter(
+          `p${i}`,
+          mapToYdb(ownerPkType, value, joinTable.ownerColumn),
+        );
+      });
+
+      const chunkRows = await this.executeQuery(joinQuery, options);
+      // Без spread: join-таблица может быть большой, а у push(...rows)
+      // есть лимит на число аргументов вызова.
+      const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+      for (const row of rows) {
+        links.push(row);
+      }
+    }
 
     const inverseFks = links
       .map((row) => row[joinTable.inverseColumn])
@@ -264,6 +282,22 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
   /**
    * Явная загрузка relations для одного или нескольких инстансов.
+   *
+   * Батчинг (#86): для каждой связи сначала собираются все значения
+   * FK/PK по массиву инстансов, затем выполняется один (или несколько
+   * чанков) IN (...) запрос — как в eager-пути. Раньше каждый тип связи
+   * ходил запросом НА КАЖДЫЙ инстанс: 100 записей = 100–200 запросов.
+   *
+   * Семантика сохранена:
+   * - one-to-many: инстанс получает все дочерние строки по своему PK
+   *   (или []), как давал findAll({ fk: pk }) на каждый элемент;
+   * - many-to-one / one-to-one: инстанс получает ровно одну связанную
+   *   строку по FK (или null), как давал find({ pk: fk });
+   * - many-to-many: группы link-строк join-таблицы, как раньше;
+   * - ошибки валидации (undefined PK/FK, неизвестная связь) бросаются
+   *   до выполнения запросов с прежними сообщениями;
+   * - связанные сущности проходят единый конвейер гидратации
+   *   (дешифровка → instantiate → afterFind), как и eager-путь.
    */
   async loadRelations(
     items: T[],
@@ -296,22 +330,46 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         });
         const pkField = getPrimaryKey(constructor);
 
+        // Валидация всех инстансов ДО запросов — прежний контракт ошибок.
         for (const item of items) {
-          const pkValue = (item as any)[pkField];
-          if (pkValue === undefined) {
+          if ((item as any)[pkField] === undefined) {
             throw new Error(
               `Cannot load one-to-many relation "${name}": ` +
                 `primary key "${pkField}" is undefined on ${constructor.name}`,
             );
           }
-          const targetPersistence = this.createTargetPersistence(
-            Target,
-            options?.trx,
-          );
-          (item as any)[name] = await targetPersistence.findAll(
-            { [joinColumnName]: pkValue },
-            options,
-          );
+        }
+
+        // null-PK не входят в IN (...) — их группы и так пусты ([]).
+        const pks = dedupeInValues(
+          items
+            .map((item) => (item as any)[pkField])
+            .filter((v) => v !== undefined && v !== null),
+        );
+
+        const children = await this.fetchByColumnIn(
+          Target,
+          joinColumnName,
+          pks,
+          options,
+        );
+
+        const byFk = new Map<any, YdbBaseEntity[]>();
+        for (const child of children) {
+          const fk = (child as any)[joinColumnName];
+          const group = byFk.get(fk);
+          if (group) {
+            group.push(child);
+          } else {
+            byFk.set(fk, [child]);
+          }
+        }
+
+        // Копия массива на инстанс: два инстанса с одним PK не должны
+        // разделять один массив (раньше у каждого был свой findAll).
+        for (const item of items) {
+          const group = byFk.get((item as any)[pkField]);
+          (item as any)[name] = group ? [...group] : [];
         }
       } else if (rel.type === 'many-to-many') {
         const pkField = getPrimaryKey(constructor);
@@ -328,21 +386,32 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
 
         for (const item of items) {
-          const pkValue = (item as any)[pkField];
-          if (pkValue === undefined) {
+          if ((item as any)[pkField] === undefined) {
             throw new Error(
               `Cannot load many-to-many relation "${name}": ` +
                 `primary key "${pkField}" is undefined on ${constructor.name}`,
             );
           }
-          const related = await this.loadManyToManyRelation(
-            [item],
-            Target,
-            joinTable,
-            [pkValue],
-            options,
-          );
-          (item as any)[name] = related.get(pkValue) ?? [];
+        }
+
+        const pks = dedupeInValues(
+          items
+            .map((item) => (item as any)[pkField])
+            .filter((v) => v !== undefined && v !== null),
+        );
+
+        // Один батч-вызов на ВСЕ инстансы вместо пары запросов на каждый.
+        const related = await this.loadManyToManyRelation(
+          items,
+          Target,
+          joinTable,
+          pks,
+          options,
+        );
+
+        for (const item of items) {
+          const group = related.get((item as any)[pkField]);
+          (item as any)[name] = group ? [...group] : [];
         }
       } else {
         const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
@@ -352,21 +421,36 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         const targetPk = getPrimaryKey(Target);
 
         for (const item of items) {
-          const fkValue = (item as any)[joinColumnName];
-          if (fkValue === undefined) {
+          if ((item as any)[joinColumnName] === undefined) {
             throw new Error(
               `Cannot load relation "${name}": ` +
                 `join column "${joinColumnName}" is undefined on ${constructor.name}`,
             );
           }
-          const targetPersistence = this.createTargetPersistence(
-            Target,
-            options?.trx,
-          );
-          (item as any)[name] = await targetPersistence.find(
-            { [targetPk]: fkValue },
-            options,
-          );
+        }
+
+        // null-FK не входят в IN (...) — им назначается null, как возвращал
+        // find() по условию «PK = NULL» (пустой результат).
+        const fks = dedupeInValues(
+          items
+            .map((item) => (item as any)[joinColumnName])
+            .filter((v) => v !== undefined && v !== null),
+        );
+
+        const parents = await this.fetchByColumnIn(
+          Target,
+          targetPk,
+          fks,
+          options,
+        );
+
+        const byPk = new Map<any, YdbBaseEntity>();
+        for (const parent of parents) {
+          byPk.set((parent as any)[targetPk], parent);
+        }
+
+        for (const item of items) {
+          (item as any)[name] = byPk.get((item as any)[joinColumnName]) ?? null;
         }
       }
     }

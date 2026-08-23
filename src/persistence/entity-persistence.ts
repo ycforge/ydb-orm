@@ -19,6 +19,7 @@ import {
 } from '../decorators/timestamp.decorator.js';
 import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
   getYdbEnumMetadata,
@@ -1689,6 +1690,15 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
   /**
    * Batch-загрузка по колонке IN (...). Используется relations-модулем.
+   *
+   * Guard-ы (#86):
+   * - пустой список значений — пустой результат БЕЗ выполнения SQL
+   *   (раньше уходил невалидный `WHERE col IN ()`);
+   * - дубликаты значений убираются до построения IN (...) — они раздували
+   *   список параметров и не меняли результат;
+   * - значения больше MAX_IN_CLAUSE_VALUES режутся на несколько чанков
+   *   (лимиты YDB на текст запроса/число параметров), результаты сливаются
+   *   по порядку чанков без дубликатов строк (по PK).
    */
   async fetchByColumnIn(
     column: string,
@@ -1704,23 +1714,45 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
-    const inParams = values.map((_, i) => `$p${i}`).join(', ');
-    const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
+    const uniqueValues = dedupeInValues(values);
+    if (!uniqueValues.length) return [];
 
-    const query = exec([sql] as unknown as TemplateStringsArray);
-    values.forEach((value, i) => {
-      query.parameter(`p${i}`, mapToYdb(columnType, value, column));
-    });
+    // PK для дедупликации результатов между чанками.
+    const pkFields = this.getPkFields(meta);
 
-    const rows = await this.executeQuery<Record<string, any>[][]>(
-      query,
-      options,
-    );
+    const result: T[] = [];
+    const seenPks = new Set<string>();
 
-    // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
-    // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
-    // afterFind при этом обязателен для связанных сущностей (issue #83).
-    return this.hydrate(rows[0] ?? [], options, { eager: false });
+    for (const chunk of chunkInValues(uniqueValues)) {
+      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+      const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
+
+      const query = exec([sql] as unknown as TemplateStringsArray);
+      chunk.forEach((value, i) => {
+        query.parameter(`p${i}`, mapToYdb(columnType, value, column));
+      });
+
+      const rows = await this.executeQuery<Record<string, any>[][]>(
+        query,
+        options,
+      );
+
+      // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
+      // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
+      // afterFind при этом обязателен для связанных сущностей (issue #83).
+      const hydrated = await this.hydrate(rows[0] ?? [], options, {
+        eager: false,
+      });
+
+      for (const entity of hydrated) {
+        const key = pkFields.map((f) => String((entity as any)[f])).join('|');
+        if (seenPks.has(key)) continue;
+        seenPks.add(key);
+        result.push(entity);
+      }
+    }
+
+    return result;
   }
 
   /**

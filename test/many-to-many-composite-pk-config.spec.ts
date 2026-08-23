@@ -444,8 +444,8 @@ describe('join-column selector resolution is strict (#87)', () => {
     parent.id = 7n;
     await parent.loadRelations(['children']);
 
-    expect(mock.queries[0].sql).toContain('`parent_ref` = $parent_ref');
-    expect(mock.queries[0].params.parent_ref).toBeInstanceOf(Int64);
+    expect(mock.queries[0].sql).toContain('`parent_ref` IN ($p0)');
+    expect(mock.queries[0].params.p0).toBeInstanceOf(Int64);
     expect(parent.children?.map((c) => c.uuid)).toEqual(['c1']);
   });
 

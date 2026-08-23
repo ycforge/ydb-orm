@@ -110,6 +110,11 @@ export {
   DEFAULT_RETRIEVE_LIMIT,
   MAX_RETRIEVE_LIMIT,
 } from './query/query-builder.js';
+export {
+  MAX_IN_CLAUSE_VALUES,
+  chunkInValues,
+  dedupeInValues,
+} from './core/query-limits.js';
 
 // Репозитории / EntityManager (DI-вариант поверх Active Record)
 export {
