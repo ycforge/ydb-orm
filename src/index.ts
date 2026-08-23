@@ -123,11 +123,15 @@ export {
   classifyYdbError,
   isTransientYdbError,
   validateYdbRetryPolicyOptions,
+  resolveYdbRetryPolicy,
   TRANSIENT_YDB_STATUSES,
   DEFAULT_YDB_RETRY_POLICY_OPTIONS,
 } from './core/retry.js';
+export { withRetryPolicy } from './core/retry-executor.js';
 export type {
   YdbRetryPolicyOptions,
+  YdbRetryPolicyInput,
+  YdbResolvedRetryPolicy,
   YdbRetryAttemptContext,
   YdbErrorKind,
   YdbRetrySleepFn,

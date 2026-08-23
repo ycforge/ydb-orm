@@ -11,6 +11,7 @@ import {
   YdbTransactionOptions,
 } from './interfaces.js';
 import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
+import { withRetryPolicy } from './retry-executor.js';
 
 /**
  * Fail-fast валидация опций модуля: без endpoint/auth_options драйвер
@@ -168,6 +169,13 @@ export function createExecutor(
   });
 
   let executor = adapted;
+
+  // Retry-политика (#27): опциональна, по умолчанию выключена (ретраит
+  // только SDK). Обёртка ставится ПОД логирование, чтобы каждая попытка
+  // политики попадала в лог отдельно.
+  if (opts.retry !== undefined && opts.retry !== false) {
+    executor = withRetryPolicy(executor, opts.retry);
+  }
 
   if (opts.logQueries) {
     const logger =

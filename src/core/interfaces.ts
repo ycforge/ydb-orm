@@ -7,6 +7,7 @@ import {
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { QueryLogger } from './query-logger.js';
+import type { YdbRetryPolicyInput } from './retry.js';
 
 export type { QueryOptions } from './query-options.js';
 export type { QueryLogger, QueryLogEntry } from './query-logger.js';
@@ -82,6 +83,23 @@ export interface YdbModuleOptions {
    *   (чтобы не шуметь); включайте осознанно, например в dev-окружении.
    */
   transactions?: YdbTransactionsSettings;
+  /**
+   * Retry-политика по типу ошибки (#27) для операций executor'а.
+   *
+   * - `undefined` / `false` (по умолчанию) — политика выключена: повторами
+   *   одиночных запросов владеет только внутренний ретрай SDK (как в #98);
+   * - `true` — политика с дефолтами (maxAttempts: 3, bounded backoff
+   *   100..5000 мс, jitter 0.25); повторяются только статусы
+   *   ABORTED/UNAVAILABLE/OVERLOADED;
+   * - объект `YdbRetryPolicyOptions` — кастомная политика.
+   *
+   * Когда политика включена, ORM владеет ретраями запросов через этот
+   * executor и ГАСИТ внутренний цикл SDK (одна попытка SDK на попытку
+   * ORM) — попытки не перемножаются, максимум обращений к БД равен
+   * maxAttempts. Для транзакций используется отдельная опция retry
+   * в runInTransaction(). См. README «Retry-политика по типу ошибки».
+   */
+  retry?: YdbRetryPolicyInput;
 }
 
 export interface YdbTransactionsSettings {
@@ -105,6 +123,16 @@ export interface YdbQuery {
   timeout(timeout: number): YdbQuery;
   signal(signal: AbortSignal): YdbQuery;
   cancel(): YdbQuery;
+  /**
+   * SDK-события запроса (#27): у реального Query из @ydbjs/query есть
+   * `.on('retry', ctx)` — политика ORM использует его, чтобы гасить
+   * внутренний ретрай SDK и забирать управление повторами себе.
+   * Опционально: моки и другие реализации могут её не предоставлять.
+   */
+  on?(
+    event: 'retry',
+    listener: (ctx: { attempt: number; error: unknown }) => void,
+  ): unknown;
   then: Promise<any>['then'];
 }
 

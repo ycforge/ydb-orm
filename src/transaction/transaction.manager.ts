@@ -1,5 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { YDB_QUERY } from '../core/constants.js';
+import { resolveYdbRetryPolicy, runWithRetry } from '../core/retry.js';
+import type { YdbRetryPolicyInput } from '../core/retry.js';
 import type {
   YdbExecutor,
   YdbIsolationLevel,
@@ -26,10 +28,18 @@ import {
  *   создаётся вложенный контекст с транзакцией внешнего вызова (коммит/
  *   откат по-прежнему у внешнего вызова). Значение false НЕ отключает
  *   глобальный ambient — используйте для этого настройки модуля.
+ * - retry — retry-политика ORM по типу ошибки (#27): `true` — дефолты
+ *   (maxAttempts: 3, bounded backoff + jitter), объект — кастомная политика.
+ *   Когда политика задана, владение повторами тела ПЕРЕХОДИТ от SDK к ORM:
+ *   на каждую попытку политики приходится ровно одна попытка тела (внутренний
+ *   цикл SDK гасится), максимум исполнений колбэка равен maxAttempts —
+ *   попытки не перемножаются. Без политики поведение прежнее (#98): тело
+ *   ретраит SDK по своим правилам (неограниченный бюджет).
  */
 export interface RunInTransactionOptions extends YdbTransactionOptions {
   reuse?: boolean;
   ambient?: boolean;
+  retry?: YdbRetryPolicyInput;
 }
 
 /** Допустимые уровни изоляции — для fail-fast валидации опций. */
@@ -47,7 +57,49 @@ const ALLOWED_OPTION_KEYS = new Set([
   'idempotent',
   'reuse',
   'ambient',
+  'retry',
 ]);
+
+/**
+ * Маркер «внутренний ретрай SDK вытеснен политикой ORM» (#27): бросается
+ * телом транзакции, когда SDK пытается начать попытку сверх лимита политики.
+ * Для предиката повтора SDK это заведомо неповторяемая ошибка — цикл SDK
+ * завершается; наружу пробрасывается исходная ошибка последней попытки.
+ */
+class SdkRetrySupersededError extends Error {
+  constructor(readonly lastError: unknown) {
+    super('SDK transaction retry superseded by the ORM retry policy (#27)');
+    this.name = 'SdkRetrySupersededError';
+  }
+}
+
+/** Глубина обхода cause-цепочки при распаковке ошибки транзакции. */
+const MAX_CAUSE_DEPTH = 8;
+
+/**
+ * Распаковывает ошибку execute(): SDK заворачивает неповторяемые ошибки
+ * транзакции в Error('Transaction failed.', { cause }). Если в цепочке
+ * найден маркер вытесненного ретрая — наружу идёт ИСХОДНАЯ ошибка
+ * последней попытки (для классификации политикой), иначе ошибка как есть.
+ */
+function unwrapTransactionError(error: unknown): unknown {
+  let current = error;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth += 1) {
+    if (current instanceof SdkRetrySupersededError) {
+      return (
+        current.lastError ??
+        new Error(
+          'Previous transaction attempt failed (the failure occurred outside the ' +
+            'transaction body, e.g. at commit); the original error is not available.',
+        )
+      );
+    }
+    const cause: unknown = (current as { cause?: unknown })?.cause;
+    if (cause === undefined || cause === null) break;
+    current = cause;
+  }
+  return error;
+}
 
 /**
  * Fail-fast валидация опций транзакции: неизвестный ключ или невалидное
@@ -108,6 +160,16 @@ export function validateRunInTransactionOptions(
     }
   }
 
+  if (
+    options.retry !== undefined &&
+    typeof options.retry !== 'boolean' &&
+    (typeof options.retry !== 'object' || options.retry === null)
+  ) {
+    throw new Error(
+      'runInTransaction(): "retry" must be a boolean or a retry policy object.',
+    );
+  }
+
   if (reuse && (isolation || signal || timeout !== undefined || idempotent)) {
     throw new Error(
       'runInTransaction(): "reuse: true" joins the already-active transaction — ' +
@@ -115,21 +177,34 @@ export function validateRunInTransactionOptions(
         'Pass them only to the outermost call.',
     );
   }
+
+  // Политика не имеет смысла при reuse: повторами управляет внешний вызов.
+  if (reuse && options.retry !== undefined) {
+    throw new Error(
+      'runInTransaction(): "retry" cannot be combined with "reuse: true" — ' +
+        'the outermost call owns transaction retries.',
+    );
+  }
 }
 
 /**
  * Менеджер транзакций (#98).
  *
- * Семантика повтора (retry) — как в @ydbjs/query: при `idempotent: true`
- * SDK может ПОВТОРНО выполнить весь колбэк при retryable-ошибках (смерть
- * сессии, сетевые сбои). Это значит, что побочные эффекты колбэка и все
- * lifecycle hooks сущностей могут выполниться больше одного раза — колбэк
- * должен быть идемпотентным или устойчивым к повтору.
+ * Семантика повтора по умолчанию — как в @ydbjs/query: при `idempotent:
+ * true` SDK может ПОВТОРНО выполнить весь колбэк при retryable-ошибках
+ * (смерть сессии, сетевые сбои). Это значит, что побочные эффекты колбэка
+ * и все lifecycle hooks сущностей могут выполниться больше одного раза —
+ * колбэк должен быть идемпотентным или устойчивым к повтору.
  *
- * Собственного ORM-ретрая поверх SDK нет (#27): повторами тела транзакции
- * управляет только SDK. Для составных операций ВНЕ транзакции используйте
- * явную политику runWithRetry() (core/retry) — вложение её сюда перемножило
- * бы попытки.
+ * Приоритет слоёв повтора (#27, детерминированный):
+ * - опция `retry` не задана — повторами тела владеет ТОЛЬКО SDK (как в #98);
+ * - опция `retry` задана (`true` или объект политики) — владение переходит
+ *   к политике ORM: ровно одна попытка тела на попытку политики (внутренний
+ *   цикл SDK гасится), максимум исполнений колбэка = maxAttempts, между
+ *   попытками bounded backoff + jitter, повторяются только статусы
+ *   ABORTED/UNAVAILABLE/OVERLOADED. Требование идемпотентности колбэка —
+ *   то же, что у idempotent-транзакций #98.
+ * Смешивания слоёв нет: попытки не перемножаются ни в одной из конфигураций.
  */
 @Injectable()
 export class YdbTransactionManager {
@@ -209,26 +284,64 @@ export class YdbTransactionManager {
       signal: options?.signal,
     };
 
-    // Контекст активной транзакции создаётся на каждый вызов execute():
-    // при idempotent-retry SDK вызывает execute-колбэк заново с новой
-    // сессией/транзакцией — контекст каждой попытки свой.
-    return this.db.transaction(trxOptions).execute((trx, sdkSignal) => {
-      // Сигнал конкретной попытки: сигнал от SDK (уже включает глобальный
-      // пользовательский signal) + свежий AbortSignal.timeout этой попытки.
-      let attemptSignal = sdkSignal;
-      if (options?.timeout !== undefined) {
-        const signals = [
-          sdkSignal,
-          AbortSignal.timeout(options.timeout),
-        ].filter((s): s is AbortSignal => s instanceof AbortSignal);
-        attemptSignal =
-          signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-      }
+    /** Сигнал конкретной попытки: сигнал SDK + свежий AbortSignal.timeout. */
+    const composeAttemptSignal = (sdkSignal?: AbortSignal) => {
+      if (options?.timeout === undefined) return sdkSignal;
+      const signals = [sdkSignal, AbortSignal.timeout(options.timeout)].filter(
+        (s): s is AbortSignal => s instanceof AbortSignal,
+      );
+      return signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+    };
 
+    /**
+     * Тело execute(): создаёт контекст попытки и вызывает колбэк.
+     * Используется и легаси-путём, и под политикой (#27).
+     */
+    const runAttemptBody = (
+      trx: YdbExecutor,
+      sdkSignal: AbortSignal | undefined,
+    ) => {
+      const attemptSignal = composeAttemptSignal(sdkSignal);
       return runWithTransactionContext(
         { trx, db: this.db, signal: attemptSignal, ambient },
         () => fn(trx, attemptSignal),
       );
-    });
+    };
+
+    // Retry-политика (#27): без неё — прежнее поведение (#98), тело ретраит
+    // только SDK по своим правилам. С ней — владение повторами переходит к
+    // ORM: на одну попытку политики приходится ровно одна попытка тела
+    // (внутренний цикл SDK гасится маркером SdkRetrySupersededError — для
+    // его предиката это заведомо неповторяемая ошибка), поэтому попытки не
+    // перемножаются, а максимум исполнений колбэка равен maxAttempts.
+    const policy = resolveYdbRetryPolicy(options?.retry);
+    if (!policy) {
+      return this.db
+        .transaction(trxOptions)
+        .execute((trx, sdkSignal) => runAttemptBody(trx, sdkSignal));
+    }
+
+    return runWithRetry(() => {
+      let sdkAttempt = 0;
+      let lastFailure: unknown;
+
+      return this.db
+        .transaction(trxOptions)
+        .execute(async (trx, sdkSignal) => {
+          sdkAttempt += 1;
+          if (sdkAttempt > 1) {
+            throw new SdkRetrySupersededError(lastFailure);
+          }
+          try {
+            return await runAttemptBody(trx, sdkSignal);
+          } catch (error) {
+            lastFailure = error;
+            throw error;
+          }
+        })
+        .catch((error: unknown) => {
+          throw unwrapTransactionError(error);
+        });
+    }, policy);
   }
 }

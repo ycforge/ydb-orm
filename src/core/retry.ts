@@ -152,6 +152,57 @@ export function isTransientYdbError(error: unknown): boolean {
 }
 
 /**
+ * Входной формат политики в конфигурации (#27): `false`/`undefined` —
+ * выключено (ретраит только SDK), `true` — значения по умолчанию,
+ * объект — кастомная политика.
+ */
+export type YdbRetryPolicyInput = boolean | YdbRetryPolicyOptions;
+
+/** Политика с разрешёнными значениями по умолчанию (результат резолва). */
+export interface YdbResolvedRetryPolicy extends Required<
+  Pick<
+    YdbRetryPolicyOptions,
+    'maxAttempts' | 'baseDelayMs' | 'maxDelayMs' | 'jitterRatio'
+  >
+> {
+  signal?: AbortSignal;
+  onRetry?: (ctx: YdbRetryAttemptContext) => void;
+  shouldRetry?: (error: unknown) => boolean;
+  sleep: YdbRetrySleepFn;
+  rng: YdbRetryRng;
+}
+
+/**
+ * Разрешает вход политики (`boolean | YdbRetryPolicyOptions`) в полную
+ * конфигурацию с дефолтами (#27). `undefined`/`false` → null (политика
+ * выключена — ретраит только SDK, поведение #98 не меняется).
+ * Невалидные опции — fail-fast ошибка.
+ */
+export function resolveYdbRetryPolicy(
+  input?: YdbRetryPolicyInput,
+): YdbResolvedRetryPolicy | null {
+  if (input === undefined || input === false) return null;
+  const options = input === true ? {} : input;
+  validateYdbRetryPolicyOptions(options);
+
+  return {
+    maxAttempts:
+      options.maxAttempts ?? DEFAULT_YDB_RETRY_POLICY_OPTIONS.maxAttempts,
+    baseDelayMs:
+      options.baseDelayMs ?? DEFAULT_YDB_RETRY_POLICY_OPTIONS.baseDelayMs,
+    maxDelayMs:
+      options.maxDelayMs ?? DEFAULT_YDB_RETRY_POLICY_OPTIONS.maxDelayMs,
+    jitterRatio:
+      options.jitterRatio ?? DEFAULT_YDB_RETRY_POLICY_OPTIONS.jitterRatio,
+    signal: options.signal,
+    onRetry: options.onRetry,
+    shouldRetry: options.shouldRetry,
+    sleep: options.sleep ?? defaultSleep,
+    rng: options.rng ?? Math.random,
+  };
+}
+
+/**
  * Fail-fast валидация опций политики: неизвестных ключей нет (структура
  * типизирована), проверяются значения диапазонов. Невалидное значение —
  * ошибка конфигурации сразу.
@@ -299,15 +350,17 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
  *   он заворачивается в Error (исходное значение — в cause);
  * - колбэк должен быть идемпотентным или устойчивым к повтору: при
  *   повторе заново выполняется вся fn (те же требования, что к
- *   idempotent-транзакциям #98).
+ *   idempotent-транзакциям #98);
+ * - fn получает сигнал отмены политики (для связывания с сигналами
+ *   нижележащих операций — так сигнал попытки доходит до БД).
  *
- * НЕ оборачивайте этой функцией одиночные запросы и runInTransaction():
- * их уже ретраит SDK внутри себя — вложение перемножит попытки.
- * Целевой сценарий — составные операции вне транзакции (несколько
- * запросов/шагов бизнес-логики), которые SDK как единое целое не ретраит.
+ * Интеграция с executor/транзакциями (#27): используйте withRetryPolicy()
+ * и опцию retry runInTransaction() — они применяют эту политику к операциям,
+ * НЕ дублируя внутренний ретрай SDK (детерминированный приоритет слоёв
+ * описан в README «Retry-политика по типу ошибки»).
  */
 export async function runWithRetry<T>(
-  fn: () => Promise<T>,
+  fn: (signal?: AbortSignal) => Promise<T>,
   options?: YdbRetryPolicyOptions,
 ): Promise<T> {
   validateYdbRetryPolicyOptions(options);
@@ -322,7 +375,7 @@ export async function runWithRetry<T>(
     if (signal?.aborted) throw abortReasonToError(signal.reason);
 
     try {
-      return await fn();
+      return await fn(signal);
     } catch (error) {
       const retryable = options?.shouldRetry
         ? options.shouldRetry(error)
