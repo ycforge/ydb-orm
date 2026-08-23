@@ -1251,7 +1251,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   private async hydrate(
     raw: Record<string, any>[],
     options?: QueryOptions,
-    opts?: { eager?: boolean },
+    opts?: { eager?: boolean; afterFind?: boolean },
   ): Promise<T[]> {
     await this.decryptResult(raw);
     const result = raw.map((r) => this.instantiate(r));
@@ -1269,7 +1269,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       await this.loadEagerRelations(fresh, options, ctx);
     }
 
-    if (getLifecycleHooks(this.entityClass).afterFind.length) {
+    // afterFind может откладываться (#16): промежуточные уровни вложенного
+    // eager-пути срабатывают в пост-порядке — только после догрузки своих
+    // детей (см. YdbEntityRelations.loadRelationPath / fireAfterFindOn).
+    if (
+      (opts?.afterFind ?? true) &&
+      getLifecycleHooks(this.entityClass).afterFind.length
+    ) {
       for (const inst of fresh) {
         await this.callHooks('afterFind', inst);
       }
@@ -1964,6 +1970,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return instance;
   }
 
+  /**
+   * Вызывает afterFind на переданных инстансах (в пост-порядке вложенного
+   * eager-пути #16). Инстансы промежуточного уровня уже гидратированы с
+   * `afterFind: false`, поэтому срабатывание здесь — ровно один раз.
+   */
+  async fireAfterFind(instances: object[]): Promise<void> {
+    if (!getLifecycleHooks(this.entityClass).afterFind.length) return;
+    for (const inst of instances) {
+      await this.callHooks('afterFind', inst as any);
+    }
+  }
+
   // ---- Relations helpers (delegated to YdbEntityRelations at repository level) ----
 
   /**
@@ -1976,12 +1994,17 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
    *   список параметров и не меняли результат;
    * - значения больше MAX_IN_CLAUSE_VALUES режутся на несколько чанков
    *   (лимиты YDB на текст запроса/число параметров), результаты сливаются
-   *   по порядку чанков без дубликатов строк (по PK).
+   * по порядку чанков без дубликатов строк (по PK).
+   *
+   * `hydration.afterFind` (по умолчанию true): если false, гидратированные
+   * инстансы НЕ получают afterFind сразу — их послеFind откладывается для
+   * пост-порядка вложенного eager-пути (#16).
    */
   async fetchByColumnIn(
     column: string,
     values: any[],
     options?: QueryOptions,
+    hydration?: { afterFind?: boolean },
   ): Promise<T[]> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
@@ -2016,10 +2039,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
 
       // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
-      // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
-      // afterFind при этом обязателен для связанных сущностей (issue #83).
+      // собственных eager-связей цели остаётся 1 (как до #83), иначе
+      // циклические связи рекурсируют. afterFind при этом обязателен для
+      // связанных сущностей (issue #83), но для промежуточных уровней
+      // вложенного eager-пути (#16) его можно отложить через hydration.
       const hydrated = await this.hydrate(rows[0] ?? [], options, {
         eager: false,
+        afterFind: hydration?.afterFind ?? true,
       });
 
       for (const entity of hydrated) {

@@ -4,6 +4,7 @@ import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import {
   getYdbRelationsMetadata,
   resolveRelationJoinColumn,
+  type RelationMetadata,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbExecutor } from '../core/interfaces.js';
@@ -15,7 +16,10 @@ import { YdbEntityPersistence } from '../persistence/entity-persistence.js';
 import type { HydrationContext } from '../persistence/entity-persistence.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
-import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import {
+  resolveOperationExecutor,
+  runWithTransactionContext,
+} from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { mapToYdb } from '../core/mapper.js';
 import {
@@ -76,6 +80,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     column: string,
     values: any[],
     options?: QueryOptions,
+    hydration?: { afterFind?: boolean },
   ): Promise<YdbBaseEntity[]> {
     const targetMeta = getYdbEntityMetadata(Target);
     if (!targetMeta) {
@@ -87,7 +92,12 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       Target,
       options?.trx,
     );
-    return targetPersistence.fetchByColumnIn(column, values, options);
+    return targetPersistence.fetchByColumnIn(
+      column,
+      values,
+      options,
+      hydration,
+    );
   }
 
   /**
@@ -102,11 +112,12 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * чанкинг, слияние без дубликатов).
    */
   private async loadManyToManyRelation(
-    items: T[],
+    items: YdbBaseEntity[],
     Target: typeof YdbBaseEntity,
     joinTable: ResolvedJoinTable,
     ownerPks: any[],
     options?: QueryOptions,
+    hydration?: { afterFind?: boolean },
   ): Promise<Map<any, YdbBaseEntity[]>> {
     const exec = this.getExecutor(options?.trx);
     if (!exec) {
@@ -157,6 +168,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       targetPkField,
       inverseFks,
       options,
+      hydration,
     );
 
     const byInversePk = new Map<any, YdbBaseEntity>();
@@ -182,7 +194,14 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Batch eager loading: один запрос IN (...) на relation вместо N+1.
+   * Eager loading: батч IN (...) на каждый уровень связи (без N+1).
+   *
+   * Каждая запись @EagerLoad — путь из имён relations, разделённых точкой
+   * (например `tags.owner`). Допустимая длина пути:
+   * - один сегмент — классическая eager-загрузка одного уровня (как до #16);
+   * - несколько сегментов — вложенная загрузка (issue #16): после загрузки
+   *   первого уровня его инстансы становятся «родителями» для следующего
+   *   сегмента, ключи переносятся вперёд батчами.
    */
   async loadEagerRelations(items: T[], options?: QueryOptions): Promise<void> {
     if (!items.length) return;
@@ -191,94 +210,293 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     const eager = getEagerRelations(constructor);
     if (!eager.length) return;
 
+    for (const path of eager) {
+      await this.loadRelationPath(items, path.split('.'), options);
+    }
+  }
+
+  /**
+   * Единый обход relation-пути (#16): рекурсивно загружает сегменты пути по
+   * одному батчу IN (...) на уровень, перенося ключи предыдущего уровня вперёд.
+   *
+   * Для многоуровневых путей afterFind промежуточных инстансов откладывается
+   * (afterFind: false в гидратации) и срабатывает в пост-порядке — после
+   * загрузки собственных детей — через fireAfterFindOn (см. #83/#107).
+   *
+   * Явный { trx } пробрасывается во ВЕСЬ обход (#16): на время многоуровневого
+   * пути открывается внутренний транзакционный контекст (per-call ambient из
+   * #98), поэтому запросы БЕЗ явного { trx } — включая те, что запускают
+   * afterFind-хуки промежуточных уровней — выполняются через тот же executor
+   * транзакции. Глобальный ambient для этого не нужен и не меняется; новая
+   * транзакция/сессия не создаётся (SDK исполняет повторные вызовы executor'а
+   * транзакции в ней же), commit/rollback остаётся у владельца транзакции.
+   */
+  private async loadRelationPath(
+    items: YdbBaseEntity[],
+    segments: string[],
+    options?: QueryOptions,
+  ): Promise<void> {
+    if (!items.length || !segments.length) return;
+
+    const constructor = items[0].constructor as typeof YdbBaseEntity;
+    const name = segments[0];
     const allRelations = getYdbRelationsMetadata(constructor);
-    const pkField = getPrimaryKey(constructor);
+    const rel = allRelations.find((r) => r.propertyKey === name);
+    if (!rel) {
+      const known = allRelations.map((r) => r.propertyKey).join(', ');
+      throw new Error(
+        `Unknown relation in eager path "${segments.join('.')}": ` +
+          `"${name}" is not a declared relation on entity ${constructor.name}. ` +
+          `Known relations: ${known || '(none)'}. Check the property name or ` +
+          `declare the relation via @OneToMany/@ManyToOne/@OneToOne/@ManyToMany.`,
+      );
+    }
 
-    for (const name of eager) {
-      const rel = allRelations.find((r) => r.propertyKey === name);
-      if (!rel) continue;
+    // Внутренний контекст нужен только для многоуровневых путей с явным
+    // { trx }: одноуровневая eager-load и ambient-режим ведут себя как раньше.
+    if (options?.trx && segments.length > 1) {
+      await runWithTransactionContext(
+        {
+          trx: options.trx,
+          // Executor БД, открывший транзакцию: для детекции вложенности по
+          // ссылке (#98). Базовый executor сущности и есть этот db в wiring.
+          db: this.executor ?? options.trx,
+          ambient: true,
+        },
+        () => this.loadRelationSegments(rel, items, segments, options),
+      );
+      return;
+    }
 
-      const Target = rel.target();
+    await this.loadRelationSegments(rel, items, segments, options);
+  }
 
-      if (rel.type === 'one-to-many') {
-        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
-          entityName: constructor.name,
-          relationPropertyKey: rel.propertyKey,
-        });
-        const pks = items
-          .map((item) => (item as any)[pkField])
-          .filter((v) => v !== undefined);
-        if (!pks.length) continue;
+  /** Тело обхода пути без управления транзакционным контекстом (#16). */
+  private async loadRelationSegments(
+    rel: RelationMetadata,
+    items: YdbBaseEntity[],
+    segments: string[],
+    options?: QueryOptions,
+  ): Promise<void> {
+    const isIntermediate = segments.length > 1;
+    const targets = await this.loadRelation(items, rel, options, {
+      afterFind: !isIntermediate,
+    });
 
-        const children = await this.fetchByColumnIn(
-          Target,
-          joinColumnName,
-          pks,
-          options,
-        );
+    if (isIntermediate) {
+      // Дети этого уровня уже загружены — пост-порядковый afterFind
+      // срабатывает для этого уровня после его потомков.
+      await this.loadRelationPath(targets, segments.slice(1), options);
+      await this.fireAfterFindOn(targets, options);
+    }
+  }
 
-        const byFk = new Map<any, YdbBaseEntity[]>();
-        for (const child of children) {
-          const fk = (child as any)[joinColumnName];
-          const group = byFk.get(fk);
-          if (group) {
-            group.push(child);
-          } else {
-            byFk.set(fk, [child]);
+  /**
+   * Загружает ОДНУ связь для списка инстансов одним (или несколькими
+   * чанками) IN (...) и возвращает свежезагруженные инстансы цели — они
+   * становятся «родителями» следующего уровня вложенного eager-пути (#16).
+   *
+   * `hydration.afterFind:false` применяется для промежуточных уровней пути,
+   * чтобы их afterFind сработал в пост-порядке (после детей).
+   * `strict` (для публичной loadRelations) сохраняет прежние контракты
+   * ошибок: бросает на undefined PK/FK, тогда как eager-путь их пропускает.
+   */
+  private async loadRelation(
+    items: YdbBaseEntity[],
+    rel: RelationMetadata,
+    options?: QueryOptions,
+    hydration: { afterFind?: boolean } = { afterFind: true },
+    strict = false,
+  ): Promise<YdbBaseEntity[]> {
+    const Target = rel.target();
+    const constructor = items[0].constructor as typeof YdbBaseEntity;
+
+    if (rel.type === 'one-to-many') {
+      const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+        entityName: constructor.name,
+        relationPropertyKey: rel.propertyKey,
+      });
+      const pkField = getPrimaryKey(constructor);
+
+      if (strict) {
+        for (const item of items) {
+          if ((item as any)[pkField] === undefined) {
+            throw new Error(
+              `Cannot load one-to-many relation "${rel.propertyKey}": ` +
+                `primary key "${pkField}" is undefined on ${constructor.name}`,
+            );
           }
         }
+      }
 
-        for (const item of items) {
-          (item as any)[name] = byFk.get((item as any)[pkField]) ?? [];
-        }
-      } else if (rel.type === 'many-to-many') {
-        const joinTable = resolveManyToManyJoinTable(constructor, rel);
-        if (!joinTable) continue;
-
-        const pks = items
+      // null-PK не входят в IN (...) — их группы и так пусты ([]).
+      // В строгом режиме (публичный loadRelations) всё равно назначаем [],
+      // как было до #16; в eager-пути пустой список ключей — просто skip.
+      const pks = dedupeInValues(
+        items
           .map((item) => (item as any)[pkField])
-          .filter((v) => v !== undefined);
-        if (!pks.length) continue;
+          .filter((v) => v !== undefined && v !== null),
+      );
+      if (!pks.length && !strict) return [];
 
-        const related = await this.loadManyToManyRelation(
-          items,
-          Target,
-          joinTable,
-          pks,
-          options,
-        );
+      const children = await this.fetchByColumnIn(
+        Target,
+        joinColumnName,
+        pks,
+        options,
+        hydration,
+      );
 
-        for (const item of items) {
-          (item as any)[name] = related.get((item as any)[pkField]) ?? [];
+      const byFk = new Map<any, YdbBaseEntity[]>();
+      for (const child of children) {
+        const fk = (child as any)[joinColumnName];
+        const group = byFk.get(fk);
+        if (group) {
+          group.push(child);
+        } else {
+          byFk.set(fk, [child]);
         }
-      } else {
-        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
-          entityName: constructor.name,
-          relationPropertyKey: rel.propertyKey,
-        });
-        const fks = items
-          .map((item) => (item as any)[joinColumnName])
-          .filter((v) => v !== undefined);
-        if (!fks.length) continue;
+      }
 
-        const targetPkField = getPrimaryKey(Target);
-        const parents = await this.fetchByColumnIn(
-          Target,
-          targetPkField,
-          fks,
-          options,
-        );
+      // Копия массива на инстанс: два инстанса с одним PK не должны
+      // разделять один массив (раньше у каждого был свой findAll).
+      for (const item of items) {
+        const group = byFk.get((item as any)[pkField]);
+        (item as any)[rel.propertyKey] = group ? [...group] : [];
+      }
+      return children;
+    }
 
-        const byPk = new Map<any, YdbBaseEntity>();
-        for (const parent of parents) {
-          byPk.set((parent as any)[targetPkField], parent);
+    if (rel.type === 'many-to-many') {
+      const pkField = getPrimaryKey(constructor);
+
+      const joinTable = resolveManyToManyJoinTable(constructor, rel);
+      if (!joinTable) {
+        if (strict) {
+          throw new Error(
+            `Cannot load many-to-many relation "${rel.propertyKey}": ` +
+              `join table is not defined on ${constructor.name}. ` +
+              `Mark the owning side with @JoinTable.`,
+          );
         }
+        return [];
+      }
 
+      if (strict) {
         for (const item of items) {
-          (item as any)[name] = byPk.get((item as any)[joinColumnName]) ?? null;
+          if ((item as any)[pkField] === undefined) {
+            throw new Error(
+              `Cannot load many-to-many relation "${rel.propertyKey}": ` +
+                `primary key "${pkField}" is undefined on ${constructor.name}`,
+            );
+          }
+        }
+      }
+
+      const pks = dedupeInValues(
+        items
+          .map((item) => (item as any)[pkField])
+          .filter((v) => v !== undefined && v !== null),
+      );
+      if (!pks.length && !strict) return [];
+
+      // Один батч-вызов на ВСЕ инстансы вместо пары запросов на каждый.
+      const related = await this.loadManyToManyRelation(
+        items,
+        Target,
+        joinTable,
+        pks,
+        options,
+        hydration,
+      );
+
+      for (const item of items) {
+        const group = related.get((item as any)[pkField]);
+        (item as any)[rel.propertyKey] = group ? [...group] : [];
+      }
+
+      // Уникальные инстансы целей (по ссылке): один тег, общий для
+      // нескольких владельцев, должен встретиться в следующих уровнях
+      // пути ровно один раз.
+      const targets: YdbBaseEntity[] = [];
+      const seenInst = new Set<object>();
+      for (const group of related.values()) {
+        for (const entity of group) {
+          if (!seenInst.has(entity)) {
+            seenInst.add(entity);
+            targets.push(entity);
+          }
+        }
+      }
+      return targets;
+    }
+
+    // many-to-one / one-to-one
+    const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
+      entityName: constructor.name,
+      relationPropertyKey: rel.propertyKey,
+    });
+    const targetPk = getPrimaryKey(Target);
+
+    if (strict) {
+      for (const item of items) {
+        if ((item as any)[joinColumnName] === undefined) {
+          throw new Error(
+            `Cannot load relation "${rel.propertyKey}": ` +
+              `join column "${joinColumnName}" is undefined on ${constructor.name}`,
+          );
         }
       }
     }
+
+    // null-FK не входят в IN (...) — им назначается null, как возвращал
+    // find() по условию «PK = NULL» (пустой результат).
+    const fks = dedupeInValues(
+      items
+        .map((item) => (item as any)[joinColumnName])
+        .filter((v) => v !== undefined && v !== null),
+    );
+    if (!fks.length && !strict) return [];
+
+    const parents = await this.fetchByColumnIn(
+      Target,
+      targetPk,
+      fks,
+      options,
+      hydration,
+    );
+
+    const byPk = new Map<any, YdbBaseEntity>();
+    for (const parent of parents) {
+      byPk.set((parent as any)[targetPk], parent);
+    }
+
+    for (const item of items) {
+      (item as any)[rel.propertyKey] =
+        byPk.get((item as any)[joinColumnName]) ?? null;
+    }
+    return parents;
+  }
+
+  /**
+   * Пост-порядковый afterFind для инстансов промежуточного уровня
+   * вложенного eager-пути (#16): срабатывает после их детей.
+   *
+   * Persistence создаётся с тем же { trx }, что и загрузка связи (#16-fix):
+   * отложенный afterFind промежуточного уровня не теряет транзакцию
+   * вызывающего — любые DB-операции внутри хуков идут через неё.
+   */
+  private async fireAfterFindOn(
+    targets: YdbBaseEntity[],
+    options?: QueryOptions,
+  ): Promise<void> {
+    if (!targets.length) return;
+    const Target = targets[0].constructor as typeof YdbBaseEntity;
+    const targetPersistence = this.createTargetPersistence(
+      Target,
+      options?.trx,
+    );
+    await targetPersistence.fireAfterFind(targets);
   }
 
   /**
@@ -289,16 +507,9 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * чанков) IN (...) запрос — как в eager-пути. Раньше каждый тип связи
    * ходил запросом НА КАЖДЫЙ инстанс: 100 записей = 100–200 запросов.
    *
-   * Семантика сохранена:
-   * - one-to-many: инстанс получает все дочерние строки по своему PK
-   *   (или []), как давал findAll({ fk: pk }) на каждый элемент;
-   * - many-to-one / one-to-one: инстанс получает ровно одну связанную
-   *   строку по FK (или null), как давал find({ pk: fk });
-   * - many-to-many: группы link-строк join-таблицы, как раньше;
-   * - ошибки валидации (undefined PK/FK, неизвестная связь) бросаются
-   *   до выполнения запросов с прежними сообщениями;
-   * - связанные сущности проходят единый конвейер гидратации
-   *   (дешифровка → instantiate → afterFind), как и eager-путь.
+   * Делегирует в общий loadRelation (#16) в строгом режиме: проверяет
+   * неизвестное имя связи и сохраняет прежние контракты ошибок для
+   * undefined PK/FK и отсутствующей join-таблицы.
    */
   async loadRelations(
     items: T[],
@@ -322,138 +533,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         );
       }
 
-      const Target = rel.target();
-
-      if (rel.type === 'one-to-many') {
-        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
-          entityName: constructor.name,
-          relationPropertyKey: rel.propertyKey,
-        });
-        const pkField = getPrimaryKey(constructor);
-
-        // Валидация всех инстансов ДО запросов — прежний контракт ошибок.
-        for (const item of items) {
-          if ((item as any)[pkField] === undefined) {
-            throw new Error(
-              `Cannot load one-to-many relation "${name}": ` +
-                `primary key "${pkField}" is undefined on ${constructor.name}`,
-            );
-          }
-        }
-
-        // null-PK не входят в IN (...) — их группы и так пусты ([]).
-        const pks = dedupeInValues(
-          items
-            .map((item) => (item as any)[pkField])
-            .filter((v) => v !== undefined && v !== null),
-        );
-
-        const children = await this.fetchByColumnIn(
-          Target,
-          joinColumnName,
-          pks,
-          options,
-        );
-
-        const byFk = new Map<any, YdbBaseEntity[]>();
-        for (const child of children) {
-          const fk = (child as any)[joinColumnName];
-          const group = byFk.get(fk);
-          if (group) {
-            group.push(child);
-          } else {
-            byFk.set(fk, [child]);
-          }
-        }
-
-        // Копия массива на инстанс: два инстанса с одним PK не должны
-        // разделять один массив (раньше у каждого был свой findAll).
-        for (const item of items) {
-          const group = byFk.get((item as any)[pkField]);
-          (item as any)[name] = group ? [...group] : [];
-        }
-      } else if (rel.type === 'many-to-many') {
-        const pkField = getPrimaryKey(constructor);
-
-        // Резолв зависит только от метаданных класса — один раз на связь,
-        // а не на каждый элемент (внутри проверяются конфликты объявлений).
-        const joinTable = resolveManyToManyJoinTable(constructor, rel);
-        if (!joinTable) {
-          throw new Error(
-            `Cannot load many-to-many relation "${name}": ` +
-              `join table is not defined on ${constructor.name}. ` +
-              `Mark the owning side with @JoinTable.`,
-          );
-        }
-
-        for (const item of items) {
-          if ((item as any)[pkField] === undefined) {
-            throw new Error(
-              `Cannot load many-to-many relation "${name}": ` +
-                `primary key "${pkField}" is undefined on ${constructor.name}`,
-            );
-          }
-        }
-
-        const pks = dedupeInValues(
-          items
-            .map((item) => (item as any)[pkField])
-            .filter((v) => v !== undefined && v !== null),
-        );
-
-        // Один батч-вызов на ВСЕ инстансы вместо пары запросов на каждый.
-        const related = await this.loadManyToManyRelation(
-          items,
-          Target,
-          joinTable,
-          pks,
-          options,
-        );
-
-        for (const item of items) {
-          const group = related.get((item as any)[pkField]);
-          (item as any)[name] = group ? [...group] : [];
-        }
-      } else {
-        const joinColumnName = resolveRelationJoinColumn(rel.joinColumn, {
-          entityName: constructor.name,
-          relationPropertyKey: rel.propertyKey,
-        });
-        const targetPk = getPrimaryKey(Target);
-
-        for (const item of items) {
-          if ((item as any)[joinColumnName] === undefined) {
-            throw new Error(
-              `Cannot load relation "${name}": ` +
-                `join column "${joinColumnName}" is undefined on ${constructor.name}`,
-            );
-          }
-        }
-
-        // null-FK не входят в IN (...) — им назначается null, как возвращал
-        // find() по условию «PK = NULL» (пустой результат).
-        const fks = dedupeInValues(
-          items
-            .map((item) => (item as any)[joinColumnName])
-            .filter((v) => v !== undefined && v !== null),
-        );
-
-        const parents = await this.fetchByColumnIn(
-          Target,
-          targetPk,
-          fks,
-          options,
-        );
-
-        const byPk = new Map<any, YdbBaseEntity>();
-        for (const parent of parents) {
-          byPk.set((parent as any)[targetPk], parent);
-        }
-
-        for (const item of items) {
-          (item as any)[name] = byPk.get((item as any)[joinColumnName]) ?? null;
-        }
-      }
+      await this.loadRelation(items, rel, options, { afterFind: true }, true);
     }
   }
 
