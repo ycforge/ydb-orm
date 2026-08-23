@@ -9,7 +9,16 @@ import {
   diffSchemas,
 } from '../schema/schema-sync.js';
 import { getManyToManyJoinTables } from '../decorators/relation.decorators.js';
-import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
+import { migrationStateExitCode } from '../migrations/migration-check.js';
+import {
+  runMigrationVerification,
+  requireEntityMeta,
+} from './migration-verify.js';
+import {
+  exitCodeOf,
+  DEFAULT_EXIT_CODE,
+  EXIT_COMMAND_ERROR,
+} from './exit-codes.js';
 import { connectCli, loadCliConfig } from './config.js';
 import { createEntityFile, createMigrationFile } from './generators.js';
 import { renderCompletionScript } from './completion.js';
@@ -23,8 +32,9 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:generate <name>   Сгенерировать миграцию по diff сущностей и БД
   ydb-orm migration:run               Применить все новые миграции
   ydb-orm migration:revert            Откатить последнюю миграцию
-  ydb-orm migration:show              Показать статус миграций
-  ydb-orm migration:check             Проверить, все ли миграции применены (exit 1 если нет)
+  ydb-orm migration:show              Показать статус миграций (алиас migration:status)
+  ydb-orm migration:status            То же, что migration:show (#24)
+  ydb-orm migration:check             Проверка готовности схемы для CI (exit != 0, если не готово)
   ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
   ydb-orm entity:create <name>        Создать сущность
@@ -36,12 +46,32 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
                     YDB_AUTH_TYPE, YDB_AUTHORIZED_KEY_PATH)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
-  --json            JSON-вывод (для migration:show и migration:check)
+  --json            JSON-вывод (для migration:show/status/check) — весь отчёт в stdout
   --verbose         Полный стек ошибки и цепочка cause при сбое
   -h, --help        Эта справка
 
+Exit-коды migration:check / migration:status / migration:show (#24):
+  0  готово: все миграции применены; схема совпадает, если проверялась
+     (проверяется, когда в конфиге задан массив entities)
+  1  есть неприменённые миграции (pending)
+  2  есть прерванные миграции (state='started', #101)
+  3  схема БД расходится с метаданными сущностей
+  4  содержимое применённой миграции изменилось (#101)
+  5  ошибка выполнения команды (подключение, конфиг, неожиданный сбой)
+Команда только читает состояние БД — миграции и схему она не меняет.
+Для машинного разбора используйте --json (поля ready/state/states/exitCode),
+а не цвет или формулировки текстового вывода.
+
+Остальные команды: 0 — успех/help, 1 — ошибка.
 Неизвестные флаги и пустые значения опций считаются ошибкой (#103).
 `;
+
+/** Команды проверки готовности: любые их сбои — exit 5 (#24). */
+const MIGRATION_VERIFY_COMMANDS = new Set([
+  'migration:check',
+  'migration:show',
+  'migration:status',
+]);
 
 async function main(): Promise<void> {
   let args: CliArgs = {};
@@ -49,7 +79,16 @@ async function main(): Promise<void> {
     args = parseArgs(process.argv.slice(2));
     await runCommand(args);
   } catch (error) {
-    process.exitCode = 1;
+    // Exit-код может быть помечен источником (#24): у команд проверки
+    // любая ошибка выполнения (конфиг, подключение, неожиданный сбой) —
+    // отдельный код 5; остальные команды — прежний 1.
+    const code = exitCodeOf(error);
+    process.exitCode =
+      code === DEFAULT_EXIT_CODE &&
+      args.command !== undefined &&
+      MIGRATION_VERIFY_COMMANDS.has(args.command)
+        ? EXIT_COMMAND_ERROR
+        : code;
     const verbose = args.verbose === true;
     console.error(
       formatError(error, {
@@ -213,11 +252,7 @@ async function runCommand(args: CliArgs): Promise<void> {
     return;
   }
 
-  if (
-    command === 'migration:run' ||
-    command === 'migration:revert' ||
-    command === 'migration:show'
-  ) {
+  if (command === 'migration:run' || command === 'migration:revert') {
     const { executor, close } = await connectCli(config);
     try {
       const runner = new YdbMigrationRunner(executor);
@@ -231,43 +266,9 @@ async function runCommand(args: CliArgs): Promise<void> {
         for (const name of executed) {
           console.log(`Applied: ${name}`);
         }
-      } else if (command === 'migration:revert') {
+      } else {
         const reverted = await runner.revert(migrations);
         console.log(reverted ? `Reverted: ${reverted}` : 'Nothing to revert');
-      } else {
-        const statuses = await runner.status(migrations);
-        if (args.json) {
-          const json = statuses.map((s) => ({
-            name: s.name,
-            applied: s.applied,
-            appliedAt: s.appliedAt ? s.appliedAt.toISOString() : null,
-            ...(s.interrupted ? { interrupted: true } : {}),
-            ...(s.orphan ? { orphan: true } : {}),
-          }));
-          console.log(JSON.stringify(json, null, 2));
-        } else {
-          for (const s of statuses) {
-            if (s.orphan) {
-              // Применена, но файла миграции больше нет (#101)
-              console.log(
-                `[!] ${s.name} — orphan record (no matching migration file)` +
-                  (s.interrupted ? ' [interrupted]' : ''),
-              );
-              continue;
-            }
-            if (s.applied && s.interrupted) {
-              // Прервана посреди применения/отката (#101)
-              console.log(
-                `[~] ${s.name} — interrupted, resolve via migration:repair`,
-              );
-              continue;
-            }
-            console.log(
-              `${s.applied ? '[x]' : '[ ]'} ${s.name}` +
-                (s.appliedAt ? ` (${s.appliedAt.toISOString()})` : ''),
-            );
-          }
-        }
       }
     } finally {
       close();
@@ -275,40 +276,22 @@ async function runCommand(args: CliArgs): Promise<void> {
     return;
   }
 
-  if (command === 'migration:check') {
-    const { executor, close } = await connectCli(config);
-    try {
-      const runner = new YdbMigrationRunner(executor);
-      const migrations = await loadMigrationsFromDir(migrationsDir);
-      const statuses = await runner.status(migrations);
-      const pending = statuses.filter((s) => !s.applied);
-
-      if (args.json) {
-        const result = {
-          applied: pending.length === 0,
-          pending: pending.map((s) => s.name),
-          total: statuses.length,
-        };
-        console.log(JSON.stringify(result, null, 2));
-      } else {
-        if (pending.length === 0) {
-          console.log('All migrations applied');
-        } else {
-          console.error(
-            `Pending migrations (${pending.length}/${statuses.length}):`,
-          );
-          for (const s of pending) {
-            console.error(`  - ${s.name}`);
-          }
-        }
-      }
-
-      if (pending.length > 0) {
-        process.exitCode = 1;
-      }
-    } finally {
-      close();
-    }
+  if (
+    command === 'migration:check' ||
+    command === 'migration:show' ||
+    command === 'migration:status'
+  ) {
+    // Единый read-only workflow проверки (#24): состояния и exit-коды
+    // см. migrations/migration-check.ts. Миграции и схема не меняются.
+    const verdict = await runMigrationVerification({
+      command,
+      migrationsDir,
+      entities: config.entities,
+      json: args.json === true,
+      io: { stdout: console.log, stderr: console.error },
+      connect: () => connectCli(config),
+    });
+    process.exitCode = migrationStateExitCode(verdict.state);
     return;
   }
 
@@ -321,18 +304,6 @@ function requireName(command: string, name?: string): void {
   if (!name) {
     throw new Error(`${command} requires a name argument`);
   }
-}
-
-/**
- * Возвращает метаданные сущности или падает, если класс
- * не декорирован @YdbEntity (иначе он молча пропускается).
- */
-function requireEntityMeta(entity: any) {
-  const meta = getYdbEntityMetadata(entity);
-  if (!meta) {
-    throw new Error(`Class ${entity.name} is not decorated with @YdbEntity`);
-  }
-  return meta;
 }
 
 main();

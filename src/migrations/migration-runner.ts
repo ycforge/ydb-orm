@@ -35,6 +35,13 @@ export interface YdbMigrationStatus {
   orphan?: boolean;
   /** Миграция помечена начатой (`state = 'started'`), но не завершена. */
   interrupted?: boolean;
+  /**
+   * Содержимое файла изменилось после применения (#101): запись учёта
+   * сопоставлена по имени, но хеш различается. Такая миграция считается
+   * «не успешно применённой» для проверок готовности — нужен явный
+   * reconcile (восстановить содержимое или removeMigrationRecord).
+   */
+  contentChanged?: boolean;
 }
 
 /** Имя миграции или понятная ошибка. */
@@ -381,6 +388,10 @@ export class YdbMigrationRunner {
         applied: true,
         appliedAt: new Date(match.record.timestamp),
         interrupted: match.record.state === 'started',
+        // Имя совпадает, а хеш содержимого различается (#101): файл меняли
+        // после применения. Для проверки готовности это не «успешно
+        // применённая» миграция — состояние фиксируется явно.
+        contentChanged: match.kind === 'changed' || undefined,
       };
     });
 

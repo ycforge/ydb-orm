@@ -19,9 +19,10 @@ export const CLI_COMMANDS: CliCommand[] = [
   { name: 'migration:run', description: 'Apply all pending migrations' },
   { name: 'migration:revert', description: 'Revert the last migration' },
   { name: 'migration:show', description: 'Show migration status' },
+  { name: 'migration:status', description: 'Alias of migration:show' },
   {
     name: 'migration:check',
-    description: 'Check that all migrations are applied',
+    description: 'CI readiness check (non-zero exit if not ready)',
   },
   {
     name: 'migration:repair',
