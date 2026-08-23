@@ -1,5 +1,5 @@
 /**
- * Интеграционные регресс-тесты read-only контракта (#24).
+ * Интеграционные регресс-тесты read-only контракта (#152).
  *
  * В отличие от юнит-спеков с швом inspectBookkeeping, здесь вызывается
  * РЕАЛЬНЫЙ runMigrationVerification() с РЕАЛЬНЫМ дефолтным путём чтения
@@ -204,7 +204,7 @@ async function runReal(options: {
   return { verdict, io };
 }
 
-describe('runMigrationVerification: real path emits no DDL/DML (#24)', () => {
+describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
   const commands: VerifyCommand[] = [
     'migration:check',
     'migration:show',
@@ -389,7 +389,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#24)', () => {
           });
 
           // «Не применено ничего»: все файлы — pending, exit-код по
-          // контракту #24 (pending → 1), таблица НЕ создаётся.
+          // контракту #152 (pending → 1), таблица НЕ создаётся.
           expect(verdict.state).toBe('pending');
           expect(verdict.pending).toEqual(['1-New', '2-New']);
           expect(verdict.totalMigrations).toBe(2);

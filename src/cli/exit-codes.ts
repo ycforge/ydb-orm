@@ -1,5 +1,5 @@
 /**
- * Exit-коды CLI (#24).
+ * Exit-коды CLI (#152).
  *
  * Для `migration:check` / `migration:status` код детерминирован
  * состоянием проверки (см. migrations/migration-check.ts), чтобы CI

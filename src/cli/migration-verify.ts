@@ -1,6 +1,6 @@
 /**
  * Единый workflow проверки миграций для `migration:check` и
- * `migration:status` (#24).
+ * `migration:status` (#152).
  *
  * Команда только ЧИТАЕТ состояние и не выполняет НИКАКОГО DDL:
  *  - существование таблицы учёта `ydb_migrations` определяется через
@@ -86,7 +86,7 @@ export interface RunMigrationVerificationOptions {
   /** Шов для тестов (по умолчанию — загрузка из директории). */
   loadMigrations?: ((dir: string) => Promise<YdbMigration[]>) | undefined;
   /**
-   * Read-only чтение таблицы учёта миграций (#24): DescribeTable + голый
+   * Read-only чтение таблицы учёта миграций (#152): DescribeTable + голый
    * SELECT, без CREATE/ALTER. Шов для тестов.
    */
   inspectBookkeeping?:
@@ -172,7 +172,7 @@ export function renderStatusLine(status: YdbMigrationStatus): string {
  * помеченную exit-кодом EXIT_COMMAND_ERROR (5): цепочка cause сохраняется.
  * Возвращает вердикт — вызывающий код ставит process.exitCode.
  *
- * Read-only контракт (#24): состояние таблицы учёта читается через
+ * Read-only контракт (#152): состояние таблицы учёта читается через
  * readBookkeepingSnapshot (DescribeTable + голый SELECT, без DDL);
  * YdbMigrationRunner.status с его ensureMigrationsTable() здесь
  * не вызывается никогда.
@@ -258,7 +258,7 @@ interface JsonMigrationEntry {
 }
 
 /**
- * Машинночитаемый отчёт (#24): стабильная схема, детерминированный порядок
+ * Машинночитаемый отчёт (#152): стабильная схема, детерминированный порядок
  * ключей и строк, ISO-даты, булевы флаги всегда явные. Парсить нужно это,
  * а не цвет/формулировки текстового режима. Блок `bookkeeping` различает
  * «не инициализированную» базу (таблицы учёта ещё нет) от полностью

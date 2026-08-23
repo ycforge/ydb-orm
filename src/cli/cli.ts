@@ -33,7 +33,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:run               Применить все новые миграции
   ydb-orm migration:revert            Откатить последнюю миграцию
   ydb-orm migration:show              Показать статус миграций (алиас migration:status)
-  ydb-orm migration:status            То же, что migration:show (#24)
+  ydb-orm migration:status            То же, что migration:show (#152)
   ydb-orm migration:check             Проверка готовности схемы для CI (exit != 0, если не готово)
   ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
@@ -50,7 +50,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   --verbose         Полный стек ошибки и цепочка cause при сбое
   -h, --help        Эта справка
 
-Exit-коды migration:check / migration:status / migration:show (#24):
+Exit-коды migration:check / migration:status / migration:show (#152):
   0  готово: все миграции применены; схема совпадает, если проверялась
      (проверяется, когда в конфиге задан массив entities)
   1  есть неприменённые миграции (pending)
@@ -69,7 +69,7 @@ Exit-коды migration:check / migration:status / migration:show (#24):
 Неизвестные флаги и пустые значения опций считаются ошибкой (#103).
 `;
 
-/** Команды проверки готовности: любые их сбои — exit 5 (#24). */
+/** Команды проверки готовности: любые их сбои — exit 5 (#152). */
 const MIGRATION_VERIFY_COMMANDS = new Set([
   'migration:check',
   'migration:show',
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     args = parseArgs(process.argv.slice(2));
     await runCommand(args);
   } catch (error) {
-    // Exit-код может быть помечен источником (#24): у команд проверки
+    // Exit-код может быть помечен источником (#152): у команд проверки
     // любая ошибка выполнения (конфиг, подключение, неожиданный сбой) —
     // отдельный код 5; остальные команды — прежний 1.
     const code = exitCodeOf(error);
@@ -284,7 +284,7 @@ async function runCommand(args: CliArgs): Promise<void> {
     command === 'migration:show' ||
     command === 'migration:status'
   ) {
-    // Единый read-only workflow проверки (#24): состояния и exit-коды
+    // Единый read-only workflow проверки (#152): состояния и exit-коды
     // см. migrations/migration-check.ts. Миграции и схема не меняются.
     const verdict = await runMigrationVerification({
       command,

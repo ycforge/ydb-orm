@@ -410,7 +410,7 @@ ydb-orm completion bash                   # скрипт shell-автодопо�
 
 Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`, `--json` (для `migration:show`/`migration:status`/`migration:check`), `--verbose` (полный стек ошибки и цепочка cause при сбое). Неизвестные флаги и пустые значения опций считаются ошибкой.
 
-#### Проверка готовности (#24)
+#### Проверка готовности (#152)
 
 `migration:check`, `migration:status` и `migration:show` используют единый **read-only** workflow: команды только читают состояние (`DescribeTable` для `ydb_migrations` + голый `SELECT` записей; для сущностей — `DescribeTable`) и ничего не меняют — в частности, таблица учёта **не создаётся и не изменяется** (никакого `CREATE TABLE`/`ALTER TABLE`). Различимые состояния:
 

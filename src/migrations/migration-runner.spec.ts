@@ -711,7 +711,7 @@ describe('YdbMigrationRunner (#101)', () => {
       ]);
     });
 
-    it('marks a record whose content changed after apply (#24)', async () => {
+    it('marks a record whose content changed after apply (#152)', async () => {
       // Запись учёта осталась от старого содержимого; файл миграции
       // теперь с другим хешем — сопоставление по имени даёт 'changed'.
       const mock = createStatefulExecutor({
@@ -740,7 +740,7 @@ describe('YdbMigrationRunner (#101)', () => {
       ]);
     });
 
-    it('does not set contentChanged when hashes match (#24)', async () => {
+    it('does not set contentChanged when hashes match (#152)', async () => {
       const hash = sha256('same');
       const mock = createStatefulExecutor({
         rows: [{ timestamp: 6000, name: '1-Same', hash }],

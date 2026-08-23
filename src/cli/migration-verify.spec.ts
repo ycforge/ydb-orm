@@ -174,7 +174,7 @@ afterEach(() => {
   else process.env.NO_COLOR = savedNoColor;
 });
 
-describe('runMigrationVerification (#24)', () => {
+describe('runMigrationVerification (#152)', () => {
   it('ready state: everything applied, success text on stdout only', async () => {
     const migrations = makeMigrations([{ name: '1-A' }]);
     const mock = makeRecordingExecutor();
@@ -385,7 +385,7 @@ describe('runMigrationVerification (#24)', () => {
     expect(io.stderrLines.join('\n')).not.toContain('\x1b[');
   });
 
-  describe('read-only contract: no DDL/DML from verification commands (#24)', () => {
+  describe('read-only contract: no DDL/DML from verification commands (#152)', () => {
     // Матрица из задачи: check / status / show / --json варианты.
     const cases: Array<{
       command: 'migration:check' | 'migration:show' | 'migration:status';
@@ -445,7 +445,7 @@ describe('runMigrationVerification (#24)', () => {
     });
   });
 
-  describe('uninitialized database: ydb_migrations does not exist (#24)', () => {
+  describe('uninitialized database: ydb_migrations does not exist (#152)', () => {
     it('check: deterministic "nothing applied" result, table is NOT created', async () => {
       const mock = makeRecordingExecutor();
       const io = makeIo();
@@ -460,7 +460,7 @@ describe('runMigrationVerification (#24)', () => {
         io,
       });
 
-      // Контракт #24: pending → exit 1; ничего не создано.
+      // Контракт #152: pending → exit 1; ничего не создано.
       expect(verdict.state).toBe('pending');
       expect(verdict.pending).toEqual(['1-New']);
       expect(io.stdoutLines.join('\n')).toContain(
@@ -754,7 +754,7 @@ describe('runMigrationVerification (#24)', () => {
   });
 });
 
-describe('renderStatusLine (#24)', () => {
+describe('renderStatusLine (#152)', () => {
   it('keeps #101 markers and adds content-changed marker', () => {
     expect(renderStatusLine({ name: 'a', applied: true })).toBe('[x] a');
     expect(

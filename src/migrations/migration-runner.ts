@@ -206,7 +206,7 @@ function recordMatchesMigration(
 /**
  * Чистое сопоставление «файлы миграций ↔ записи учёта» без обращения к БД:
  * используется и YdbMigrationRunner.status (обслуживающий путь с ensure),
- * и read-only проверка готовности (#24, снимок из readBookkeepingSnapshot).
+ * и read-only проверка готовности (#152, снимок из readBookkeepingSnapshot).
  */
 export function computeMigrationStatuses(
   migrations: YdbMigration[],
@@ -428,7 +428,7 @@ export class YdbMigrationRunner {
    *
    * ВНИМАНИЕ: это «обслуживающий» путь — он создаёт таблицу учёта, если её
    * нет (ensureMigrationsTable). Read-only потребители (проверка готовности
-   * #24) должны использовать computeMigrationStatuses поверх снимка из
+   * #152) должны использовать computeMigrationStatuses поверх снимка из
    * readBookkeepingSnapshot — без DDL.
    */
   async status(migrations: YdbMigration[]): Promise<YdbMigrationStatus[]> {

@@ -21,7 +21,7 @@ const schemaIssues: YdbSchemaIssue[] = [
   },
 ];
 
-describe('evaluateMigrationCheck (#24)', () => {
+describe('evaluateMigrationCheck (#152)', () => {
   it('ok when there are no migrations at all', () => {
     const verdict = evaluateMigrationCheck([]);
 

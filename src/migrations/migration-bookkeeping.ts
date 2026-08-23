@@ -1,5 +1,5 @@
 /**
- * Read-only доступ к таблице учёта миграций (#24).
+ * Read-only доступ к таблице учёта миграций (#152).
  *
  * Проверка готовности (migration:check/status/show) обязана не менять БД,
  * поэтому путь YdbMigrationRunner.status → ensureMigrationsTable()

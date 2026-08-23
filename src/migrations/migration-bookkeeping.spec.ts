@@ -47,7 +47,7 @@ const depsOf = (executor: unknown): MigrationBookkeepingDeps => ({
   executor: executor as any,
 });
 
-describe('readBookkeepingSnapshot (#24, read-only)', () => {
+describe('readBookkeepingSnapshot (#152, read-only)', () => {
   it('missing table: exists=false, records=[], executor is never touched', async () => {
     const mock = makeExecutor();
     const describeTable = jest.fn((_tableName: string): Promise<null> =>
