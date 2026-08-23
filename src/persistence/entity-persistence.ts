@@ -19,6 +19,7 @@ import {
 } from '../decorators/timestamp.decorator.js';
 import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
   getYdbEnumMetadata,
@@ -1689,6 +1690,15 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
   /**
    * Batch-загрузка по колонке IN (...). Используется relations-модулем.
+   *
+   * Guard-ы (#86):
+   * - пустой список значений — пустой результат БЕЗ выполнения SQL
+   *   (раньше уходил невалидный `WHERE col IN ()`);
+   * - дубликаты значений убираются до построения IN (...) — они раздували
+   *   список параметров и не меняли результат;
+   * - значения больше MAX_IN_CLAUSE_VALUES режутся на несколько чанков
+   *   (лимиты YDB на текст запроса/число параметров), результаты сливаются
+   *   по порядку чанков без дубликатов строк (по PK).
    */
   async fetchByColumnIn(
     column: string,
@@ -1704,23 +1714,47 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
-    const inParams = values.map((_, i) => `$p${i}`).join(', ');
-    const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
+    const uniqueValues = dedupeInValues(values);
+    if (!uniqueValues.length) return [];
 
-    const query = exec([sql] as unknown as TemplateStringsArray);
-    values.forEach((value, i) => {
-      query.parameter(`p${i}`, mapToYdb(columnType, value, column));
-    });
+    // PK для дедупликации результатов между чанками.
+    const pkFields = this.getPkFields(meta);
 
-    const rows = await this.executeQuery<Record<string, any>[][]>(
-      query,
-      options,
-    );
+    const result: T[] = [];
+    const seenPks = new Set<string>();
 
-    // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
-    // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
-    // afterFind при этом обязателен для связанных сущностей (issue #83).
-    return this.hydrate(rows[0] ?? [], options, { eager: false });
+    for (const chunk of chunkInValues(uniqueValues)) {
+      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+      const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
+
+      const query = exec([sql] as unknown as TemplateStringsArray);
+      chunk.forEach((value, i) => {
+        query.parameter(`p${i}`, mapToYdb(columnType, value, column));
+      });
+
+      const rows = await this.executeQuery<Record<string, any>[][]>(
+        query,
+        options,
+      );
+
+      // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
+      // остаётся 1 (как до #83), иначе циклические связи рекурсируют.
+      // afterFind при этом обязателен для связанных сущностей (issue #83).
+      const hydrated = await this.hydrate(rows[0] ?? [], options, {
+        eager: false,
+      });
+
+      for (const entity of hydrated) {
+        // Инъективный ключ идентичности PK (#86): без разделительной
+        // конкатенации — 'a|b'+'c' и 'a'+'b|c' не должны совпадать.
+        const key = pkIdentityKey(pkFields.map((f) => (entity as any)[f]));
+        if (seenPks.has(key)) continue;
+        seenPks.add(key);
+        result.push(entity);
+      }
+    }
+
+    return result;
   }
 
   /**
@@ -1757,4 +1791,126 @@ function isSyntheticColumn(meta: YdbEntityMetadata, key: string): boolean {
       (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
     )
   );
+}
+
+// ---- Инъективная каноническая кодировка значений PK (#86) ----
+//
+// Дедупликация результатов между IN(...)-чанками в fetchByColumnIn строит
+// строковый ключ идентичности PK. Конкатенация с разделителем
+// (`String(a) + '|' + String(b)`) НЕинъективна: ('a|b', 'c') и ('a', 'b|c')
+// дают один ключ 'a|b|c' — реальная сущность теряется при слиянии чанков.
+// Поэтому используется двоичная кодировка без разделителей:
+// [тег типа][длина payload (4 байта, big-endian)][payload].
+// Границы компонентов восстанавливаются однозначно по объявленной длине,
+// типы различаются тегом, поэтому разные PK не могут дать одинаковый ключ.
+
+const pkValueTag = {
+  nullValue: 0,
+  undefinedValue: 1,
+  string: 2,
+  number: 3,
+  bigint: 4,
+  boolean: 5,
+  bytes: 6,
+  date: 7,
+} as const;
+
+const pkTextEncoder = new TextEncoder();
+
+/** Добавляет payload с префиксом длины (4 байта BE) — самоделимитация. */
+function appendLengthPrefixed(out: number[], payload: Uint8Array): void {
+  const len = payload.length;
+  out.push(
+    (len >>> 24) & 0xff,
+    (len >>> 16) & 0xff,
+    (len >>> 8) & 0xff,
+    len & 0xff,
+  );
+  for (let i = 0; i < len; i++) out.push(payload[i]);
+}
+
+/** IEEE-754 double как 8 байт BE. */
+function appendFloat64(out: number[], value: number): void {
+  const buf = new ArrayBuffer(8);
+  new DataView(buf).setFloat64(0, value);
+  appendLengthPrefixed(out, new Uint8Array(buf));
+}
+
+const PK_HEX_CHARS = '0123456789abcdef';
+
+/**
+ * Канонический ключ идентичности PK: инъективное отображение кортежа
+ * компонентов (string | number | bigint | boolean | Uint8Array | Date |
+ * null/undefined) в hex-строку. Детерминировано: одинаковые значения —
+ * одинаковый ключ, разные — гарантированно разные.
+ */
+export function pkIdentityKey(components: unknown[]): string {
+  const out: number[] = [];
+  for (const value of components) {
+    if (value === null) {
+      out.push(pkValueTag.nullValue);
+      continue;
+    }
+    switch (typeof value) {
+      case 'string':
+        out.push(pkValueTag.string);
+        appendLengthPrefixed(out, pkTextEncoder.encode(value));
+        break;
+      case 'number': {
+        // -0 и 0 — одно значение по SameValueZero (как в Set).
+        out.push(pkValueTag.number);
+        appendFloat64(out, Object.is(value, -0) ? 0 : value);
+        break;
+      }
+      case 'bigint':
+        out.push(pkValueTag.bigint);
+        appendLengthPrefixed(out, pkTextEncoder.encode(value.toString()));
+        break;
+      case 'boolean':
+        out.push(pkValueTag.boolean, value ? 1 : 0);
+        break;
+      case 'object': {
+        if (ArrayBuffer.isView(value)) {
+          // Bytes-колонки YDB гидратируются в Uint8Array; сравнение
+          // побайтовое (String() дал бы '[object Uint8Array]' для всех).
+          const view = value;
+          out.push(pkValueTag.bytes);
+          appendLengthPrefixed(
+            out,
+            new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+          );
+        } else if (value instanceof Date) {
+          // Date/Datetime/Timestamp-колонки; невалидная дата — ошибка
+          // конфигурации, а не источник коллизий.
+          if (Number.isNaN(value.getTime())) {
+            throw new Error(
+              'Invalid Date in primary key component: cannot build identity key',
+            );
+          }
+          out.push(pkValueTag.date);
+          appendFloat64(out, value.getTime());
+        } else {
+          throw new Error(
+            `Unsupported primary key component type: ${typeof value}. ` +
+              'PK components must be YDB primitives',
+          );
+        }
+        break;
+      }
+      case 'undefined':
+        out.push(pkValueTag.undefinedValue);
+        break;
+      default:
+        throw new Error(
+          `Unsupported primary key component type: ${typeof value}. ` +
+            'PK components must be YDB primitives',
+        );
+    }
+  }
+
+  let hex = '';
+  for (const byte of out) {
+    hex += PK_HEX_CHARS[byte >> 4] + PK_HEX_CHARS[byte & 0x0f];
+  }
+  return hex;
 }
