@@ -335,6 +335,102 @@ describe('runInTransaction(): nested call detection (#98)', () => {
     expect(db.count()).toBe(1);
   });
 
+  it('{ reuse: true, ambient: true } forces the REUSED transaction into the ambient context (#98)', async () => {
+    const db = makeFakeDb();
+    const manager = new YdbTransactionManager(db.executor);
+    configureTransactionContext({ ambient: false });
+
+    await manager.runInTransaction(
+      (outerTrx, outerSignal) =>
+        manager.runInTransaction(
+          () => {
+            // Вложенный ambient-контекст указывает на ТУ ЖЕ транзакцию.
+            const active = getActiveTransaction();
+            expect(active?.trx).toBe(outerTrx);
+            expect(active?.signal).toBe(outerSignal);
+            expect(active?.ambient).toBe(true);
+            // Операции без явного { trx } попадают в переиспользованную
+            // транзакцию, а не во внешний executor.
+            expect(
+              resolveOperationExecutor(undefined, db.executor, 'UserEntity'),
+            ).toBe(outerTrx);
+            return Promise.resolve('inner');
+          },
+          { reuse: true, ambient: true },
+        ),
+      { ambient: false },
+    );
+
+    // Новая БД-транзакция не открывалась.
+    expect(db.count()).toBe(1);
+  }, 5000);
+
+  it('{ reuse: true } without ambient preserves the outer ambient state as-is', async () => {
+    const db = makeFakeDb();
+    const manager = new YdbTransactionManager(db.executor);
+    configureTransactionContext({ ambient: true });
+
+    await manager.runInTransaction((outerTrx) =>
+      manager.runInTransaction(
+        () => {
+          const active = getActiveTransaction();
+          // Контекст внешний — без создания вложенного.
+          expect(active?.trx).toBe(outerTrx);
+          expect(active?.ambient).toBe(true);
+          return Promise.resolve();
+        },
+        { reuse: true },
+      ),
+    );
+
+    expect(db.count()).toBe(1);
+  });
+
+  it('nested reuse never commits/rolls back independently and ALS is restored after the inner callback', async () => {
+    const db = makeFakeDb({ attemptsPerTransaction: 2 });
+    const manager = new YdbTransactionManager(db.executor);
+    configureTransactionContext({ ambient: false });
+
+    let outerContextBeforeInner: ReturnType<typeof getActiveTransaction>;
+    let trxExecutorSeenInside: unknown;
+    // При attemptsPerTransaction > 1 фейковый SDK повторяет ВЕСЬ колбэк,
+    // поэтому эталонный executor фиксируем на верхнем уровне той же попытки.
+    let outerLevelTrx: unknown;
+
+    await manager.runInTransaction(
+      () => {
+        outerLevelTrx = getActiveTransaction()?.trx;
+        return manager.runInTransaction(
+          async () => {
+            outerContextBeforeInner = getActiveTransaction();
+            await manager.runInTransaction(
+              () => {
+                trxExecutorSeenInside = getActiveTransaction()?.trx;
+                return Promise.resolve();
+              },
+              { reuse: true, ambient: true },
+            );
+            // После завершения внутреннего вызова контекст восстановлен:
+            // снова активен ВНЕШНИЙ (не ambient-обёртка с тем же trx).
+            const restored = getActiveTransaction();
+            expect(restored?.trx).toBe(outerContextBeforeInner?.trx);
+            expect(restored).toBe(outerContextBeforeInner);
+            // Транзакция всё ещё активна — внутренний вызов её не завершил.
+            expect(db.count()).toBe(1);
+            return Promise.resolve();
+          },
+          { reuse: true, ambient: true },
+        );
+      },
+      { ambient: false },
+    );
+
+    // Ровно одна транзакция и один executor попытки на все уровни reuse.
+    expect(db.count()).toBe(1);
+    expect(trxExecutorSeenInside).toBe(outerLevelTrx);
+    expect(getActiveTransaction()).toBeUndefined();
+  }, 5000);
+
   it('allows nesting on a DIFFERENT db executor (independent database/session)', async () => {
     const outerDb = makeFakeDb();
     const innerDb = makeFakeDb();

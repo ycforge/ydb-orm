@@ -262,6 +262,24 @@ describe('NestJS integration: transactions (#98)', () => {
       // reuse не открыл ещё одну транзакцию: итого две top-level.
       expect(db.transactionOptions.length).toBe(2);
     });
+
+    it('nested { reuse: true } keeps the outer ambient routing intact', async () => {
+      await txManager.runInTransaction(
+        async () => {
+          await txManager.runInTransaction(
+            async () => {
+              await UserEntity.count({});
+            },
+            { reuse: true },
+          );
+        },
+        { ambient: true },
+      );
+
+      // Все запросы — в executor внешней (переиспользованной) транзакции.
+      expect(db.queries.every((q) => q.tag.startsWith('trx-'))).toBe(true);
+      expect(db.transactionOptions.length).toBe(1);
+    });
   });
 
   describe('ambient disabled by default (#7 backward compatibility)', () => {
@@ -298,6 +316,35 @@ describe('NestJS integration: transactions (#98)', () => {
       );
 
       expect(db.queries.every((q) => q.tag.startsWith('trx-'))).toBe(true);
+    });
+
+    it('inner { reuse: true, ambient: true } routes repo ops into the REUSED transaction (#98)', async () => {
+      await txManager.runInTransaction(
+        async () =>
+          txManager.runInTransaction(
+            async () => {
+              // Без явного { trx }: должно уйти в переиспользованную
+              // транзакцию благодаря ambient: true на внутреннем вызове.
+              await UserEntity.count({});
+              return getActiveTransaction()?.trx;
+            },
+            { reuse: true, ambient: true },
+          ),
+        // Внешний вызов БЕЗ ambient.
+        {},
+      );
+
+      const tags = db.queries.map((q) => q.tag);
+      // Ровно одна транзакция, и запрос внутри внутреннего вызова попал
+      // именно в её executor, а не в base.
+      expect(db.transactionOptions.length).toBe(1);
+      expect(tags.length).toBe(1);
+      expect(tags[0]?.startsWith('trx-')).toBe(true);
+
+      // После завершения обоих вызовов контекст очищен.
+      expect(getActiveTransaction()).toBeUndefined();
+      await UserEntity.count({});
+      expect(db.queries[db.queries.length - 1].tag).toBe('base');
     });
   });
 

@@ -22,8 +22,10 @@ import {
  * внутренний колбэк не коммитит и не откатывает её самостоятельно.
  * - ambient — принудительно пробросить эту транзакцию в ambient-контекст
  *   (операции без явного { trx } будут выполняться в ней), даже если
- *   ambient выключен глобально. Значение false НЕ отключает глобальный
- *   ambient — используйте для этого настройки модуля.
+ *   ambient выключен глобально. Работает и при вложенном `{ reuse: true }`:
+ *   создаётся вложенный контекст с транзакцией внешнего вызова (коммит/
+ *   откат по-прежнему у внешнего вызова). Значение false НЕ отключает
+ *   глобальный ambient — используйте для этого настройки модуля.
  */
 export interface RunInTransactionOptions extends YdbTransactionOptions {
   reuse?: boolean;
@@ -156,8 +158,23 @@ export class YdbTransactionManager {
     const active = getActiveTransaction();
     if (active && active.db === this.db) {
       if (options?.reuse) {
-        // Переиспользуем активную транзакцию: новый контекст не создаём —
-        // коммит/откат остаются у внешнего вызова.
+        // Переиспользуем активную транзакцию: коммит/откат остаются у
+        // внешнего вызова, новая БД-транзакция не открывается. Если на
+        // внутреннем вызове явно задан ambient: true, создаём вложенный
+        // ALS-контекст с ТЕМИ ЖЕ trx/db/signal, но ambient-флагом вызова:
+        // иначе per-call ambient: true игнорировался бы, когда внешняя
+        // транзакция открыта с ambient: false.
+        if (options.ambient === true) {
+          return runWithTransactionContext(
+            {
+              trx: active.trx,
+              db: this.db,
+              signal: active.signal,
+              ambient: true,
+            },
+            () => fn(active.trx, active.signal),
+          );
+        }
         return fn(active.trx, active.signal);
       }
       throw new Error(
