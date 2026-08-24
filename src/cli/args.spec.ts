@@ -34,6 +34,19 @@ describe('parseArgs (#103)', () => {
     expect(args.command).toBe('migration:run');
   });
 
+  it('parses --output value for entity:diagram (#36)', () => {
+    const args = parseArgs(['entity:diagram', '--output', './diagram.mmd']);
+
+    expect(args.command).toBe('entity:diagram');
+    expect(args.output).toBe('./diagram.mmd');
+  });
+
+  it('rejects --output without a value', () => {
+    expect(() => parseArgs(['entity:diagram', '--output'])).toThrow(
+      /Option --output requires a non-empty value/,
+    );
+  });
+
   it('rejects unknown flag instead of making it positional', () => {
     // Раньше `migration:create --nme foo` создавал миграцию с именем «--nme».
     expect(() => parseArgs(['migration:create', '--nme', 'foo'])).toThrow(

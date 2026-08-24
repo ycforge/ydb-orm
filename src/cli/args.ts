@@ -20,6 +20,7 @@ export interface CliArgs {
   positional?: string;
   config?: string;
   dir?: string;
+  output?: string;
   json?: boolean;
   asApplied?: boolean;
   asReverted?: boolean;
@@ -28,7 +29,7 @@ export interface CliArgs {
 }
 
 /** Флаги, принимающие значение (арность 1). */
-const VALUE_FLAGS = new Set(['--config', '--dir']);
+const VALUE_FLAGS = new Set(['--config', '--dir', '--output']);
 
 /** Булевы флаги (арность 0). */
 const BOOLEAN_FLAGS = new Set([
@@ -54,10 +55,21 @@ function requireValue(flag: string, value?: string): string {
   return value;
 }
 
+function valueFlagKey(flag: string): 'config' | 'dir' | 'output' {
+  switch (flag) {
+    case '--config':
+      return 'config';
+    case '--output':
+      return 'output';
+    default:
+      return 'dir';
+  }
+}
+
 /**
  * Строго разбирает argv:
  *  - неизвестный флаг (`--nme`, `-x`) — ошибка, а не позиционный аргумент;
- *  - `--config`/`--dir` без значения, с пустой строкой или со следующим
+ *  - `--config`/`--dir`/`--output` без значения, с пустой строкой или со следующим
  *    флагом вместо значения — ошибка, а не тихий дефолт;
  *  - поддерживается синтаксис `--flag=value`;
  *  - больше одного позиционного аргумента после команды — ошибка,
@@ -84,6 +96,7 @@ export function parseArgs(argv: string[]): CliArgs {
     }
 
     if (VALUE_FLAGS.has(flag)) {
+      const key = valueFlagKey(flag);
       if (inlineValue === undefined) {
         const next = argv[i + 1];
         // Следующий флаг вместо значения — почти наверняка опечатка:
@@ -95,17 +108,11 @@ export function parseArgs(argv: string[]): CliArgs {
               `(example: ydb-orm migration:run ${flag} ./migrations).`,
           );
         }
-        result[flag === '--config' ? 'config' : 'dir'] = requireValue(
-          flag,
-          next,
-        );
+        result[key] = requireValue(flag, next);
         i++;
         continue;
       }
-      result[flag === '--config' ? 'config' : 'dir'] = requireValue(
-        flag,
-        inlineValue,
-      );
+      result[key] = requireValue(flag, inlineValue);
       continue;
     }
 
