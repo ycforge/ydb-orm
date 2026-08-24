@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { createMockExecutor } from './helpers/mock-executor.js';
+import { createScriptedExecutor } from './helpers/ydb-mock.js';
 import {
   ConsoleQueryLogger,
   wrapExecutorWithLogging,
@@ -101,22 +102,11 @@ describe('wrapExecutorWithLogging', () => {
   });
 
   it('logs failed query with error', async () => {
-    const failExecutor: any = jest.fn(() => ({
-      parameter: jest.fn().mockReturnThis(),
-      timeout: jest.fn().mockReturnThis(),
-      signal: jest.fn().mockReturnThis(),
-      cancel: jest.fn().mockReturnThis(),
-      then: (_onFulfilled: any, onRejected: any) =>
-        Promise.reject(new Error('connection refused')).then(
-          _onFulfilled,
-          onRejected,
-        ),
-    }));
-    failExecutor.transaction = () => ({
-      execute: (fn: any) => fn(failExecutor),
-    });
+    // #109: программный мок вместо ad-hoc failExecutor
+    const db = createScriptedExecutor();
+    db.expect('SELECT 1').throws(new Error('connection refused'));
 
-    const logging = wrapExecutorWithLogging(failExecutor, mockLogger);
+    const logging = wrapExecutorWithLogging(db.executor, mockLogger);
     const q = logging(['SELECT 1'] as unknown as TemplateStringsArray);
     q.parameter('p', 'val');
 
@@ -271,22 +261,13 @@ describe('wrapExecutorWithLogging', () => {
   });
 
   it('logs transaction queries that fail with the query error', async () => {
-    const failExecutor: any = jest.fn(() => ({
-      parameter: jest.fn().mockReturnThis(),
-      timeout: jest.fn().mockReturnThis(),
-      signal: jest.fn().mockReturnThis(),
-      cancel: jest.fn().mockReturnThis(),
-      then: (_onFulfilled: any, onRejected: any) =>
-        Promise.reject(new Error('tx query rejected')).then(
-          _onFulfilled,
-          onRejected,
-        ),
-    }));
-    failExecutor.transaction = () => ({
-      execute: (fn: any) => fn(failExecutor),
-    });
+    // #109: программный мок вместо ad-hoc failExecutor
+    const db = createScriptedExecutor();
+    db.expect('SELECT 1')
+      .inTransaction()
+      .throws(new Error('tx query rejected'));
 
-    const logging = wrapExecutorWithLogging(failExecutor, mockLogger);
+    const logging = wrapExecutorWithLogging(db.executor, mockLogger);
 
     await expect(
       (logging as any).transaction().execute(async (trx: any) => {
