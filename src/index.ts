@@ -324,6 +324,8 @@ export type {
   DumpedJoinTable,
   DumpedJoinTableRef,
 } from './cli/metadata-dump.js';
+// Mermaid ER-диаграмма (#36): рендер поверх канонического дампа метаданных.
+export { buildEntityDiagram, writeDiagramFile } from './cli/entity-diagram.js';
 
 // Credentials
 export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';

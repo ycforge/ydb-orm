@@ -34,6 +34,10 @@ export const CLI_COMMANDS: CliCommand[] = [
     name: 'metadata:dump',
     description: 'Dump entity metadata as deterministic JSON (no DB)',
   },
+  {
+    name: 'entity:diagram',
+    description: 'Render Mermaid ER diagram from entity metadata (no DB)',
+  },
   { name: 'entity:create', description: 'Create an entity' },
   { name: 'completion', description: 'Print shell completion script' },
 ];
@@ -42,6 +46,7 @@ export const CLI_COMMANDS: CliCommand[] = [
 export const CLI_FLAGS = [
   '--config',
   '--dir',
+  '--output',
   '--json',
   '--as-applied',
   '--as-reverted',
@@ -126,6 +131,7 @@ ${commands}
           _arguments \\
             '--config[Path to CLI config]:file:_files' \\
             '--dir[Migrations/entities directory]:directory:_files -/' \\
+            '--output[Output file for entity:diagram]:file:_files' \\
             '--json[JSON output]' \\
             '--as-applied[Repair: mark migration as applied]' \\
             '--as-reverted[Repair: remove bookkeeping record]' \\
@@ -162,9 +168,11 @@ function renderFish(): string {
   lines.push(
     `complete -c ydb-orm -n '__fish_seen_subcommand_from completion' -a '${COMPLETION_SHELLS.join(' ')}'`,
   );
+  lines.push('');
   lines.push(
     "complete -c ydb-orm -l config -r -F -d 'Path to CLI config'",
     "complete -c ydb-orm -l dir -r -F -d 'Migrations/entities directory'",
+    "complete -c ydb-orm -l output -r -F -d 'Output file for entity:diagram'",
     "complete -c ydb-orm -l json -d 'JSON output'",
     "complete -c ydb-orm -l as-applied -d 'Repair: mark migration as applied'",
     "complete -c ydb-orm -l as-reverted -d 'Repair: remove bookkeeping record'",

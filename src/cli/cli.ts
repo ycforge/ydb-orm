@@ -25,6 +25,7 @@ import { runEntityCreateCommand } from './entity-wizard.js';
 import { renderCompletionScript } from './completion.js';
 import { renderSchemaDiff } from './diff.js';
 import { buildMetadataDump } from './metadata-dump.js';
+import { buildEntityDiagram, writeDiagramFile } from './entity-diagram.js';
 import { CliArgsError, formatError, parseArgs, CliArgs } from './args.js';
 
 const HELP = `ydb-orm — CLI для миграций и генерации кода
@@ -41,6 +42,9 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
   ydb-orm metadata:dump               Экспортировать метаданные сущностей в JSON (stdout;
                                       без БД: детерминированный, версионированный формат)
+  ydb-orm entity:diagram              Mermaid ER-диаграмма по метаданным сущностей
+                                      (stdout или --output <file>; без БД; существующие
+                                      файлы не перезаписываются)
   ydb-orm entity:create <name>        Создать сущность (в TTY — интерактивный мастер колонок:
                                       имя → тип YDB → PK/encrypted/enum/date/TTL; вне TTY — шаблон
                                       по умолчанию без чтения stdin; существующие файлы не перезаписываются)
@@ -52,6 +56,8 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
                     YDB_AUTH_TYPE, YDB_AUTHORIZED_KEY_PATH)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
+  --output <file>   Файл вывода для entity:diagram (существующий файл —
+                    ошибка, перезапись запрещена); без флага — stdout
   --json            JSON-вывод (для migration:show/status/check) — весь отчёт в stdout
   --verbose         Полный стек ошибки и цепочка cause при сбое
   -h, --help        Эта справка
@@ -258,6 +264,26 @@ async function runCommand(args: CliArgs): Promise<void> {
     // Команда по природе JSON-only: единственный режим вывода — весь дамп
     // в stdout, детерминированный (стабильный порядок и структура).
     console.log(JSON.stringify(dump, null, 2));
+    return;
+  }
+
+  if (command === 'entity:diagram') {
+    // Read-only Mermaid ER-диаграмма (#36): тот же канонический источник,
+    // что у metadata:dump (#37); БД не подключается вовсе. Вся валидация
+    // и построение — до первого байта вывода/записи файла.
+    if (!config.entities?.length) {
+      throw new Error(
+        'entity:diagram requires "entities" in the CLI config ' +
+          '(ydb-orm.config.ts).',
+      );
+    }
+    const diagram = buildEntityDiagram(config.entities);
+    if (args.output !== undefined) {
+      writeDiagramFile(args.output, diagram);
+      console.log(`Diagram written: ${args.output}`);
+    } else {
+      console.log(diagram);
+    }
     return;
   }
 
