@@ -24,6 +24,7 @@ import { createMigrationFile } from './generators.js';
 import { runEntityCreateCommand } from './entity-wizard.js';
 import { renderCompletionScript } from './completion.js';
 import { renderSchemaDiff } from './diff.js';
+import { buildMetadataDump } from './metadata-dump.js';
 import { CliArgsError, formatError, parseArgs, CliArgs } from './args.js';
 
 const HELP = `ydb-orm — CLI для миграций и генерации кода
@@ -38,6 +39,8 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
   ydb-orm migration:check             Проверка готовности схемы для CI (exit != 0, если не готово)
   ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
   ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
+  ydb-orm metadata:dump               Экспортировать метаданные сущностей в JSON (stdout;
+                                      без БД: детерминированный, версионированный формат)
   ydb-orm entity:create <name>        Создать сущность (в TTY — интерактивный мастер колонок:
                                       имя → тип YDB → PK/encrypted/enum/date/TTL; вне TTY — шаблон
                                       по умолчанию без чтения stdin; существующие файлы не перезаписываются)
@@ -239,6 +242,22 @@ async function runCommand(args: CliArgs): Promise<void> {
     } finally {
       close();
     }
+    return;
+  }
+
+  if (command === 'metadata:dump') {
+    // Read-only экспорт метаданных (#37): БД не подключается вовсе — ни
+    // драйвера, ни executor'а; конфиг нужен только ради списка entities.
+    if (!config.entities?.length) {
+      throw new Error(
+        'metadata:dump requires "entities" in the CLI config ' +
+          '(ydb-orm.config.ts).',
+      );
+    }
+    const dump = buildMetadataDump(config.entities);
+    // Команда по природе JSON-only: единственный режим вывода — весь дамп
+    // в stdout, детерминированный (стабильный порядок и структура).
+    console.log(JSON.stringify(dump, null, 2));
     return;
   }
 

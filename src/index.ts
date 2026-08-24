@@ -305,6 +305,25 @@ export type {
   EntityCreateWizardOptions,
 } from './cli/entity-wizard.js';
 export { PromptCancelledError } from './cli/prompt.js';
+// Дамп метаданных (#37): программный вход для внешних инструментов (#36 и др.).
+export {
+  buildMetadataDump,
+  METADATA_DUMP_FORMAT,
+  METADATA_DUMP_VERSION,
+} from './cli/metadata-dump.js';
+export type {
+  MetadataDump,
+  DumpedEntity,
+  DumpedColumn,
+  DumpedIndex,
+  DumpedTtl,
+  DumpedEnum,
+  DumpedEncryptedField,
+  DumpedRelation,
+  DumpedRelationTarget,
+  DumpedJoinTable,
+  DumpedJoinTableRef,
+} from './cli/metadata-dump.js';
 
 // Credentials
 export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';
