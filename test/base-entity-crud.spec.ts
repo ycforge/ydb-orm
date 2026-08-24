@@ -144,15 +144,29 @@ describe('BaseEntity CRUD (mock executor)', () => {
       expect(q.sql).toContain('OFFSET 20');
     });
 
-    it('clamps limit to 1-1000 range', async () => {
+    it('clamps limit to MAX_RETRIEVE_LIMIT and allows limit 0', async () => {
       const mock = createMockExecutor([[]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.findAll({}, { limit: 9999 });
       expect(mock.queries[0].sql).toContain('LIMIT 1000');
 
-      await UserEntity.findAll({}, { limit: -1 });
-      expect(mock.queries[1].sql).toContain('LIMIT 1');
+      // limit: 0 — пустой результат, НЕ клампится в 1 (#158: семантика
+      // унифицирована с YdbQueryBuilder, см. core/query-limits.ts).
+      await UserEntity.findAll({}, { limit: 0 });
+      expect(mock.queries[1].sql).toContain('LIMIT 0');
+    });
+
+    it('rejects negative and fractional limit', async () => {
+      const mock = createMockExecutor([[]]);
+      UserEntity.setExecutor(mock.executor);
+
+      await expect(UserEntity.findAll({}, { limit: -1 })).rejects.toThrow(
+        'Invalid LIMIT',
+      );
+      await expect(UserEntity.findAll({}, { limit: 2.5 })).rejects.toThrow(
+        'Invalid LIMIT',
+      );
     });
 
     it('uses default limit 100 and offset 0', async () => {

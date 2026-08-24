@@ -116,7 +116,10 @@ export {
   MAX_IN_CLAUSE_VALUES,
   chunkInValues,
   dedupeInValues,
+  resolveRetrieveLimit,
+  resolveRetrieveOffset,
 } from './core/query-limits.js';
+export { executeYdbQuery } from './core/execute-query.js';
 
 // Retry-политика по типу ошибки (#27)
 export {
