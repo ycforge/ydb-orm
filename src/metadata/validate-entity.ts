@@ -6,6 +6,7 @@ import {
   RelationMetadata,
 } from '../decorators/relation.decorators.js';
 import { getYdbIndexesMetadata } from '../decorators/index.decorator.js';
+import { blindIndexColumnName } from '../decorators/encryption.decorator.js';
 import {
   getYdbTtlMetadata,
   validateYdbTtlAgainstSchema,
@@ -94,7 +95,7 @@ export function validateEntityMetadata(
     ...Object.keys(meta.schema),
     ...meta.encryptedFields
       .filter((ef) => ef.blindIndex)
-      .map((ef) => `${ef.propertyKey}_bi`),
+      .map((ef) => blindIndexColumnName(ef.propertyKey)),
   ]);
   for (const idx of getYdbIndexesMetadata(entity)) {
     if (!idx.columns.length) {

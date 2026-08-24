@@ -5,6 +5,18 @@ import {
 } from '../metadata/entity-metadata.js';
 import type { EncryptedFieldMeta } from '../metadata/entity-metadata.js';
 
+/** Суффикс synthetic-колонки blind index (см. @YdbEncrypted({ blindIndex })). */
+export const BLIND_INDEX_SUFFIX = '_bi';
+
+/**
+ * Имя synthetic-колонки blind index для зашифрованного поля:
+ * `{propertyKey}_bi`. Единственная точка именования — persistence, schema
+ * sync, валидация метаданных и CLI используют её вместо inline-шаблонов.
+ */
+export function blindIndexColumnName(propertyKey: string): string {
+  return `${propertyKey}${BLIND_INDEX_SUFFIX}`;
+}
+
 export interface YdbEncryptedOptions {
   blindIndex?: boolean;
   aadOverride?: string;

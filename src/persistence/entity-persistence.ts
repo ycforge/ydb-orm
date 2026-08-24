@@ -9,6 +9,10 @@ import type { QueryOptions } from '../core/query-options.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import {
+  BLIND_INDEX_SUFFIX,
+  blindIndexColumnName,
+} from '../decorators/encryption.decorator.js';
+import {
   YdbEncryptionContext,
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
@@ -98,7 +102,7 @@ export function getEntityDbSchema(
 ): Record<string, YdbPrimitive> {
   const schema: Record<string, YdbPrimitive> = { ...meta.schema };
   for (const ef of meta.encryptedFields) {
-    if (ef.blindIndex) schema[`${ef.propertyKey}_bi`] = 'Utf8';
+    if (ef.blindIndex) schema[blindIndexColumnName(ef.propertyKey)] = 'Utf8';
   }
   return schema;
 }
@@ -440,10 +444,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
       if (ef.blindIndex) {
         const provider = this.requireBlindIndexProvider();
-        encrypted[`${ef.propertyKey}_bi`] = await provider.hash(String(value), {
-          ...baseContext,
-          fieldName: ef.propertyKey,
-        });
+        encrypted[blindIndexColumnName(ef.propertyKey)] = await provider.hash(
+          String(value),
+          {
+            ...baseContext,
+            fieldName: ef.propertyKey,
+          },
+        );
       }
     }
     return encrypted;
@@ -609,7 +616,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           `Cannot search encrypted field "${field}" on entity ${this.entityClass.name} by null or undefined.`,
         );
       }
-      const biField = `${field}_bi`;
+      const biField = blindIndexColumnName(field);
       const paramName = isRoot ? biField : `${biField}_${ctx.counter++}`;
       ctx.values[paramName] = await this.hashBlindIndexForWhere(
         field,
@@ -1748,10 +1755,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         if (ef.blindIndex) {
           const blindIndexProvider = this.requireBlindIndexProvider();
-          data[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
-            String(value),
-            { ...context, fieldName: ef.propertyKey },
-          );
+          data[blindIndexColumnName(ef.propertyKey)] =
+            await blindIndexProvider.hash(String(value), {
+              ...context,
+              fieldName: ef.propertyKey,
+            });
         }
       }
     }
@@ -2088,11 +2096,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 }
 
 /** Проверяет, что колонка — synthetic blind index ({field}_bi) */
-function isSyntheticColumn(meta: YdbEntityMetadata, key: string): boolean {
+export function isSyntheticColumn(
+  meta: YdbEntityMetadata,
+  key: string,
+): boolean {
   return (
-    key.endsWith('_bi') &&
+    key.endsWith(BLIND_INDEX_SUFFIX) &&
     meta.encryptedFields.some(
-      (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
+      (ef) => ef.blindIndex && blindIndexColumnName(ef.propertyKey) === key,
     )
   );
 }

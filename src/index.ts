@@ -43,6 +43,8 @@ export {
 export { YdbEntity } from './decorators/entity.decorator.js';
 export { YdbColumn, YdbPrimaryColumn } from './decorators/column.decorator.js';
 export {
+  BLIND_INDEX_SUFFIX,
+  blindIndexColumnName,
   YdbEncrypted,
   YdbSecurityAAD,
 } from './decorators/encryption.decorator.js';

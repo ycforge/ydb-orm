@@ -21,6 +21,7 @@
 
 import fs from 'node:fs';
 import { buildMetadataDump } from './metadata-dump.js';
+import { compareStrings } from './sort.js';
 import type {
   DumpedColumn,
   DumpedEntity,
@@ -150,18 +151,14 @@ function renderEntityBlock(
   entity: DumpedEntity,
   foreignKeys: Set<string> | undefined,
 ): string[] {
-  const columns = orderColumns(entity);
-  const byName = new Map(columns.map((column) => [column.name, column]));
-
-  const body = entity.primaryKey
-    .map((name) => renderAttribute(byName.get(name), foreignKeys, true))
-    .concat(
-      columns
-        .filter((column) => !entity.primaryKey.includes(column.name))
-        .map((column) => renderAttribute(column, foreignKeys)),
-    );
-
-  return [`  ${quoteIdentifier(entity.table)} {`, ...body, '  }'];
+  const body = orderColumns(entity).map((column) =>
+    renderAttribute(
+      column,
+      foreignKeys,
+      entity.primaryKey.includes(column.name),
+    ),
+  );
+  return [`  ${quoteMermaid(entity.table)} {`, ...body, '  }'];
 }
 
 /** Колонки блока: PK — в порядке primaryKey, остальные — как в дампе. */
@@ -180,11 +177,10 @@ function orderColumns(entity: DumpedEntity): DumpedColumn[] {
 
 /** Строка атрибута: тип, имя, ключи (PK/FK), комментарий с оригиналом. */
 function renderAttribute(
-  column: DumpedColumn | undefined,
+  column: DumpedColumn,
   foreignKeys: Set<string> | undefined,
   isPrimary = false,
 ): string {
-  if (!column) return '';
   const keys: string[] = [];
   if (isPrimary) keys.push('PK');
   if (foreignKeys?.has(column.name)) keys.push('FK');
@@ -207,14 +203,14 @@ function renderAttributeLine(
   if (keys.length) parts.push(` ${keys.join(', ')}`);
   // Оригинальное имя сохраняется комментарием: sanitized-имя может
   // отличаться от физической колонки.
-  if (safe.changed) parts.push(` ${quoteText(rawName)}`);
+  if (safe.changed) parts.push(` ${quoteMermaid(rawName)}`);
   return parts.join('');
 }
 
 /** Блок физической join-таблицы many-to-many: обе колонки — PK + FK. */
 function renderJoinTableBlock(joinTable: DumpedJoinTable): string[] {
   return [
-    `  ${quoteIdentifier(joinTable.table)} {`,
+    `  ${quoteMermaid(joinTable.table)} {`,
     renderAttributeLine(joinTable.joinColumnType, joinTable.joinColumn, [
       'PK',
       'FK',
@@ -332,30 +328,22 @@ function collectEdges(dump: MetadataDump): DiagramEdge[] {
 
 function renderEdge(edge: DiagramEdge): string {
   return (
-    `  ${quoteIdentifier(edge.left)} ${edge.leftCard}${edge.line}` +
-    `${edge.rightCard} ${quoteIdentifier(edge.right)} : ${quoteText(edge.label)}`
+    `  ${quoteMermaid(edge.left)} ${edge.leftCard}${edge.line}` +
+    `${edge.rightCard} ${quoteMermaid(edge.right)} : ${quoteMermaid(edge.label)}`
   );
 }
 
 // ─────────────────────── Экранирование и санитизация ───────────────────────
 
 /**
- * Имя таблицы/сущности в Mermaid ER: всегда в двойных кавычках — так
- * безопасны пробелы, точки, дефисы, юникод и любые другие символы, кроме
- * самой двойной кавычки и переводов строк, которые заменяются.
+ * Имя таблицы/сущности, метка связи (после двоеточия) или комментарий
+ * атрибута в Mermaid ER: всегда в двойных кавычках — так безопасны пробелы,
+ * точки, дефисы, юникод и любые другие символы, кроме самой двойной кавычки
+ * и переводов строк, которые заменяются.
  */
-function quoteIdentifier(value: string): string {
-  return `"${escapeQuoted(value)}"`;
-}
-
-/** Текст после двоеточия (метка связи) или в комментарии атрибута. */
-function quoteText(value: string): string {
-  return `"${escapeQuoted(value)}"`;
-}
-
-function escapeQuoted(value: string): string {
+function quoteMermaid(value: string): string {
   // Двойная кавычка закрыла бы строку; переводы строк ломают однострочность.
-  return value.replace(/"/g, "'").replace(/\s+/g, ' ').trim();
+  return `"${value.replace(/"/g, "'").replace(/\s+/g, ' ').trim()}"`;
 }
 
 const ATTRIBUTE_SAFE = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -382,8 +370,4 @@ function sanitizeAttributeName(name: string): {
  */
 function sanitizeWord(value: string, fallback: string): string {
   return ATTRIBUTE_SAFE.test(value) ? value : fallback;
-}
-
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }

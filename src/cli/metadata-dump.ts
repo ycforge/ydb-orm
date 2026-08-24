@@ -33,12 +33,14 @@ import {
   getManyToManyJoinTables,
   getYdbJoinTableMetadata,
   getYdbRelationsMetadata,
+  resolvePropertySelector,
   resolveRelationJoinColumn,
   resolveRelationJoinTableDefinition,
   type ManyToManyJoinTable,
   type RelationMetadata,
   type RelationType,
 } from '../decorators/relation.decorators.js';
+import { blindIndexColumnName } from '../decorators/encryption.decorator.js';
 import {
   getYdbEnumMetadata,
   type YdbEnumMeta,
@@ -46,6 +48,7 @@ import {
 import type { YdbTtlUnit } from '../decorators/ttl.decorator.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { requireEntityMeta } from './migration-verify.js';
+import { compareStrings } from './sort.js';
 
 /** Идентификатор формата дампа (верхнеуровневое поле format). */
 export const METADATA_DUMP_FORMAT = 'ydb-orm/metadata-dump';
@@ -268,7 +271,7 @@ function dumpEntity(
         property: ef.propertyKey,
         blindIndex: ef.blindIndex === true,
         blindIndexColumn:
-          ef.blindIndex === true ? `${ef.propertyKey}_bi` : null,
+          ef.blindIndex === true ? blindIndexColumnName(ef.propertyKey) : null,
         lazy: ef.lazy === true,
         aadOverride: ef.aadOverride ?? null,
       }))
@@ -366,7 +369,15 @@ function resolveJoinTableRef(
     // Канонический резолв объявления (#90/#87): ошибки конфигурации
     // (нет PK, составной PK, невыводимый тип) роняют дамп.
     const definition = resolveRelationJoinTableDefinition(Entity, relation);
-    return { table: definition!.tableName, side: 'owner' };
+    if (!definition) {
+      // Инвариант: @JoinTable на m2m-связи декорированной сущности всегда
+      // резолвится в определение — undefined здесь невозможен.
+      throw new Error(
+        `Cannot resolve join table for relation "${relation.propertyKey}" ` +
+          `on ${Entity.name} despite a @JoinTable declaration.`,
+      );
+    }
+    return { table: definition.tableName, side: 'owner' };
   }
 
   // Обратная сторона: join-таблица ищется среди определений, владельцами
@@ -469,57 +480,19 @@ function findInverseProperty(
 }
 
 /**
- * Резолвит селектор inverseSide `(target) => target.property`: прокси-рекордер
- * требует ровно одно чтение свойства — та же строгость, что у join-колонок
- * (#87). Цепочки, вызовы и константы дают ошибку с именем сущности и связи.
+ * Резолвит селектор inverseSide `(target) => target.property` каноническим
+ * резолвером property-селекторов (#87) — та же строгость, что у join-колонок:
+ * ровно одно чтение свойства, цепочки/вызовы/константы — ошибка с именем
+ * сущности и связи.
  */
 function resolveInverseSideProperty(
   Entity: EntityCtor,
   relation: RelationMetadata,
 ): string {
   const where = `relation "${relation.propertyKey}" on ${Entity.name}`;
-
-  class SelectorRejected extends Error {}
-
-  const accessedProps: string[] = [];
-  let lastNode: unknown;
-  const makeNode = (): unknown =>
-    new Proxy(function inverseSideSelectorTarget() {}, {
-      get: (_target, prop) => {
-        if (typeof prop === 'symbol') throw new SelectorRejected();
-        accessedProps.push(prop);
-        lastNode = makeNode();
-        return lastNode;
-      },
-      apply: () => {
-        throw new SelectorRejected();
-      },
-      construct: () => {
-        throw new SelectorRejected();
-      },
-    });
-
-  let result: unknown;
-  try {
-    result = relation.inverseSide!(makeNode());
-  } catch (err) {
-    if (!(err instanceof SelectorRejected)) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`Invalid inverseSide selector for ${where} (${detail}).`);
-    }
-    throw new Error(`Invalid inverseSide selector for ${where}.`);
-  }
-
-  if (accessedProps.length !== 1 || result !== lastNode) {
-    throw new Error(
-      `Invalid inverseSide selector for ${where}: only direct property ` +
-        `access is supported — (target) => target.property.`,
-    );
-  }
-
-  return accessedProps[0];
-}
-
-function compareStrings(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
+  return resolvePropertySelector(
+    relation.inverseSide!,
+    'inverseSide selector',
+    where,
+  );
 }
