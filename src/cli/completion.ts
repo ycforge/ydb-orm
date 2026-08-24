@@ -30,6 +30,10 @@ export const CLI_COMMANDS: CliCommand[] = [
       'Resolve an interrupted migration (--as-applied/--as-reverted)',
   },
   { name: 'schema:verify', description: 'Verify DB schema against entities' },
+  {
+    name: 'metadata:dump',
+    description: 'Dump entity metadata as deterministic JSON (no DB)',
+  },
   { name: 'entity:create', description: 'Create an entity' },
   { name: 'completion', description: 'Print shell completion script' },
 ];
