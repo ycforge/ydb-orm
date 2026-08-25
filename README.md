@@ -86,7 +86,7 @@ await UserEntity.insertMany([u1, u2]);              // батчи по 100
 await user.loadRelations(['roles']);
 ```
 
-`QueryOptions`: `trx`, `timeout` (мс), `signal` (AbortSignal), `limit` (по умолчанию 100, макс 1000), `offset`.
+`QueryOptions`: `trx`, `timeout` (мс), `signal` (AbortSignal), `limit` (по умолчанию 100, макс 1000; семантика та же, что у `limit()` билдера — см. таблицу ниже: `0` → пустой результат, отрицательное/дробное — ошибка `Invalid LIMIT`), `offset`.
 
 ## QueryBuilder
 

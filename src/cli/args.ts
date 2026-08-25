@@ -102,7 +102,6 @@ export function parseArgs(argv: string[]): CliArgs {
         // Следующий флаг вместо значения — почти наверняка опечатка:
         // `--config --dir x` не должен превращаться в config="--dir".
         if (next === undefined || isFlagLike(next)) {
-          i++;
           throw new CliArgsError(
             `Option ${flag} requires a non-empty value ` +
               `(example: ydb-orm migration:run ${flag} ./migrations).`,

@@ -43,9 +43,48 @@ export function chunkInValues<T>(
 
 /**
  * Дедупликация значений FK/PK с сохранением порядка первого вхождения.
- * Значения — примитивы YDB (string/number/bigint/boolean/Uint8Array):
- * Set сравнивает их по значению (SameValueZero, включая bigint).
+ * Set сравнивает по SameValueZero: скаляры (string/number/bigint/boolean)
+ * дедуплицируются по значению, а объекты (Uint8Array и т.п.) — по ссылке,
+ * поэтому бинарные значения дедуплицируются только при повторе той же
+ * ссылки (для FK/PK-потоков это приемлемо).
  */
 export function dedupeInValues<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
+}
+
+/** Защитный лимит строк по умолчанию для SELECT без явного limit (#133). */
+export const DEFAULT_RETRIEVE_LIMIT = 100;
+
+/** Максимально допустимый лимит строк в одном SELECT. */
+export const MAX_RETRIEVE_LIMIT = 1000;
+
+/**
+ * Итоговый LIMIT с явной семантикой (#133):
+ * - лимит не задан — защитный дефолт DEFAULT_RETRIEVE_LIMIT;
+ * - `0` — LIMIT 0 (пустой результат), НЕ клампится в 1;
+ * - положительное целое значение — до MAX_RETRIEVE_LIMIT (потолок);
+ * - отрицательное, дробное или неконечное значение — ошибка.
+ *
+ * Единая точка семантики для query-builder и persistence (#158): раньше
+ * persistence молча клампил limit: 0 → 1 и отрицательные → 1.
+ */
+export function resolveRetrieveLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_RETRIEVE_LIMIT;
+  }
+  if (!Number.isFinite(limit) || limit < 0 || !Number.isInteger(limit)) {
+    throw new Error(
+      `Invalid LIMIT: ${String(limit)}. LIMIT must be a finite non-negative integer.`,
+    );
+  }
+  return Math.min(limit, MAX_RETRIEVE_LIMIT);
+}
+
+/**
+ * Итоговый OFFSET: не задан — 0; дробное округляется вниз;
+ * отрицательное клампится в 0.
+ */
+export function resolveRetrieveOffset(offset: number | undefined): number {
+  const num = Number.isFinite(offset) ? Math.floor(offset as number) : 0;
+  return Math.max(0, num);
 }

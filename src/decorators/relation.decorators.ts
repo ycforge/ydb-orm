@@ -124,17 +124,23 @@ export function resolveRelationJoinColumn(
     );
   }
 
-  return resolvePropertySelector(joinColumn, where);
+  return resolvePropertySelector(joinColumn, 'join column selector', where);
 }
 
 /**
- * Резолвит селектор `(target) => target.property`: прокси-рекордер читает
+ * Строгий резолв селектора `(target) => target.property`: прокси-рекордер читает
  * ровно одно обращение к свойству. Любая другая форма (цепочка, вызов,
  * символ, вычисленное значение) даёт понятную ошибку вместо угаданной
  * строки колонки (#87).
+ *
+ * Единственная точка резолва property-селекторов: используется join-колонками
+ * (#87) и селектором inverseSide many-to-many (metadata:dump, #37) —
+ * расхождений между путями нет. `what` — название селектора в тексте ошибки
+ * ("join column selector", "inverseSide selector").
  */
-function resolvePropertySelector(
+export function resolvePropertySelector(
   selector: (target: any) => any,
+  what: string,
   where: string,
 ): string {
   const accessedProps: string[] = [];
@@ -165,24 +171,24 @@ function resolvePropertySelector(
   } catch (err) {
     if (!(err instanceof SelectorRejected)) {
       const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(`${invalidSelectorMessage(where)} (${detail}).`);
+      throw new Error(`${invalidSelectorMessage(what, where)} (${detail}).`);
     }
-    throw new Error(invalidSelectorMessage(where));
+    throw new Error(invalidSelectorMessage(what, where));
   }
 
   if (accessedProps.length !== 1 || result !== lastNode) {
     const detail = accessedProps.length
       ? `unsupported selector form (target.${accessedProps.join('.')})`
       : 'the target argument was not used to select a property';
-    throw new Error(`${invalidSelectorMessage(where)} — ${detail}.`);
+    throw new Error(`${invalidSelectorMessage(what, where)} — ${detail}.`);
   }
 
   return accessedProps[0];
 }
 
-function invalidSelectorMessage(where: string): string {
+function invalidSelectorMessage(what: string, where: string): string {
   return (
-    `Invalid join column selector for ${where}: ` +
+    `Invalid ${what} for ${where}: ` +
     `only direct property access is supported — (target) => target.property`
   );
 }
