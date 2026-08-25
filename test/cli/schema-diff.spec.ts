@@ -305,7 +305,7 @@ describe('shouldUseColor', () => {
 
   it('decides by the passed stream, not always stdout (#103)', () => {
     // schema:verify пишет расхождения в stderr: при pipe stdout
-    // (`ydb-orm schema:verify | cat`) цвет должен решаться по stderr.
+    // (`yorm schema:verify | cat`) цвет должен решаться по stderr.
     const ttyStderr = { isTTY: true } as unknown as NodeJS.WriteStream;
     const pipedStdout = { isTTY: false } as unknown as NodeJS.WriteStream;
 

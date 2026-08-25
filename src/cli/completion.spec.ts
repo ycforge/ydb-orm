@@ -27,22 +27,22 @@ describe('renderCompletionScript', () => {
 
   it('bash-скрипт использует compgen и complete -F', () => {
     const script = renderCompletionScript('bash');
-    expect(script).toContain('_ydb_orm()');
+    expect(script).toContain('_yorm()');
     expect(script).toContain('compgen -W');
-    expect(script).toContain('complete -F _ydb_orm ydb-orm');
+    expect(script).toContain('complete -F _yorm yorm');
   });
 
   it('zsh-скрипт объявляет команды с описаниями', () => {
     const script = renderCompletionScript('zsh');
-    expect(script).toContain('#compdef ydb-orm');
+    expect(script).toContain('#compdef yorm');
     for (const command of CLI_COMMANDS) {
       expect(script).toContain(`'${command.name}:${command.description}'`);
     }
   });
 
-  it('fish-скрипт регистрирует complete -c ydb-orm на каждую команду', () => {
+  it('fish-скрипт регистрирует complete -c yorm на каждую команду', () => {
     const script = renderCompletionScript('fish');
-    expect(script.match(/complete -c ydb-orm/g)?.length).toBeGreaterThanOrEqual(
+    expect(script.match(/complete -c yorm/g)?.length).toBeGreaterThanOrEqual(
       CLI_COMMANDS.length + 1,
     );
     // Флаги со значениями помечены как требующие файл (-r -F)

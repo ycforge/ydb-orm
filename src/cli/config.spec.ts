@@ -102,6 +102,13 @@ describe('findDefaultConfig (#103)', () => {
     expect(findDefaultConfig(dir)).toBe(path.join(dir, 'ydb-orm.config.mts'));
   });
 
+  it('prefers yorm.config.* over legacy ydb-orm.config.*', () => {
+    fs.writeFileSync(path.join(dir, 'ydb-orm.config.ts'), '', 'utf-8');
+    fs.writeFileSync(path.join(dir, 'yorm.config.js'), '', 'utf-8');
+
+    expect(findDefaultConfig(dir)).toBe(path.join(dir, 'yorm.config.js'));
+  });
+
   it('returns undefined when nothing found up to the filesystem root', () => {
     expect(findDefaultConfig(dir)).toBeUndefined();
   });

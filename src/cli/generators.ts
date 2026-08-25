@@ -507,7 +507,7 @@ export function renderEntityFile(spec: YdbEntitySpec): string {
   for (const name of [...imports].sort()) {
     lines.push(`  ${name},`);
   }
-  lines.push("} from '@ycforge/ydb-orm';");
+  lines.push("} from '@ycforge/yorm';");
   lines.push('');
 
   // Enum-объявления — перед классом (на них ссылаются типы свойств).

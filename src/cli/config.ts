@@ -26,12 +26,18 @@ function assertCliAuth(config: YdbCliConfig): void {
   ) {
     throw new Error(
       'YDB auth is required: pass "auth" (AuthManager) or a CredentialsProvider ' +
-        'in ydb-orm.config.ts.',
+        'in yorm.config.ts (или legacy ydb-orm.config.ts).',
     );
   }
 }
 
+// Имена конфигов CLI: новый формат yorm.config.* имеет приоритет над
+// legacy ydb-orm.config.* (старый формат продолжает работать).
 const DEFAULT_CONFIG_NAMES = [
+  'yorm.config.ts',
+  'yorm.config.mts',
+  'yorm.config.mjs',
+  'yorm.config.js',
   'ydb-orm.config.ts',
   'ydb-orm.config.mts',
   'ydb-orm.config.mjs',
@@ -111,7 +117,7 @@ export function extractCliConfig(
  * Ищет дефолтный конфиг в startDir и вверх по дереву каталогов до корня ФС
  * (#103). Раньше поиск шёл только в CWD — запуск из вложенной директории
  * монорепо не находил конфиг в корне проекта. В одной директории приоритет:
- * .ts → .mts → .mjs → .js.
+ * yorm.* → ydb-orm.* (legacy), внутри формата: .ts → .mts → .mjs → .js.
  */
 export function findDefaultConfig(startDir?: string): string | undefined {
   let current = path.resolve(startDir ?? process.cwd());
@@ -128,10 +134,11 @@ export function findDefaultConfig(startDir?: string): string | undefined {
 
 /**
  * Загружает конфиг CLI:
- *  1. --config <path> или ydb-orm.config.{ts,mts,mjs|js}, найденный в CWD
- *     или выше; default и именованные экспорты эквивалентны;
+ *  1. --config <path> или yorm.config.{ts,mts,mjs|js} (либо legacy
+ *     ydb-orm.config.*), найденный в CWD или выше; default и именованные
+ *     экспорты эквивалентны;
  *  2. иначе — переменная окружения YDB_ENDPOINT / YDB_CONNECTION_STRING
- *     (требуется ydb-orm.config.ts для задания auth).
+ *     (требуется yorm.config.ts для задания auth).
  */
 export async function loadCliConfig(
   configPath?: string,
@@ -156,12 +163,12 @@ export async function loadCliConfig(
     process.env.YDB_ENDPOINT ?? process.env.YDB_CONNECTION_STRING;
   if (!endpoint) {
     throw new Error(
-      'No CLI config found. Create ydb-orm.config.ts or set YDB_ENDPOINT.',
+      'No CLI config found. Create yorm.config.ts (or legacy ydb-orm.config.ts) or set YDB_ENDPOINT.',
     );
   }
 
   throw new Error(
-    'YDB auth is required: create ydb-orm.config.ts with "auth" (AuthManager) ' +
+    'YDB auth is required: create yorm.config.ts with "auth" (AuthManager) ' +
       'or a CredentialsProvider.',
   );
 }

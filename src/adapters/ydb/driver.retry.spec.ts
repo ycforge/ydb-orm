@@ -3,7 +3,7 @@ import { beforeAll, describe, expect, it, jest } from '@jest/globals';
 import { createAuth } from '@ycforge/auth';
 import { YDBError } from '@ydbjs/error';
 import { StatusIds_StatusCode as Code } from '@ydbjs/api/operation';
-import type { YdbModuleOptions } from './interfaces.js';
+import type { YdbModuleOptions } from '../../core/interfaces.js';
 
 /**
  * Проводка retry-политики (#27) в createExecutor(): опция retry из

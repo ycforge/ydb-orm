@@ -21,7 +21,7 @@ import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
  *
  * @example
  * ```ts
- * import { configureEntities, createDriver, createExecutor } from '@ycforge/ydb-orm';
+ * import { configureEntities, createDriver, createExecutor } from '@ycforge/yorm';
  *
  * const driver = await createDriver({ endpoint: '...', auth: createAuth({ type: 'metadata' }) });
  * const executor = createExecutor(driver, { endpoint: '...', auth: createAuth({ type: 'metadata' }) });

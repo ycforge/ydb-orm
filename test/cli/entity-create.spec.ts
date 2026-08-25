@@ -126,7 +126,7 @@ const VARIANTS: Record<string, YdbEntitySpec> = {
 
 // ---------------------------------------------------------------------------
 // Часть 1: сгенерированный код проходит type-check против РЕАЛЬНОГО
-// публичного API (src/index.ts через маппинг '@ycforge/ydb-orm').
+// публичного API (src/index.ts через маппинг '@ycforge/yorm').
 // ---------------------------------------------------------------------------
 
 function typeCheckGenerated(
@@ -166,7 +166,7 @@ function typeCheckGenerated(
     containingFile: string,
   ): (ts.ResolvedModule | undefined)[] => {
     return moduleNames.map((moduleName) => {
-      if (moduleName === '@ycforge/ydb-orm') {
+      if (moduleName === '@ycforge/yorm') {
         return { resolvedFileName: indexTs };
       }
       // NodeNext-резолв корректно маппит './x.js' → './x.ts' внутри src/.
@@ -221,7 +221,7 @@ async function loadGeneratedModule(
 ): Promise<Record<string, any>> {
   const spec = VARIANTS[variant];
   const rendered = renderEntityFile(spec).replace(
-    "'@ycforge/ydb-orm'",
+    "'@ycforge/yorm'",
     `'../src/index.js'`,
   );
   if (!runtimeDirCreated) {

@@ -66,7 +66,7 @@ describe('createEntityFile', () => {
     expect(content).toContain(`@YdbEntity('user_profile')`);
     expect(content).toContain('export class UserProfile extends YdbBaseEntity');
     expect(content).toContain(`@YdbPrimaryColumn('Uuid')`);
-    expect(content).toContain(`from '@ycforge/ydb-orm'`);
+    expect(content).toContain(`from '@ycforge/yorm'`);
   });
 
   it('refuses to overwrite an existing file', () => {

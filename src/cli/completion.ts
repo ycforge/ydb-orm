@@ -1,5 +1,5 @@
 /**
- * Генерация shell-автодополнения для бинаря `ydb-orm`.
+ * Генерация shell-автодополнения для бинаря `yorm`.
  * Скрипты собираются строками, без внешних зависимостей.
  */
 
@@ -68,8 +68,8 @@ function commandNames(): string {
 
 /** Bash completion-скрипт. */
 function renderBash(): string {
-  return `# bash completion for ydb-orm
-_ydb_orm() {
+  return `# bash completion for yorm
+_yorm() {
   local cur prev
   COMPREPLY=()
   cur="\${COMP_WORDS[COMP_CWORD]}"
@@ -96,7 +96,7 @@ _ydb_orm() {
   fi
   return 0
 }
-complete -F _ydb_orm ydb-orm
+complete -F _yorm yorm
 `;
 }
 
@@ -105,10 +105,10 @@ function renderZsh(): string {
   const commands = CLI_COMMANDS.map(
     (c) => `    '${c.name}:${c.description}'`,
   ).join('\n');
-  return `#compdef ydb-orm
-# zsh completion for ydb-orm
+  return `#compdef yorm
+# zsh completion for yorm
 
-_ydb_orm() {
+_yorm() {
   local -a commands
   commands=(
 ${commands}
@@ -120,7 +120,7 @@ ${commands}
 
   case $state in
     command)
-      _describe 'ydb-orm command' commands
+      _describe 'yorm command' commands
       ;;
     args)
       case $line[1] in
@@ -142,15 +142,15 @@ ${commands}
   esac
 }
 
-_ydb_orm "$@"
+_yorm "$@"
 `;
 }
 
 /** Fish completion-скрипт. */
 function renderFish(): string {
-  const lines: string[] = ['# fish completion for ydb-orm', ''];
+  const lines: string[] = ['# fish completion for yorm', ''];
   lines.push(
-    'function __fish_ydb_orm_needs_command',
+    'function __fish_yorm_needs_command',
     '  set -l cmd (commandline -opc)',
     '  if test (count $cmd) -eq 1',
     '    return 0',
@@ -161,22 +161,22 @@ function renderFish(): string {
   );
   for (const c of CLI_COMMANDS) {
     lines.push(
-      `complete -c ydb-orm -n '__fish_ydb_orm_needs_command' -a '${c.name}' -d '${c.description}'`,
+      `complete -c yorm -n '__fish_yorm_needs_command' -a '${c.name}' -d '${c.description}'`,
     );
   }
   lines.push('');
   lines.push(
-    `complete -c ydb-orm -n '__fish_seen_subcommand_from completion' -a '${COMPLETION_SHELLS.join(' ')}'`,
+    `complete -c yorm -n '__fish_seen_subcommand_from completion' -a '${COMPLETION_SHELLS.join(' ')}'`,
   );
   lines.push('');
   lines.push(
-    "complete -c ydb-orm -l config -r -F -d 'Path to CLI config'",
-    "complete -c ydb-orm -l dir -r -F -d 'Migrations/entities directory'",
-    "complete -c ydb-orm -l output -r -F -d 'Output file for entity:diagram'",
-    "complete -c ydb-orm -l json -d 'JSON output'",
-    "complete -c ydb-orm -l as-applied -d 'Repair: mark migration as applied'",
-    "complete -c ydb-orm -l as-reverted -d 'Repair: remove bookkeeping record'",
-    "complete -c ydb-orm -l verbose -d 'Full error stack and cause chain'",
+    "complete -c yorm -l config -r -F -d 'Path to CLI config'",
+    "complete -c yorm -l dir -r -F -d 'Migrations/entities directory'",
+    "complete -c yorm -l output -r -F -d 'Output file for entity:diagram'",
+    "complete -c yorm -l json -d 'JSON output'",
+    "complete -c yorm -l as-applied -d 'Repair: mark migration as applied'",
+    "complete -c yorm -l as-reverted -d 'Repair: remove bookkeeping record'",
+    "complete -c yorm -l verbose -d 'Full error stack and cause chain'",
   );
   return lines.join('\n') + '\n';
 }

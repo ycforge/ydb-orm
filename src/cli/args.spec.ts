@@ -151,7 +151,7 @@ describe('formatError (#103)', () => {
       context: ['cwd: /tmp'],
     });
 
-    expect(out).toMatch(/^\[ydb-orm\] cwd: \/tmp\n/);
+    expect(out).toMatch(/^\[yorm\] cwd: \/tmp\n/);
   });
 
   it('formats non-error throwables', () => {

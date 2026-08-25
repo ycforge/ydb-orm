@@ -49,7 +49,7 @@ function requireValue(flag: string, value?: string): string {
   if (value === undefined || value.trim() === '') {
     throw new CliArgsError(
       `Option ${flag} requires a non-empty value ` +
-        `(example: ydb-orm migration:run ${flag} ./migrations).`,
+        `(example: yorm migration:run ${flag} ./migrations).`,
     );
   }
   return value;
@@ -104,7 +104,7 @@ export function parseArgs(argv: string[]): CliArgs {
         if (next === undefined || isFlagLike(next)) {
           throw new CliArgsError(
             `Option ${flag} requires a non-empty value ` +
-              `(example: ydb-orm migration:run ${flag} ./migrations).`,
+              `(example: yorm migration:run ${flag} ./migrations).`,
           );
         }
         result[key] = requireValue(flag, next);
@@ -139,7 +139,7 @@ export function parseArgs(argv: string[]): CliArgs {
 
     throw new CliArgsError(
       `Unknown option: ${flag}. ` +
-        "Run 'ydb-orm --help' to list available options.",
+        "Run 'yorm --help' to list available options.",
     );
   }
 
@@ -181,7 +181,7 @@ export function formatError(
   const lines: string[] = [];
 
   if (options?.verbose && options.context?.length) {
-    lines.push(...options.context.map((line) => `[ydb-orm] ${line}`), '');
+    lines.push(...options.context.map((line) => `[yorm] ${line}`), '');
   }
 
   if (!(error instanceof Error)) {

@@ -97,7 +97,7 @@ export async function loadMigrationsFromDir(
     throw new Error(
       `Migration directory does not exist: ${path.resolve(dir)} ` +
         `(resolved from "${dir}"). Create it with ` +
-        `"ydb-orm migration:create <name>" or pass a correct --dir.`,
+        `"yorm migration:create <name>" or pass a correct --dir.`,
     );
   }
   if (!fs.statSync(dir).isDirectory()) {

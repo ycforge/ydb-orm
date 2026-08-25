@@ -108,7 +108,7 @@ export function resolveOperationExecutor(
 
   if (settings.warnOutsideTransaction && !active) {
     console.warn(
-      `[ydb-orm] ${entityName}: query executed outside any transaction ` +
+      `[yorm] ${entityName}: query executed outside any transaction ` +
         '(warnOutsideTransaction is enabled).',
     );
   }

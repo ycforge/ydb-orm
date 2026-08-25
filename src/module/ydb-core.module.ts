@@ -8,12 +8,8 @@ import {
   Type,
 } from '@nestjs/common';
 import { Driver } from '@ydbjs/core';
-import {
-  createDriver,
-  createExecutor,
-  resolveCredentialsProvider,
-  validateYdbModuleOptions,
-} from '../core/driver.js';
+import { ydbAdapter } from '../adapters/ydb/index.js';
+import type { OrmAdapter } from '../adapters/adapter.js';
 import {
   YDB_DRIVER,
   YDB_QUERY,
@@ -128,6 +124,14 @@ class YdbCoreModuleLifecycle
   }
 }
 
+/**
+ * Разрешает адаптер СУБД из опций модуля; по умолчанию — встроенный
+ * ydbAdapter (поведение не меняется).
+ */
+function ormAdapterOf(opts: YdbModuleOptions): OrmAdapter {
+  return opts.adapter ?? ydbAdapter;
+}
+
 @Global()
 @Module({})
 export class YdbCoreModule {
@@ -158,7 +162,7 @@ export class YdbCoreModule {
           provide: YDB_CREDENTIALS_PROVIDER,
           useFactory: (opts: YdbModuleOptions) => {
             try {
-              return resolveCredentialsProvider(opts);
+              return ormAdapterOf(opts).resolveCredentialsProvider(opts);
             } catch (error) {
               // Компиляция упала после claim — освобождаем слот,
               // чтобы следующий бутстрап в этом процессе был возможен.
@@ -182,7 +186,10 @@ export class YdbCoreModule {
               const driver =
                 opts.driverFactory !== undefined
                   ? await opts.driverFactory()
-                  : await createDriver(opts, credentialsProvider);
+                  : await ormAdapterOf(opts).createDriver(
+                      opts,
+                      credentialsProvider,
+                    );
               state.ownedDriver = driver;
               return driver;
             } catch (error) {
@@ -196,7 +203,7 @@ export class YdbCoreModule {
         {
           provide: YDB_QUERY,
           useFactory: (driver: Driver, opts: YdbModuleOptions): YdbExecutor =>
-            createExecutor(driver, opts),
+            ormAdapterOf(opts).createExecutor(driver, opts),
           inject: [YDB_DRIVER, YDB_OPTIONS],
         },
 
@@ -235,8 +242,10 @@ export class YdbCoreModule {
           useFactory: (
             driver: Driver,
             executor: YdbExecutor,
-          ): YdbSchemaSyncer => new YdbSchemaSyncer(driver, executor),
-          inject: [YDB_DRIVER, YDB_QUERY],
+            opts: YdbModuleOptions,
+          ): YdbSchemaSyncer =>
+            ormAdapterOf(opts).createSchemaSyncer(driver, executor),
+          inject: [YDB_DRIVER, YDB_QUERY, YDB_OPTIONS],
         },
 
         {
@@ -273,7 +282,7 @@ export class YdbCoreModule {
           provide: YDB_OPTIONS,
           useFactory: async (...args: any[]) => {
             const opts = await options.useFactory!(...args);
-            validateYdbModuleOptions(opts);
+            ormAdapterOf(opts).validateModuleOptions(opts);
             claimCoreModuleInit(state);
             state.options = opts;
             // Настройки транзакций (#98): глобальные для процесса, применяются
@@ -302,7 +311,7 @@ export class YdbCoreModule {
         provide: YDB_OPTIONS,
         useFactory: async (optionsFactory: YdbOptionsFactory) => {
           const opts = await optionsFactory.createYdbOptions();
-          validateYdbModuleOptions(opts);
+          ormAdapterOf(opts).validateModuleOptions(opts);
           claimCoreModuleInit(state);
           state.options = opts;
           // См. комментарий выше (#98).

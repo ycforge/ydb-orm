@@ -1,8 +1,8 @@
-# @ycforge/ydb-orm
+# @ycforge/yorm
 
-[![npm (scoped)](https://img.shields.io/npm/v/@ycforge/ydb-orm)](https://www.npmjs.com/package/@ycforge/ydb-orm)
-[![NPM](https://img.shields.io/npm/l/@ycforge/ydb-orm)](./LICENSE)
-[![GitHub issues](https://img.shields.io/github/issues/ycforge/ydb-orm)](https://github.com/ycforge/ydb-orm/issues)
+[![npm (scoped)](https://img.shields.io/npm/v/@ycforge/yorm)](https://www.npmjs.com/package/@ycforge/yorm)
+[![NPM](https://img.shields.io/npm/l/@ycforge/yorm)](./LICENSE)
+[![GitHub issues](https://img.shields.io/github/issues/ycforge/yorm)](https://github.com/ycforge/yorm/issues)
 
 TypeORM-like ORM для [YDB (Yandex Database)](https://ydb.tech/) на TypeScript: Active Record, relations, шифрование полей с blind index, schema sync, транзакции и интеграция с NestJS.
 
@@ -13,7 +13,7 @@ Runtime — Node.js ≥ 22.18 (нативный импорт `.ts` через ty
 ## Установка
 
 ```bash
-yarn add @ycforge/ydb-orm
+yarn add @ycforge/yorm
 # peer-зависимости, если используете NestJS-интеграцию:
 yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
 ```
@@ -23,7 +23,7 @@ yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
 ```ts
 import { Module } from '@nestjs/common';
 import { createAuth, authKeyFromFile } from '@ycforge/auth';
-import { YdbCoreModule, YdbModule, YdbBaseEntity, YdbEntity, YdbPrimaryColumn, YdbColumn } from '@ycforge/ydb-orm';
+import { YdbCoreModule, YdbModule, YdbBaseEntity, YdbEntity, YdbPrimaryColumn, YdbColumn } from '@ycforge/yorm';
 
 @YdbEntity('users')
 export class UserEntity extends YdbBaseEntity {
@@ -57,7 +57,7 @@ export class AppModule {}
 
 ```ts
 import { Injectable } from '@nestjs/common';
-import { InjectRepository, YdbRepository } from '@ycforge/ydb-orm';
+import { InjectRepository, YdbRepository } from '@ycforge/yorm';
 import { UserEntity } from './user.entity.js';
 
 @Injectable()
@@ -371,13 +371,13 @@ await EventEntity.query()
 Надёжность выполнения (#101):
 
 - **Стабильная идентичность**: каждая миграция получает SHA-256 содержимого файла (`migration.hash`). Сопоставление с `ydb_migrations` идёт по хешу, поэтому переименование файла не приводит к повторному применению; изменение содержимого уже применённой миграции — ошибка (нужен явный reconcile). Дубликаты имён/содержимого во входном списке завершаются понятной ошибкой.
-- **Частичное применение**: DDL в YDB не транзакционен, поэтому перед `up()`/`down()` пишется маркер `state='started'`, который заменяется на `'applied'` только после успеха. Падение посреди миграции оставляет маркер: повторный `run()` не начнёт её заново вслепую, а `revert()` откажется откатывать такую запись, пока её состояние не разрешат явно — `runner.markMigrationApplied(name)` (изменения дозаведены вручную) или `runner.removeMigrationRecord(name)` (изменения откачены вручную). В CLI то же самое: `ydb-orm migration:repair <name> --as-applied|--as-reverted`.
+- **Частичное применение**: DDL в YDB не транзакционен, поэтому перед `up()`/`down()` пишется маркер `state='started'`, который заменяется на `'applied'` только после успеха. Падение посреди миграции оставляет маркер: повторный `run()` не начнёт её заново вслепую, а `revert()` откажется откатывать такую запись, пока её состояние не разрешат явно — `runner.markMigrationApplied(name)` (изменения дозаведены вручную) или `runner.removeMigrationRecord(name)` (изменения откачены вручную). В CLI то же самое: `yorm migration:repair <name> --as-applied|--as-reverted`.
 - **Параллельные запуски**: claim на применение — INSERT строки с id, детерминированным из хеша миграции. Два процесса, стартовавшие одну миграцию, сталкиваются на PRIMARY KEY: второй падает с понятной ошибкой до выполнения `up()` — двойное применение невозможно без внутрипроцессных локов.
 - **`migration:show`** показывает orphan-записи (`[!]` — применена, но файла миграции больше нет), прерванные (`[~]`) и изменённые после применения (`[#]`).
 
 ```ts
-import type { YdbMigration, YdbExecutor } from '@ycforge/ydb-orm';
-import { executeSql } from '@ycforge/ydb-orm';
+import type { YdbMigration, YdbExecutor } from '@ycforge/yorm';
+import { executeSql } from '@ycforge/yorm';
 
 export class CreateUsers1755000000000 implements YdbMigration {
   readonly name = '1755000000000-CreateUsers';
@@ -394,20 +394,20 @@ export class CreateUsers1755000000000 implements YdbMigration {
 
 ### CLI
 
-Пакет ставит бинарь `ydb-orm`:
+Пакет ставит бинарь `yorm`:
 
 ```bash
-ydb-orm migration:create CreateUsers      # пустая миграция ./migrations/<ts>-CreateUsers.ts
-ydb-orm migration:generate AddPhotos      # миграция по diff сущностей и БД
-ydb-orm migration:run                     # применить все новые миграции
-ydb-orm migration:revert                  # откатить последнюю
-ydb-orm migration:show                    # статус миграций (алиас — migration:status)
-ydb-orm migration:check                   # проверка готовности для CI (exit != 0, если не готово)
-ydb-orm migration:repair 1755000000000-CreateUsers --as-applied   # прерванная миграция дозаведена вручную
-ydb-orm entity:create UserProfile         # сущность ./src/user-profile.entity.ts
-ydb-orm metadata:dump                     # метаданные сущностей в JSON (stdout, без БД)
-ydb-orm entity:diagram                    # Mermaid ER-диаграмма по метаданным (stdout/--output, без БД)
-ydb-orm completion bash                   # скрипт shell-автодополнения (bash|zsh|fish)
+yorm migration:create CreateUsers      # пустая миграция ./migrations/<ts>-CreateUsers.ts
+yorm migration:generate AddPhotos      # миграция по diff сущностей и БД
+yorm migration:run                     # применить все новые миграции
+yorm migration:revert                  # откатить последнюю
+yorm migration:show                    # статус миграций (алиас — migration:status)
+yorm migration:check                   # проверка готовности для CI (exit != 0, если не готово)
+yorm migration:repair 1755000000000-CreateUsers --as-applied   # прерванная миграция дозаведена вручную
+yorm entity:create UserProfile         # сущность ./src/user-profile.entity.ts
+yorm metadata:dump                     # метаданные сущностей в JSON (stdout, без БД)
+yorm entity:diagram                    # Mermaid ER-диаграмма по метаданным (stdout/--output, без БД)
+yorm completion bash                   # скрипт shell-автодополнения (bash|zsh|fish)
 ```
 
 Опции: `--dir <path>` (директория миграций, по умолчанию `./migrations`; для `entity:create` — `./src`), `--config <path>`, `--output <file>` (для `entity:diagram`; существующий файл не перезаписывается), `--json` (для `migration:show`/`migration:status`/`migration:check`), `--verbose` (полный стек ошибки и цепочка cause при сбое). Неизвестные флаги и пустые значения опций считаются ошибкой.
@@ -451,7 +451,7 @@ ydb-orm completion bash                   # скрипт shell-автодопо�
 Программная генерация (для скриптов и инструментов) — через публичный API:
 
 ```ts
-import { createEntityFileFromSpec } from '@ycforge/ydb-orm';
+import { createEntityFileFromSpec } from '@ycforge/yorm';
 
 const created = createEntityFileFromSpec('./src', {
   className: 'OrderEntity',
@@ -475,7 +475,7 @@ const created = createEntityFileFromSpec('./src', {
 Read-only команда выгружает метаданные сущностей из конфига (`entities`, как у `migration:generate`) в детерминированный JSON — **без подключения к БД**: ни драйвер, ни executor, ни DDL не задействуются. Команда по природе JSON-only (весь дамп — в stdout), отдельного текстового режима нет.
 
 ```bash
-ydb-orm metadata:dump
+yorm metadata:dump
 ```
 
 Формат версионируется (`format`/`version`); для каждой сущности выгружаются:
@@ -495,8 +495,8 @@ ydb-orm metadata:dump
 Read-only команда рендерит те же канонические метаданные (тот же источник, что у `metadata:dump`, — `buildMetadataDump`) в Mermaid ER-диаграмму — **без подключения к БД**. Валидные метаданные обязательны: любая ошибка конфигурации роняет команду до первого байта вывода.
 
 ```bash
-ydb-orm entity:diagram                    # Mermaid-текст в stdout
-ydb-orm entity:diagram --output docs/schema.mmd   # в файл (перезапись запрещена)
+yorm entity:diagram                    # Mermaid-текст в stdout
+yorm entity:diagram --output docs/schema.mmd   # в файл (перезапись запрещена)
 ```
 
 Что на диаграмме:
@@ -513,14 +513,14 @@ ydb-orm entity:diagram --output docs/schema.mmd   # в файл (перезап�
 
 ```bash
 # bash
-ydb-orm completion bash | sudo tee /etc/bash_completion.d/ydb-orm
+yorm completion bash | sudo tee /etc/bash_completion.d/yorm
 # zsh (путь из $fpath)
-ydb-orm completion zsh > ~/.zsh/completions/_ydb-orm
+yorm completion zsh > ~/.zsh/completions/_yorm
 # fish
-ydb-orm completion fish > ~/.config/fish/completions/ydb-orm.fish
+yorm completion fish > ~/.config/fish/completions/yorm.fish
 ```
 
-Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; ищется в текущей директории и выше, до корня ФС; поддерживается как default, так и именованный экспорт):
+Конфиг подключения — `./yorm.config.ts` (или `.mts`/`.mjs`/`.js`; также поддерживается legacy `./ydb-orm.config.ts`, приоритет у `yorm.config.*`; ищется в текущей директории и выше, до корня ФС; поддерживается как default, так и именованный экспорт):
 
 ```ts
 import { createAuth, authKeyFromFile } from '@ycforge/auth';
@@ -534,7 +534,7 @@ export default {
 };
 ```
 
-Без конфига CLI читает `YDB_ENDPOINT` (или `YDB_CONNECTION_STRING`), но для задания `auth` всё равно потребуется `ydb-orm.config.ts`.
+Без конфига CLI читает `YDB_ENDPOINT` (или `YDB_CONNECTION_STRING`), но для задания `auth` всё равно потребуется `yorm.config.ts`.
 
 `migration:generate` строит diff по всем `entities` из конфига: нет таблицы → `CREATE TABLE` (+ `DROP TABLE` в `down`), нет колонок → `ADD COLUMN` (+ `DROP COLUMN` в `down`). Расхождения типа/PK и лишние колонки не меняются автоматически — попадают в миграцию как `WARNING`-комментарии.
 
@@ -741,7 +741,7 @@ await this.txManager.runInTransaction(
 Для составных потоков вне транзакции доступна и явная обёртка:
 
 ```ts
-import { runWithRetry } from '@ycforge/ydb-orm';
+import { runWithRetry } from '@ycforge/yorm';
 
 const result = await runWithRetry(async () => {
   const user = await UserEntity.find({ uuid }, {});
@@ -778,7 +778,7 @@ YdbCoreModule.forRootAsync({
 ## Аутентификация
 
 Аутентификация делегируется пакету [`@ycforge/auth`](https://github.com/ycforge/auth):
-`ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
+`@ycforge/yorm` больше не реализует собственные стратегии и не парсит env-переменные
 типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
 передаётся в опции `auth`:
 
@@ -816,7 +816,7 @@ YdbCoreModule.forRootAsync({
 ```ts
 import { Module } from '@nestjs/common';
 import { YcAuthModule, InjectAuth } from '@ycforge/auth/nestjs';
-import { YdbCoreModule } from '@ycforge/ydb-orm';
+import { YdbCoreModule } from '@ycforge/yorm';
 
 @Module({
   imports: [
@@ -842,7 +842,7 @@ export class AppModule {}
 (тип `CredentialsProvider` из `@ydbjs/auth`, реэкспортирован из пакета):
 
 ```ts
-import { CredentialsProvider } from '@ycforge/ydb-orm';
+import { CredentialsProvider } from '@ycforge/yorm';
 
 class OAuthTokenProvider extends CredentialsProvider {
   getToken(): Promise<string> {
@@ -870,7 +870,7 @@ YdbCoreModule.forRootAsync({
 источника (`credentialsProvider` или `auth`) — ошибка конфигурации
 (`Conflicting YDB credentials configuration`): молчаливый выбор одного из них
 не выполняется. Если ни `auth`, ни `credentialsProvider`, ни инжектированный
-провайдер не заданы — `ydb-orm` бросает `YDB auth is required: pass "auth"
+провайдер не заданы — `yorm` бросает `YDB auth is required: pass "auth"
 (AuthManager) or a CredentialsProvider`.
 
 ## Разработка

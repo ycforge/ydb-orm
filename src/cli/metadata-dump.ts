@@ -51,7 +51,7 @@ import { requireEntityMeta } from './migration-verify.js';
 import { compareStrings } from './sort.js';
 
 /** Идентификатор формата дампа (верхнеуровневое поле format). */
-export const METADATA_DUMP_FORMAT = 'ydb-orm/metadata-dump';
+export const METADATA_DUMP_FORMAT = 'yorm/metadata-dump';
 
 /** Версия формата дампа: несовместимые изменения схемы JSON увеличивают её. */
 export const METADATA_DUMP_VERSION = 1;
@@ -176,7 +176,7 @@ type EntityCtor = new (...args: any[]) => any;
 /**
  * Строит дамп метаданных для переданного списка сущностей.
  *
- * Список задаёт состав дампа (обычно config.entities из ydb-orm.config.ts);
+ * Список задаёт состав дампа (обычно config.entities из yorm.config.ts);
  * порядок вывода от него не зависит — сущности сортируются по имени таблицы.
  * Чистая синхронная функция: БД не трогает, ошибок конфигурации не глотает.
  */

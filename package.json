@@ -1,12 +1,15 @@
 {
-  "name": "@ycforge/ydb-orm",
+  "name": "@ycforge/yorm",
   "version": "0.2.0-beta.0",
-  "description": "TypeORM-like ORM для YDB (Yandex Database): Active Record, relations, шифрование полей, schema sync, транзакции и интеграция с NestJS",
+  "description": "TypeORM-like ORM с адаптерным слоем СУБД (по умолчанию — YDB / Yandex Database): Active Record, relations, шифрование полей, schema sync, транзакции и интеграция с NestJS",
   "keywords": [
+    "yorm",
+    "orm",
     "ydb",
     "yandex-database",
     "yandex-cloud",
-    "orm",
+    "database",
+    "adapter",
     "typeorm",
     "nestjs",
     "typescript"
@@ -21,25 +24,29 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./ydb": {
+      "types": "./dist/adapters/ydb/index.d.ts",
+      "default": "./dist/adapters/ydb/index.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "bin": {
-    "ydb-orm": "./dist/cli/cli.js"
+    "yorm": "./dist/cli/cli.js"
   },
   "publishConfig": {
     "access": "public"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ycforge/ydb-orm.git"
+    "url": "git+https://github.com/ycforge/yorm.git"
   },
   "bugs": {
-    "url": "https://github.com/ycforge/ydb-orm/issues"
+    "url": "https://github.com/ycforge/yorm/issues"
   },
-  "homepage": "https://github.com/ycforge/ydb-orm#readme",
+  "homepage": "https://github.com/ycforge/yorm#readme",
   "engines": {
     "node": ">=22.18.0"
   },

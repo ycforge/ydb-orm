@@ -1,5 +1,6 @@
 /**
- * ydb-orm — TypeORM-like ORM для YDB (Yandex Database).
+ * @ycforge/yorm — TypeORM-like ORM с адаптерным слоем СУБД
+ * (по умолчанию — YDB / Yandex Database).
  * Публичный API библиотеки.
  */
 
@@ -333,3 +334,8 @@ export { buildEntityDiagram, writeDiagramFile } from './cli/entity-diagram.js';
 // чтобы пользователи могли типизировать свои реализации без прямой
 // зависимости от @ydbjs/auth.
 export type { CredentialsProvider } from '@ydbjs/auth';
+
+// Адаптерный слой СУБД: ядро ORM опирается на интерфейс OrmAdapter,
+// реализация YDB — ydbAdapter (по умолчанию в YdbModuleOptions.adapter).
+export type { OrmAdapter } from './adapters/adapter.js';
+export { ydbAdapter } from './adapters/ydb/index.js';

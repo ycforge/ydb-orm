@@ -1,5 +1,5 @@
 /**
- * Реальный криптопровайдер для ydb-orm: AES-256-GCM (шифрование полей) +
+ * Реальный криптопровайдер для @ycforge/yorm: AES-256-GCM (шифрование полей) +
  * HMAC-SHA256 (blind index). Реализует интерфейсы YdbEncryptionProvider
  * и YdbBlindIndexProvider. Подключается через опции модуля:
  *

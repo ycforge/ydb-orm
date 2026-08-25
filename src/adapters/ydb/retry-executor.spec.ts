@@ -7,7 +7,7 @@ import type {
   YdbQuery,
   YdbTransactionOptions,
   YdbTransactionHandle,
-} from './interfaces.js';
+} from '../../core/interfaces.js';
 import type { YdbRetrySleepFn } from './retry.js';
 
 /**

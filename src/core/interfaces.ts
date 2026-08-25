@@ -9,6 +9,7 @@ import {
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { QueryLogger } from './query-logger.js';
 import type { YdbRetryPolicyInput } from './retry.js';
+import type { OrmAdapter } from '../adapters/adapter.js';
 
 export type { QueryOptions } from './query-options.js';
 export type { QueryLogger, QueryLogEntry } from './query-logger.js';
@@ -112,6 +113,14 @@ export interface YdbModuleOptions {
    * только ABORTED/UNAVAILABLE/OVERLOADED. См. README «Retry-политика».
    */
   retry?: YdbRetryPolicyInput;
+  /**
+   * Адаптер СУБД (см. OrmAdapter в adapters/adapter.ts): реализация
+   * подключения, маппинга значений, retry-политики и schema sync.
+   * По умолчанию — встроенный ydbAdapter. Переопределяйте только для
+   * нестандартных транспортов/тестовых стендов; публичные имена API
+   * (YdbEntity, YdbRepository, mapToYdb и т.д.) от адаптера не зависят.
+   */
+  adapter?: OrmAdapter;
 }
 
 export interface YdbTransactionsSettings {

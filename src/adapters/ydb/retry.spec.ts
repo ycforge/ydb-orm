@@ -11,7 +11,7 @@ import {
   TRANSIENT_YDB_STATUSES,
 } from './retry.js';
 import type { YdbRetrySleepFn } from './retry.js';
-import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbExecutor } from '../../core/interfaces.js';
 
 /**
  * Юнит-тесты retry-политики по типу ошибки (#27): классификация строго по
@@ -494,7 +494,7 @@ describe('интеграция с транзакциями: без умноже�
   }
 
   async function makeManager(dbExecutor: YdbExecutor) {
-    const mod = await import('../transaction/transaction.manager.js');
+    const mod = await import('../../transaction/transaction.manager.js');
     return new mod.YdbTransactionManager(dbExecutor);
   }
 

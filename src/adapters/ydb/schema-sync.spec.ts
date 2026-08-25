@@ -9,15 +9,18 @@ import {
   ValueSinceUnixEpochModeSettings_Unit,
 } from '@ydbjs/api/table';
 import { IssueMessageSchema, StatusIds_StatusCode } from '@ydbjs/api/operation';
-import { YdbEntity } from '../decorators/entity.decorator.js';
-import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
-import { YdbEncrypted } from '../decorators/encryption.decorator.js';
-import { YdbJson } from '../decorators/json.decorator.js';
-import { YdbBaseEntity } from '../entity/base-entity.js';
-import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
-import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
-import { YdbExecutor } from '../core/interfaces.js';
-import { YdbPrimitive } from '../core/types.js';
+import { YdbEntity } from '../../decorators/entity.decorator.js';
+import {
+  YdbColumn,
+  YdbPrimaryColumn,
+} from '../../decorators/column.decorator.js';
+import { YdbEncrypted } from '../../decorators/encryption.decorator.js';
+import { YdbJson } from '../../decorators/json.decorator.js';
+import { YdbBaseEntity } from '../../entity/base-entity.js';
+import { getYdbEntityMetadata } from '../../metadata/entity-metadata.js';
+import { getRegisteredYdbEntities } from '../../metadata/entity-registry.js';
+import { YdbExecutor } from '../../core/interfaces.js';
+import { YdbPrimitive } from '../../core/types.js';
 import {
   buildExpectedTableSchema,
   buildExpectedJoinTableSchema,
@@ -39,10 +42,10 @@ import {
   joinTableDefinitionsEquivalent,
   ManyToMany,
   JoinTable,
-} from '../decorators/relation.decorators.js';
-import { EagerLoad } from '../decorators/eager.decorator.js';
-import { YdbIndex } from '../decorators/index.decorator.js';
-import { YdbTtl } from '../decorators/ttl.decorator.js';
+} from '../../decorators/relation.decorators.js';
+import { EagerLoad } from '../../decorators/eager.decorator.js';
+import { YdbIndex } from '../../decorators/index.decorator.js';
+import { YdbTtl } from '../../decorators/ttl.decorator.js';
 
 @YdbEntity('test_users')
 @YdbIndex({ columns: ['secret_bi'] })

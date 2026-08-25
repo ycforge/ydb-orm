@@ -286,8 +286,8 @@ export function renderMigrationFile(
     return parts.join('\n');
   };
 
-  return `import type { YdbMigration, YdbExecutor } from '@ycforge/ydb-orm';
-import { executeSql } from '@ycforge/ydb-orm';
+  return `import type { YdbMigration, YdbExecutor } from '@ycforge/yorm';
+import { executeSql } from '@ycforge/yorm';
 
 /**
  * Migration: ${migrationName}

@@ -28,31 +28,32 @@ import { buildMetadataDump } from './metadata-dump.js';
 import { buildEntityDiagram, writeDiagramFile } from './entity-diagram.js';
 import { CliArgsError, formatError, parseArgs, CliArgs } from './args.js';
 
-const HELP = `ydb-orm — CLI для миграций и генерации кода
+const HELP = `yorm — CLI для миграций и генерации кода
 
 Использование:
-  ydb-orm migration:create <name>     Создать пустую миграцию
-  ydb-orm migration:generate <name>   Сгенерировать миграцию по diff сущностей и БД
-  ydb-orm migration:run               Применить все новые миграции
-  ydb-orm migration:revert            Откатить последнюю миграцию
-  ydb-orm migration:show              Показать статус миграций (алиас migration:status)
-  ydb-orm migration:status            То же, что migration:show (#152)
-  ydb-orm migration:check             Проверка готовности схемы для CI (exit != 0, если не готово)
-  ydb-orm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
-  ydb-orm schema:verify               Проверить схему БД против метаданных сущностей
-  ydb-orm metadata:dump               Экспортировать метаданные сущностей в JSON (stdout;
+  yorm migration:create <name>     Создать пустую миграцию
+  yorm migration:generate <name>   Сгенерировать миграцию по diff сущностей и БД
+  yorm migration:run               Применить все новые миграции
+  yorm migration:revert            Откатить последнюю миграцию
+  yorm migration:show              Показать статус миграций (алиас migration:status)
+  yorm migration:status            То же, что migration:show (#152)
+  yorm migration:check             Проверка готовности схемы для CI (exit != 0, если не готово)
+  yorm migration:repair <name>     Разрешить прерванную миграцию вручную (--as-applied | --as-reverted)
+  yorm schema:verify               Проверить схему БД против метаданных сущностей
+  yorm metadata:dump               Экспортировать метаданные сущностей в JSON (stdout;
                                       без БД: детерминированный, версионированный формат)
-  ydb-orm entity:diagram              Mermaid ER-диаграмма по метаданным сущностей
+  yorm entity:diagram              Mermaid ER-диаграмма по метаданным сущностей
                                       (stdout или --output <file>; без БД; существующие
                                       файлы не перезаписываются)
-  ydb-orm entity:create <name>        Создать сущность (в TTY — интерактивный мастер колонок:
+  yorm entity:create <name>        Создать сущность (в TTY — интерактивный мастер колонок:
                                       имя → тип YDB → PK/encrypted/enum/date/TTL; вне TTY — шаблон
                                       по умолчанию без чтения stdin; существующие файлы не перезаписываются)
-  ydb-orm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
+  yorm completion <bash|zsh|fish>  Скрипт shell-автодополнения (в stdout)
 
 Опции:
   --config <path>   Путь к конфигу (ищется в CWD и выше:
-                    ydb-orm.config.ts|mts|mjs|js, иначе env: YDB_ENDPOINT)
+                    yorm.config.ts|mts|mjs|js (или legacy ydb-orm.config.*),
+                    иначе env: YDB_ENDPOINT)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
   --output <file>   Файл вывода для entity:diagram (существующий файл —
@@ -175,7 +176,7 @@ async function runCommand(args: CliArgs): Promise<void> {
     if (!config.entities?.length) {
       throw new Error(
         'migration:generate requires "entities" in the CLI config ' +
-          '(ydb-orm.config.ts).',
+          '(yorm.config.ts).',
       );
     }
     const { driver, executor, close } = await connectCli(config);
@@ -219,7 +220,7 @@ async function runCommand(args: CliArgs): Promise<void> {
   if (command === 'schema:verify') {
     if (!config.entities?.length) {
       throw new Error(
-        'schema:verify requires "entities" in the CLI config (ydb-orm.config.ts).',
+        'schema:verify requires "entities" in the CLI config (yorm.config.ts).',
       );
     }
     const { driver, executor, close } = await connectCli(config);
@@ -236,7 +237,7 @@ async function runCommand(args: CliArgs): Promise<void> {
       } else {
         console.error(`Found ${issues.length} schema issue(s):`);
         // Расхождения пишутся в stderr — цвет решаем по stderr, а не по
-        // stdout (#103): при `ydb-orm schema:verify 2>issues.txt` ANSI-коды
+        // stdout (#103): при `yorm schema:verify 2>issues.txt` ANSI-коды
         // не должны уезжать в перенаправленный файл, а при
         // `... | cat` — теряться, если stderr остался TTY.
         console.error(renderSchemaDiff(issues, { stream: process.stderr }));
@@ -254,7 +255,7 @@ async function runCommand(args: CliArgs): Promise<void> {
     if (!config.entities?.length) {
       throw new Error(
         'metadata:dump requires "entities" in the CLI config ' +
-          '(ydb-orm.config.ts).',
+          '(yorm.config.ts).',
       );
     }
     const dump = buildMetadataDump(config.entities);
@@ -271,7 +272,7 @@ async function runCommand(args: CliArgs): Promise<void> {
     if (!config.entities?.length) {
       throw new Error(
         'entity:diagram requires "entities" in the CLI config ' +
-          '(ydb-orm.config.ts).',
+          '(yorm.config.ts).',
       );
     }
     const diagram = buildEntityDiagram(config.entities);

@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { beforeAll, describe, expect, it, jest } from '@jest/globals';
 import { CredentialsProvider } from '@ydbjs/auth';
 import { createAuth } from '@ycforge/auth';
-import type { YdbModuleOptions } from './interfaces.js';
+import type { YdbModuleOptions } from '../../core/interfaces.js';
 
 /**
  * Спеки ядра подключения (#96): приоритет источников CredentialsProvider,
