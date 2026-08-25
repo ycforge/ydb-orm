@@ -34,7 +34,8 @@ export interface YdbModuleOptions {
    * Готовый AuthManager из пакета `@ycforge/auth` — единая точка
    * стратегий аутентификации (iam_token / metadata / auth_key /
    * access_token / anonymous / static). Адаптируется в CredentialsProvider
-   * через `createYdbCredentialsProvider` из `@ycforge/auth/ydb`.
+   * через `createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
+   * `@ycforge/auth/ydb`.
    *
    * Приоритет: сразу после явного `credentialsProvider` и перед
    * DI-провайдером `YDB_CREDENTIALS_PROVIDER` /

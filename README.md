@@ -804,8 +804,9 @@ YdbCoreModule.forRootAsync({
 ```
 
 `AuthManager` адаптируется в `CredentialsProvider` через
-`createYdbCredentialsProvider` из `@ycforge/auth/ydb` (ORM делает это
-автоматически). Для стратегии `static` адаптеру нужен `endpoint` модуля.
+`createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
+`@ycforge/auth/ydb` (ORM делает это автоматически). Для стратегии `static`
+адаптеру нужен `endpoint` модуля.
 
 ### Вместе с `@ycforge/auth/nestjs`
 

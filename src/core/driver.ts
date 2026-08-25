@@ -2,6 +2,7 @@ import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
 import { createYdbCredentialsProvider } from '@ycforge/auth/ydb';
+import { YDB_AUTH_USAGE } from '@ycforge/auth';
 import {
   YdbExecutor,
   YdbModuleOptions,
@@ -91,11 +92,15 @@ export function resolveCredentialsProvider(
   const provider =
     opts.credentialsProvider ??
     (opts.auth !== undefined
-      ? createYdbCredentialsProvider(opts.auth, {
-          endpoint: opts.endpoint,
-          // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
-          secure: !opts.endpoint.startsWith('grpc://'),
-        })
+      ? createYdbCredentialsProvider(
+          opts.auth,
+          YDB_AUTH_USAGE,
+          {
+            endpoint: opts.endpoint,
+            // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
+            secure: !opts.endpoint.startsWith('grpc://'),
+          },
+        )
       : undefined) ??
     injected ??
     opts.driverOptions?.credentialsProvider;
