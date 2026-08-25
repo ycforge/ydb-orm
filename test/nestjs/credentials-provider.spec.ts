@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
 import { CredentialsProvider } from '@ydbjs/auth';
-import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
+import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
   YDB_CREDENTIALS_PROVIDER,
@@ -41,8 +41,7 @@ class TaggedCredentialsConfig implements YdbOptionsFactory {
   createYdbOptions(): YdbModuleOptions {
     return {
       endpoint: 'grpc://localhost:2136/local',
-      auth_type: 'anonymous',
-      authOptions: {},
+      auth: createAuth({ type: 'anonymous' }),
       credentialsProvider: this.provider,
       sync: false,
     };
@@ -63,8 +62,7 @@ async function bootstrapWithOptions(
       YdbCoreModule.forRootAsync({
         useFactory: () => ({
           endpoint: 'grpc://localhost:2136/local',
-          auth_type: 'anonymous' as const,
-          authOptions: {},
+          auth: createAuth({ type: 'anonymous' }),
           sync: false as const,
           ...options,
         }),
@@ -86,10 +84,6 @@ async function bootstrapUseExisting(
   const config = new TaggedCredentialsConfig(provider);
   const moduleRef = await Test.createTestingModule({
     imports: [
-      // Класс-фабрика предоставляется своим модулем (паттерн useExisting):
-      // ядро инжектирует уже существующий экземпляр и вызывает createYdbOptions().
-      // Модуль с классом-фабрикой передаётся в imports ядра, чтобы
-      // TaggedCredentialsConfig был виден провайдерам YdbCoreModule.
       YdbCoreModule.forRootAsync({
         useExisting: TaggedCredentialsConfig,
         imports: [ConfigHolderModule],
@@ -142,16 +136,15 @@ describe('NestJS integration: кастомный CredentialsProvider (#96)', () 
     ).rejects.toThrow(/Conflicting YDB credentials configuration/);
   });
 
-  it('без кастомного провайдера поведение по умолчанию не изменилось (auth_type=anonymous)', async () => {
+  it('без кастомного провайдера используется auth (AuthManager)', async () => {
     const boot = await bootstrapWithOptions({});
     cleanup = boot.close;
 
-    expect(boot.moduleRef.get(YDB_CREDENTIALS_PROVIDER)).toBeInstanceOf(
-      AnonymousCredentialsProvider,
-    );
+    const resolved = boot.moduleRef.get(YDB_CREDENTIALS_PROVIDER);
+    expect(resolved.constructor.name).toBe('AnonymousCredentialsProvider');
   });
 
-  it('повторный бутстрап подменяет провайдер; сброс возвращает дефолт по auth_type', async () => {
+  it('повторный бутстрап подменяет провайдер; сброс возвращает провайдер по auth', async () => {
     const first = new TaggedCredentialsProvider('A');
     const firstBoot = await bootstrapWithOptions({
       credentialsProvider: first,
@@ -165,17 +158,14 @@ describe('NestJS integration: кастомный CredentialsProvider (#96)', () 
       credentialsProvider: second,
     });
     cleanup = secondBoot.close;
-    // Провайдер прошлого бутстрапа не «протекает»: токен указывает на новый.
     expect(secondBoot.moduleRef.get(YDB_CREDENTIALS_PROVIDER)).toBe(second);
     await secondBoot.close();
 
-    // Бутстрап без кастомного провайдера: свежий дефолт по auth_type,
-    // а не оставшийся экземпляр прошлой конфигурации (#108/#95).
     const defaultBoot = await bootstrapWithOptions({});
     cleanup = defaultBoot.close;
     const resolved = defaultBoot.moduleRef.get(YDB_CREDENTIALS_PROVIDER);
     expect(resolved).not.toBe(first);
     expect(resolved).not.toBe(second);
-    expect(resolved).toBeInstanceOf(AnonymousCredentialsProvider);
+    expect(resolved.constructor.name).toBe('AnonymousCredentialsProvider');
   });
 });

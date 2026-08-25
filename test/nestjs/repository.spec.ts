@@ -1,6 +1,7 @@
 import { jest } from '@jest/globals';
 import { Injectable } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { createAuth } from '@ycforge/auth';
 import { YdbModule, YdbRepository } from '../../src/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
@@ -48,7 +49,7 @@ describe('YdbRepository DI', () => {
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
-            auth_type: 'anonymous',
+            auth: createAuth({ type: 'anonymous' }),
             encryptionProvider: new TestOnlyEncryptionProvider(),
             blindIndexProvider: new TestOnlyEncryptionProvider(),
           }),

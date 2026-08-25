@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { Injectable, Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { createAuth } from '@ycforge/auth';
 import {
   YdbModule,
   YdbRepository,
@@ -60,8 +61,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
-            auth_type: 'anonymous' as const,
-            authOptions: {},
+            auth: createAuth({ type: 'anonymous' }),
             sync: false,
           }),
         }),
@@ -137,8 +137,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
-            auth_type: 'anonymous' as const,
-            authOptions: {},
+            auth: createAuth({ type: 'anonymous' }),
             sync: false,
           }),
         }),

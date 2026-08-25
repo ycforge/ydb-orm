@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { createAuth } from '@ycforge/auth';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
@@ -205,22 +206,19 @@ describe('error guards: понятные fail-fast ошибки', () => {
       );
     });
 
-    it('auth_key без authorized_key_path — понятная ошибка', () => {
+    it('отсутствие auth и CredentialsProvider — понятная ошибка', () => {
       expect(() =>
         validateYdbModuleOptions({
           endpoint: 'grpcs://example:2135/db',
-          auth_type: 'auth_key',
-          authOptions: {},
-        }),
-      ).toThrow(/authOptions\.authorized_key_path.*auth_key/);
+        } as any),
+      ).toThrow(/YDB auth is required/);
     });
 
-    it('валидные опции проходят', () => {
+    it('валидные опции с auth проходят', () => {
       expect(() =>
         validateYdbModuleOptions({
           endpoint: 'grpcs://example:2135/db',
-          auth_type: 'anonymous',
-          authOptions: {},
+          auth: createAuth({ type: 'anonymous' }),
         }),
       ).not.toThrow();
     });

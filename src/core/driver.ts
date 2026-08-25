@@ -1,9 +1,8 @@
 import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
-import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
-import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
-import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
+import { createYdbCredentialsProvider } from '@ycforge/auth/ydb';
+import { YDB_AUTH_USAGE } from '@ycforge/auth';
 import {
   YdbExecutor,
   YdbModuleOptions,
@@ -14,10 +13,13 @@ import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
 import { withRetryPolicy } from './retry-executor.js';
 
 /**
- * Fail-fast валидация опций модуля: без endpoint/auth_options драйвер
- * упал бы позже с непонятной ошибкой в недрах SDK.
+ * Fail-fast валидация опций модуля: без endpoint драйвер упал бы позже
+ * с непонятной ошибкой в недрах SDK.
  */
-export function validateYdbModuleOptions(opts: YdbModuleOptions): void {
+export function validateYdbModuleOptions(
+  opts: YdbModuleOptions,
+  injected?: CredentialsProvider,
+): void {
   if (!opts || typeof opts.endpoint !== 'string' || !opts.endpoint.trim()) {
     throw new Error(
       'YDB module options: "endpoint" is required ' +
@@ -25,30 +27,46 @@ export function validateYdbModuleOptions(opts: YdbModuleOptions): void {
         'Return it from useFactory/useClass in YdbCoreModule.forRootAsync().',
     );
   }
-  if (opts.auth_type === 'auth_key' && !opts.authOptions?.authorized_key_path) {
+  assertNoCredentialsProviderConflict(opts);
+  assertAuthPresent(opts, injected);
+}
+
+function assertAuthPresent(
+  opts: YdbModuleOptions,
+  injected?: CredentialsProvider,
+): void {
+  if (
+    opts.auth === undefined &&
+    opts.credentialsProvider === undefined &&
+    opts.driverOptions?.credentialsProvider === undefined &&
+    injected === undefined
+  ) {
     throw new Error(
-      'YDB module options: "authOptions.authorized_key_path" is required ' +
-        'when auth_type is "auth_key".',
+      'YDB auth is required: pass "auth" (AuthManager) or a CredentialsProvider.',
     );
   }
-  assertNoCredentialsProviderConflict(opts);
 }
 
 /**
- * Конфликт источников CredentialsProvider (#96): если заданы и явный
- * credentialsProvider, и низкоуровневый driverOptions.credentialsProvider,
- * приоритет не выбирается молча — это ошибка конфигурации.
+ * Конфликт источников CredentialsProvider (#96): если задан низкоуровневый
+ * driverOptions.credentialsProvider вместе с верхнеуровневым источником
+ * (явный credentialsProvider или auth/AuthManager), приоритет не выбирается
+ * молча — это ошибка конфигурации.
  */
 function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
-  if (
-    opts.credentialsProvider !== undefined &&
-    opts.driverOptions?.credentialsProvider !== undefined
-  ) {
+  const lowLevel = opts.driverOptions?.credentialsProvider !== undefined;
+  if (!lowLevel) return;
+  const names: string[] = [];
+  if (opts.credentialsProvider !== undefined)
+    names.push('"credentialsProvider"');
+  if (opts.auth !== undefined) names.push('"auth"');
+  if (names.length > 0) {
+    names.push('"driverOptions.credentialsProvider"');
     throw new Error(
-      'Conflicting YDB credentials configuration: both "credentialsProvider" ' +
-        'and "driverOptions.credentialsProvider" are set. Keep only one source: ' +
-        'either pass the provider via the top-level "credentialsProvider" option ' +
-        'or remove it from "driverOptions".',
+      `Conflicting YDB credentials configuration: ${names.join(' and ')} ` +
+        'are set. Keep only one source: either pass the provider via the ' +
+        'top-level "credentialsProvider"/"auth" option or remove it from ' +
+        '"driverOptions".',
     );
   }
 }
@@ -57,12 +75,13 @@ function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
  * Разрешает итоговый CredentialsProvider по детерминированному приоритету (#96):
  *
  *   1. opts.credentialsProvider — явный провайдер из опций модуля;
- *   2. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
+ *   2. opts.auth — AuthManager из @ycforge/auth (адаптер
+ *      createYdbCredentialsProvider из '@ycforge/auth/ydb');
+ *   3. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
  *      переданный аргументом в createDriver();
- *   3. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера;
- *   4. создание по auth_type (createCredentialsProvider).
+ *   4. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера.
  *
- * Комбинация (1) + (3) запрещена — ошибка конфигурации, а не молчаливый
+ * Комбинация (1)/(2) + (4) запрещена — ошибка конфигурации, а не молчаливый
  * выбор. Используется NestJS-модулем, createDriver() и CLI.
  */
 export function resolveCredentialsProvider(
@@ -70,42 +89,29 @@ export function resolveCredentialsProvider(
   injected?: CredentialsProvider,
 ): CredentialsProvider {
   assertNoCredentialsProviderConflict(opts);
-  return (
+  const provider =
     opts.credentialsProvider ??
+    (opts.auth !== undefined
+      ? createYdbCredentialsProvider(
+          opts.auth,
+          YDB_AUTH_USAGE,
+          {
+            endpoint: opts.endpoint,
+            // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
+            secure: !opts.endpoint.startsWith('grpc://'),
+          },
+        )
+      : undefined) ??
     injected ??
-    opts.driverOptions?.credentialsProvider ??
-    createCredentialsProvider(opts)
-  );
-}
+    opts.driverOptions?.credentialsProvider;
 
-/**
- * Создаёт credentials provider по `auth_type` из опций модуля.
- * Используется и NestJS-модулем, и CLI миграций.
- */
-export function createCredentialsProvider(
-  opts: YdbModuleOptions,
-): CredentialsProvider {
-  switch (opts.auth_type) {
-    case 'meta':
-      return new MetadataCredentialsProvider();
-    case 'auth_key':
-      if (!opts.authOptions?.authorized_key_path) {
-        throw new Error(
-          '"authOptions.authorized_key_path" is required ' +
-            'when auth_type is "auth_key".',
-        );
-      }
-      return AuthKeyCredentialsProvider.fromAuthorizedKeyFile(
-        opts.authOptions.authorized_key_path,
-      );
-    case 'anonymous':
-      return new AnonymousCredentialsProvider();
-    default:
-      throw new Error(
-        `Invalid YDB auth type: ${String(opts.auth_type)}. ` +
-          `Supported: "meta", "auth_key", "anonymous".`,
-      );
+  if (provider === undefined) {
+    throw new Error(
+      'YDB auth is required: pass "auth" (AuthManager) or a CredentialsProvider.',
+    );
   }
+
+  return provider;
 }
 
 /** Создаёт подключённый Driver по опциям модуля. */
@@ -113,7 +119,7 @@ export async function createDriver(
   opts: YdbModuleOptions,
   credentialsProvider?: CredentialsProvider,
 ): Promise<Driver> {
-  validateYdbModuleOptions(opts);
+  validateYdbModuleOptions(opts, credentialsProvider);
   // Провайдер разрешается по единому правилу приоритета (#96) и передаётся
   // ПОСЛЕ spread driverOptions: driverOptions.credentialsProvider не может
   // молча перезатереть уже разрешённый провайдер.

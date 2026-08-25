@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
+import { createAuth } from '@ycforge/auth';
 import { Uuid } from '@ydbjs/value/primitive';
 import {
   YdbCoreModule,
@@ -36,8 +37,7 @@ async function createTestingModule(rows: any[][]) {
       YdbCoreModule.forRootAsync({
         useFactory: () => ({
           endpoint: 'grpc://localhost:2136/local',
-          auth_type: 'anonymous' as const,
-          authOptions: {},
+          auth: createAuth({ type: 'anonymous' }),
           encryptionProvider: new TestOnlyEncryptionProvider(),
           blindIndexProvider: new TestOnlyEncryptionProvider(),
           sync: false,
@@ -138,22 +138,22 @@ describe('NestJS integration: module wiring', () => {
     await module.close();
   });
 
-  it('rejects invalid auth type with a clear error', async () => {
+  it('rejects missing auth with a clear error', async () => {
     await expect(
       Test.createTestingModule({
         imports: [
           YdbCoreModule.forRootAsync({
             useFactory: () => ({
               endpoint: 'grpc://localhost:2136/local',
-              auth_type: 'oauth' as any,
-              authOptions: {},
             }),
           }),
         ],
       })
         .overrideProvider(YDB_DRIVER)
         .useValue({})
+        .overrideProvider(YDB_QUERY)
+        .useValue(createMockExecutor([[]]).executor)
         .compile(),
-    ).rejects.toThrow(/Invalid YDB auth type/);
+    ).rejects.toThrow(/YDB auth is required/);
   });
 });

@@ -22,6 +22,7 @@ yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
 
 ```ts
 import { Module } from '@nestjs/common';
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
 import { YdbCoreModule, YdbModule, YdbBaseEntity, YdbEntity, YdbPrimaryColumn, YdbColumn } from '@ycforge/ydb-orm';
 
 @YdbEntity('users')
@@ -38,8 +39,7 @@ export class UserEntity extends YdbBaseEntity {
     YdbCoreModule.forRootAsync({
       useFactory: () => ({
         endpoint: 'grpcs://ydb.serverless.yandexcloud.net:2135/?database=/ru-central1/...',
-        auth_type: 'auth_key', // 'meta' | 'auth_key' | 'anonymous'
-        authOptions: { authorized_key_path: './authorized_key.json' },
+        auth: createAuth(authKeyFromFile('./authorized_key.json')),
         sync: true, // как synchronize в TypeORM — только для dev!
       }),
     }),
@@ -523,18 +523,18 @@ ydb-orm completion fish > ~/.config/fish/completions/ydb-orm.fish
 Конфиг подключения — `./ydb-orm.config.ts` (или `.mts`/`.mjs`/`.js`; ищется в текущей директории и выше, до корня ФС; поддерживается как default, так и именованный экспорт):
 
 ```ts
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
 import { UserEntity } from './src/user.entity.js';
 
 export default {
   endpoint: process.env.YDB_ENDPOINT!,
-  auth_type: 'auth_key',
-  authOptions: { authorized_key_path: './authorized_key.json' },
+  auth: createAuth(authKeyFromFile('./authorized_key.json')),
   entities: [UserEntity],        // нужно для migration:generate
   migrationsDir: './migrations', // опционально
 };
 ```
 
-Без конфига CLI читает env: `YDB_ENDPOINT` (или `YDB_CONNECTION_STRING`), `YDB_AUTH_TYPE` (по умолчанию `anonymous`), `YDB_AUTHORIZED_KEY_PATH`.
+Без конфига CLI читает `YDB_ENDPOINT` (или `YDB_CONNECTION_STRING`), но для задания `auth` всё равно потребуется `ydb-orm.config.ts`.
 
 `migration:generate` строит diff по всем `entities` из конфига: нет таблицы → `CREATE TABLE` (+ `DROP TABLE` в `down`), нет колонок → `ADD COLUMN` (+ `DROP COLUMN` в `down`). Расхождения типа/PK и лишние колонки не меняются автоматически — попадают в миграцию как `WARNING`-комментарии.
 
@@ -691,12 +691,13 @@ await executor`SELECT ...`.idempotent(true);       // прямой executor
 #### Подключение к executor
 
 ```ts
+import { createAuth } from '@ycforge/auth';
+
 // NestJS — опция модуля, действует для всех операций всех сущностей:
 YdbCoreModule.forRootAsync({
   useFactory: () => ({
     endpoint: '...',
-    auth_type: 'anonymous',
-    authOptions: {},
+    auth: createAuth({ type: 'anonymous' }),
     retry: true, // или объект YdbRetryPolicyOptions; false/undefined — выключено
   }),
 });
@@ -757,11 +758,12 @@ const result = await runWithRetry(async () => {
 Опция `logQueries` в `forRootAsync` (`YdbModuleOptions`) включает логирование всех запросов:
 
 ```ts
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
 YdbCoreModule.forRootAsync({
   useFactory: () => ({
     endpoint: '...',
-    auth_type: 'auth_key',
-    authOptions: { authorized_key_path: './authorized_key.json' },
+    auth: createAuth(authKeyFromFile('./authorized_key.json')),
     logQueries: true, // консольный логгер по умолчанию
     // logQueries: myLogger, // или свой экземпляр QueryLogger
   }),
@@ -773,11 +775,66 @@ YdbCoreModule.forRootAsync({
 - Аналогично работает standalone `createExecutor(driver, opts)` (учитывает `poolOptions` и `logQueries`). Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
 - Маскирование параметров: секреты/PII по имени параметра (`password`, `token`, `secret`, `authorization`, `email`, credential, phone, card, blind index `{field}_bi` и т.п.) заменяются на `<redacted>` для значений любой длины; бинарные/зашифрованные данные логируются только длиной (`<bytes:N>`); остальные длинные строки обрезаются до 64 символов.
 
-## Аутентификация (`auth_type`)
+## Аутентификация
 
-- `meta` — IAM из metadata-сервиса (внутри Yandex Cloud);
-- `auth_key` — authorized key JSON сервисного аккаунта (`authOptions.authorized_key_path`); JWT-обмен реализован на `fetch`, без тяжёлых SDK;
-- `anonymous` — локальная YDB.
+Аутентификация делегируется пакету [`@ycforge/auth`](https://github.com/ycforge/auth):
+`ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
+типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
+передаётся в опции `auth`:
+
+```ts
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
+// authorized key сервисного аккаунта
+const auth = createAuth(authKeyFromFile('./authorized_key.json'));
+
+// или другие стратегии:
+const auth = createAuth({ type: 'metadata' });
+const auth = createAuth({ type: 'anonymous' });
+const auth = createAuth({ type: 'iam_token', token: process.env.IAM_TOKEN! });
+const auth = createAuth({ type: 'static', username: 'user', password: 'pass' });
+
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: process.env.YDB_ENDPOINT!,
+    auth,
+    sync: true,
+  }),
+});
+```
+
+`AuthManager` адаптируется в `CredentialsProvider` через
+`createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
+`@ycforge/auth/ydb` (ORM делает это автоматически). Для стратегии `static`
+адаптеру нужен `endpoint` модуля.
+
+### Вместе с `@ycforge/auth/nestjs`
+
+Если в проекте уже используется `@ycforge/auth/nestjs`, можно создать
+`AuthManager` в DI и передать его в ORM:
+
+```ts
+import { Module } from '@nestjs/common';
+import { YcAuthModule, InjectAuth } from '@ycforge/auth/nestjs';
+import { YdbCoreModule } from '@ycforge/ydb-orm';
+
+@Module({
+  imports: [
+    YcAuthModule.forRoot({
+      config: authKeyFromFile('./authorized_key.json'),
+      global: true,
+    }),
+    YdbCoreModule.forRootAsync({
+      useFactory: (@InjectAuth() auth) => ({
+        endpoint: process.env.YDB_ENDPOINT!,
+        auth,
+      }),
+      inject: [YcAuthModule], // или токен YCFORGE_AUTH
+    }),
+  ],
+})
+export class AppModule {}
+```
 
 ### Кастомный CredentialsProvider
 
@@ -796,7 +853,6 @@ class OAuthTokenProvider extends CredentialsProvider {
 YdbCoreModule.forRootAsync({
   useFactory: () => ({
     endpoint: process.env.YDB_ENDPOINT!,
-    authOptions: {},
     credentialsProvider: new OAuthTokenProvider(),
   }),
 });
@@ -806,14 +862,16 @@ YdbCoreModule.forRootAsync({
 (экспортируется ядром). Приоритет источников провайдера детерминирован:
 
 1. `credentialsProvider` — явная опция модуля;
-2. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
-3. `driverOptions.credentialsProvider`;
-4. создание по `auth_type`.
+2. `auth` — `AuthManager` из `@ycforge/auth`;
+3. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
+4. `driverOptions.credentialsProvider`.
 
-Задание одновременно `credentialsProvider` и `driverOptions.credentialsProvider`
-— ошибка конфигурации (`Conflicting YDB credentials configuration`): молчаливый
-выбор одного из них не выполняется. Без кастомного провайдера поведение
-по умолчанию (`meta` / `auth_key` / `anonymous`) не меняется.
+Задание одновременно `driverOptions.credentialsProvider` и верхнеуровневого
+источника (`credentialsProvider` или `auth`) — ошибка конфигурации
+(`Conflicting YDB credentials configuration`): молчаливый выбор одного из них
+не выполняется. Если ни `auth`, ни `credentialsProvider`, ни инжектированный
+провайдер не заданы — `ydb-orm` бросает `YDB auth is required: pass "auth"
+(AuthManager) or a CredentialsProvider`.
 
 ## Разработка
 

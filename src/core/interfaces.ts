@@ -1,6 +1,7 @@
 import { ModuleMetadata, Type } from '@nestjs/common';
 import { Driver, DriverOptions } from '@ydbjs/core';
 import type { CredentialsProvider } from '@ydbjs/auth';
+import type { AuthManager } from '@ycforge/auth';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -12,31 +13,37 @@ import type { YdbRetryPolicyInput } from './retry.js';
 export type { QueryOptions } from './query-options.js';
 export type { QueryLogger, QueryLogEntry } from './query-logger.js';
 
-export interface YdbAuthOptions {
-  authorized_key_path?: string;
-}
-
-export type YdbAuthMethod = 'meta' | 'anonymous' | 'auth_key';
-
 export interface YdbModuleOptions {
   endpoint: string;
-  auth_type?: YdbAuthMethod;
-  authOptions: YdbAuthOptions;
   /**
    * Готовый CredentialsProvider (#96) — паттерн useExisting: передаётся
-   * как есть вместо создания провайдера по auth_type (OAuth-токен,
-   * тестовые реализации, переиспользование провайдера из другого модуля).
-   * Динамическое создание — через useFactory в forRootAsync.
+   * как есть (OAuth-токен, тестовые реализации, переиспользование
+   * провайдера из другого модуля).
    *
    * Приоритет источников провайдера (детерминированный, см.
    * resolveCredentialsProvider):
-   *   credentialsProvider → DI-провайдер YDB_CREDENTIALS_PROVIDER →
-   *   driverOptions.credentialsProvider → создание по auth_type.
+   *   credentialsProvider → auth (AuthManager из @ycforge/auth) →
+   *   DI-провайдер YDB_CREDENTIALS_PROVIDER →
+   *   driverOptions.credentialsProvider.
    * Задание одновременно credentialsProvider и
    * driverOptions.credentialsProvider — ошибка конфигурации:
    * молчаливый выбор одного из них запрещён.
    */
   credentialsProvider?: CredentialsProvider;
+  /**
+   * Готовый AuthManager из пакета `@ycforge/auth` — единая точка
+   * стратегий аутентификации (iam_token / metadata / auth_key /
+   * access_token / anonymous / static). Адаптируется в CredentialsProvider
+   * через `createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
+   * `@ycforge/auth/ydb`.
+   *
+   * Приоритет: сразу после явного `credentialsProvider` и перед
+   * DI-провайдером `YDB_CREDENTIALS_PROVIDER` /
+   * `driverOptions.credentialsProvider`.
+   * Задание одновременно `auth` и `driverOptions.credentialsProvider` —
+   * ошибка конфигурации (`Conflicting YDB credentials configuration`).
+   */
+  auth?: AuthManager;
   /**
    * Кастомная фабрика драйвера: если задана, используется вместо создания
    * Driver по endpoint/driverOptions. Удобно для тестов и нестандартных

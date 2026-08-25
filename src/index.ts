@@ -6,8 +6,6 @@
 // Типы и интерфейсы ядра
 export type { YdbPrimitive } from './core/types.js';
 export type {
-  YdbAuthOptions,
-  YdbAuthMethod,
   YdbModuleOptions,
   YdbOptionsFactory,
   YdbModuleAsyncOptions,
@@ -275,7 +273,6 @@ export type { PlannedMigration } from './migrations/migration-generator.js';
 
 // Подключение без NestJS (CLI, скрипты)
 export {
-  createCredentialsProvider,
   resolveCredentialsProvider,
   createDriver,
   createExecutor,
@@ -332,12 +329,6 @@ export type {
 // Mermaid ER-диаграмма (#36): рендер поверх канонического дампа метаданных.
 export { buildEntityDiagram, writeDiagramFile } from './cli/entity-diagram.js';
 
-// Credentials
-export { AuthKeyCredentialsProvider } from './credentials/auth-key-credentials-provider.js';
-export type {
-  AuthKeyCredentialsProviderOptions,
-  IamJWTKeyCredentials,
-} from './credentials/auth-key-credentials-provider.js';
 // Базовый класс провайдера учётных данных из SDK (#96): тип реэкспортируется,
 // чтобы пользователи могли типизировать свои реализации без прямой
 // зависимости от @ydbjs/auth.

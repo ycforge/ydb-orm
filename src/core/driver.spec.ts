@@ -1,13 +1,12 @@
 import 'reflect-metadata';
 import { beforeAll, describe, expect, it, jest } from '@jest/globals';
 import { CredentialsProvider } from '@ydbjs/auth';
-import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
-import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
+import { createAuth } from '@ycforge/auth';
 import type { YdbModuleOptions } from './interfaces.js';
 
 /**
  * Спеки ядра подключения (#96): приоритет источников CredentialsProvider,
- * конфликт конфигурации и неизменное поведение по умолчанию.
+ * конфликт конфигурации и поведение с AuthManager.
  *
  * Модуль @ydbjs/core подменяется заглушкой ДО первого импорта ./driver.js
  * (динамический импорт после jest.unstable_mockModule), чтобы createDriver
@@ -24,8 +23,7 @@ function makeProvider(tag: string): CredentialsProvider {
 
 const BASE_OPTIONS: YdbModuleOptions = {
   endpoint: 'grpc://localhost:2136/local',
-  auth_type: 'anonymous',
-  authOptions: {},
+  auth: createAuth({ type: 'anonymous' }),
 };
 
 class StubDriver {
@@ -58,9 +56,30 @@ describe('resolveCredentialsProvider (#96)', () => {
     expect(resolved).toBe(custom);
   });
 
-  it('injected (DI) используется при отсутствии явного провайдера', () => {
+  it('opts.auth адаптируется в CredentialsProvider', () => {
+    const resolved = mod.resolveCredentialsProvider({
+      endpoint: 'grpc://localhost:2136/local',
+      auth: createAuth({ type: 'anonymous' }),
+    });
+
+    expect(resolved.constructor.name).toBe('AnonymousCredentialsProvider');
+  });
+
+  it('opts.auth: getToken делегирует AuthManager (usage ydb)', async () => {
+    const resolved = mod.resolveCredentialsProvider({
+      endpoint: 'grpc://localhost:2136/local',
+      auth: createAuth({ type: 'access_token', token: 'tok-auth' }),
+    });
+
+    await expect(resolved.getToken()).resolves.toBe('tok-auth');
+  });
+
+  it('injected (DI) используется при отсутствии явного провайдера и auth', () => {
     const injected = makeProvider('injected');
-    const resolved = mod.resolveCredentialsProvider(BASE_OPTIONS, injected);
+    const resolved = mod.resolveCredentialsProvider(
+      { endpoint: 'grpc://localhost:2136/local' },
+      injected,
+    );
 
     expect(resolved).toBe(injected);
   });
@@ -68,7 +87,7 @@ describe('resolveCredentialsProvider (#96)', () => {
   it('driverOptions.credentialsProvider используется без явных источников', () => {
     const lowLevel = makeProvider('low-level');
     const resolved = mod.resolveCredentialsProvider({
-      ...BASE_OPTIONS,
+      endpoint: 'grpc://localhost:2136/local',
       driverOptions: { credentialsProvider: lowLevel },
     });
 
@@ -81,7 +100,7 @@ describe('resolveCredentialsProvider (#96)', () => {
 
     expect(() =>
       mod.resolveCredentialsProvider({
-        ...BASE_OPTIONS,
+        endpoint: 'grpc://localhost:2136/local',
         credentialsProvider: custom,
         driverOptions: { credentialsProvider: lowLevel },
       }),
@@ -90,36 +109,64 @@ describe('resolveCredentialsProvider (#96)', () => {
     );
   });
 
-  it('поведение по умолчанию не изменилось: meta → MetadataCredentialsProvider', () => {
+  it('конфликт auth и driverOptions.credentialsProvider — ошибка', () => {
+    expect(() =>
+      mod.resolveCredentialsProvider({
+        endpoint: 'grpc://localhost:2136/local',
+        auth: createAuth({ type: 'anonymous' }),
+        driverOptions: { credentialsProvider: makeProvider('low-level') },
+      }),
+    ).toThrow(
+      /Conflicting YDB credentials configuration[\s\S]*"auth"[\s\S]*"driverOptions.credentialsProvider"/,
+    );
+  });
+
+  it('отсутствие auth и CredentialsProvider — понятная ошибка', () => {
+    expect(() =>
+      mod.resolveCredentialsProvider({
+        endpoint: 'grpc://localhost:2136/local',
+      }),
+    ).toThrow(/YDB auth is required/);
+  });
+});
+
+describe('resolveCredentialsProvider: приоритеты', () => {
+  it('явный opts.credentialsProvider приоритетнее opts.auth', () => {
+    const custom = makeProvider('custom');
     const resolved = mod.resolveCredentialsProvider({
-      ...BASE_OPTIONS,
-      auth_type: 'meta',
+      endpoint: 'grpc://localhost:2136/local',
+      credentialsProvider: custom,
+      auth: createAuth({ type: 'anonymous' }),
     });
-    expect(resolved).toBeInstanceOf(MetadataCredentialsProvider);
+
+    expect(resolved).toBe(custom);
   });
 
-  it('поведение по умолчанию не изменилось: anonymous → AnonymousCredentialsProvider', () => {
-    const resolved = mod.resolveCredentialsProvider(BASE_OPTIONS);
-    expect(resolved).toBeInstanceOf(AnonymousCredentialsProvider);
+  it('opts.auth приоритетнее injected (DI) провайдера', () => {
+    const injected = makeProvider('injected');
+    const resolved = mod.resolveCredentialsProvider(
+      {
+        endpoint: 'grpc://localhost:2136/local',
+        auth: createAuth({ type: 'access_token', token: 'tok-auth' }),
+      },
+      injected,
+    );
+
+    expect(resolved).not.toBe(injected);
   });
 
-  it('поведение по умолчанию не изменилось: невалидный auth_type — понятная ошибка', () => {
-    expect(() =>
-      mod.resolveCredentialsProvider({
-        ...BASE_OPTIONS,
-        auth_type: 'oauth' as never,
-      }),
-    ).toThrow(/Invalid YDB auth type/);
-  });
+  it('injected приоритетнее driverOptions.credentialsProvider', () => {
+    const injected = makeProvider('injected');
+    const lowLevel = makeProvider('low-level');
+    const resolved = mod.resolveCredentialsProvider(
+      {
+        endpoint: 'grpc://localhost:2136/local',
+        driverOptions: { credentialsProvider: lowLevel },
+      },
+      injected,
+    );
 
-  it('поведение по умолчанию не изменилось: auth_key требует authorized_key_path', () => {
-    expect(() =>
-      mod.resolveCredentialsProvider({
-        ...BASE_OPTIONS,
-        auth_type: 'auth_key',
-        authOptions: {},
-      }),
-    ).toThrow(/authorized_key_path.*is required/);
+    expect(resolved).toBe(injected);
   });
 });
 
@@ -127,8 +174,18 @@ describe('validateYdbModuleOptions (#96)', () => {
   it('fail-fast на конфликт источников провайдера ещё до создания драйвера', () => {
     expect(() =>
       mod.validateYdbModuleOptions({
-        ...BASE_OPTIONS,
+        endpoint: 'grpc://localhost:2136/local',
         credentialsProvider: makeProvider('custom'),
+        driverOptions: { credentialsProvider: makeProvider('low-level') },
+      }),
+    ).toThrow(/Conflicting YDB credentials configuration/);
+  });
+
+  it('fail-fast на конфликт auth + driverOptions', () => {
+    expect(() =>
+      mod.validateYdbModuleOptions({
+        endpoint: 'grpc://localhost:2136/local',
+        auth: createAuth({ type: 'anonymous' }),
         driverOptions: { credentialsProvider: makeProvider('low-level') },
       }),
     ).toThrow(/Conflicting YDB credentials configuration/);
@@ -151,18 +208,21 @@ describe('createDriver (#96): провайдер доходит до Driver', ()
   it('аргумент createDriver() (путь NestJS DI) доходит до драйвера', async () => {
     const injected = makeProvider('injected');
 
-    await mod.createDriver(BASE_OPTIONS, injected);
+    await mod.createDriver(
+      { endpoint: 'grpc://localhost:2136/local' },
+      injected,
+    );
 
     const call = StubDriver.calls.at(-1)!;
     expect(call.options.credentialsProvider).toBe(injected);
   });
 
-  it('без кастомных источников создаётся провайдер по auth_type', async () => {
+  it('без кастомных источников используется auth (AuthManager)', async () => {
     await mod.createDriver(BASE_OPTIONS);
 
     const call = StubDriver.calls.at(-1)!;
-    expect(call.options.credentialsProvider).toBeInstanceOf(
-      AnonymousCredentialsProvider,
+    expect(call.options.credentialsProvider.constructor.name).toBe(
+      'AnonymousCredentialsProvider',
     );
   });
 
@@ -176,6 +236,12 @@ describe('createDriver (#96): провайдер доходит до Driver', ()
         driverOptions: { credentialsProvider: makeProvider('low-level') },
       }),
     ).rejects.toThrow(/Conflicting YDB credentials configuration/);
+  });
+
+  it('отсутствие auth и CredentialsProvider — понятная ошибка', async () => {
+    await expect(
+      mod.createDriver({ endpoint: 'grpc://localhost:2136/local' }),
+    ).rejects.toThrow(/YDB auth is required/);
   });
 
   it('остальные driverOptions сохраняются вместе с разрешённым провайдером', async () => {

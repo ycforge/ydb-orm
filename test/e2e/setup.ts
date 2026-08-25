@@ -2,9 +2,8 @@ import 'reflect-metadata';
 import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
-import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
-import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
-import { AuthKeyCredentialsProvider } from '../../src/credentials/auth-key-credentials-provider.js';
+import { createAuth, authKeyFromFile, YDB_AUTH_USAGE } from '@ycforge/auth';
+import { createYdbCredentialsProvider } from '@ycforge/auth/ydb';
 import type { YdbExecutor } from '../../src/core/interfaces.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import type {
@@ -34,15 +33,39 @@ function requireEnv(name: string): string {
  * Создаёт credentials provider по auth_type из переменных окружения.
  */
 function createCredentialsProvider(authType: string): CredentialsProvider {
+  const endpoint = getEnv('YDB_ENDPOINT')!;
+
   switch (authType) {
     case 'meta':
-      return new MetadataCredentialsProvider();
+      return createYdbCredentialsProvider(
+        createAuth({ type: 'metadata' }),
+        YDB_AUTH_USAGE,
+        {
+          endpoint,
+        },
+      );
     case 'auth_key': {
       const keyPath = requireEnv('YDB_AUTHORIZED_KEY_PATH');
-      return AuthKeyCredentialsProvider.fromAuthorizedKeyFile(keyPath);
+      const key = authKeyFromFile(keyPath);
+      return createYdbCredentialsProvider(
+        createAuth({
+          type: 'auth_key',
+          keyId: key.keyId,
+          serviceAccountId: key.serviceAccountId,
+          privateKey: key.privateKey,
+        }),
+        YDB_AUTH_USAGE,
+        { endpoint },
+      );
     }
     case 'anonymous':
-      return new AnonymousCredentialsProvider();
+      return createYdbCredentialsProvider(
+        createAuth({ type: 'anonymous' }),
+        YDB_AUTH_USAGE,
+        {
+          endpoint,
+        },
+      );
     default:
       throw new Error(`Invalid auth_type: ${authType}`);
   }
