@@ -86,7 +86,9 @@ const SENSITIVE_TOKENS = new Set([
  */
 function isSensitiveParam(name: string): boolean {
   const lower = name.toLowerCase();
-  if (/[-_]bi$/.test(lower)) return true;
+  // {field}_bi — корневой параметр, {field}_bi_N — нумерованный
+  // (non-root WHERE, см. buildFieldCondition в entity-persistence).
+  if (/[-_]bi(_\d+)?$/.test(lower)) return true;
   const tokens = lower.split(/[^a-z0-9]+/).filter((t) => t.length > 0);
   return tokens.some((t) => SENSITIVE_TOKENS.has(t));
 }
@@ -179,6 +181,13 @@ export function wrapExecutorWithLogging(
       },
       signal(signal: AbortSignal) {
         query.signal(signal);
+        return proxied;
+      },
+      // Без проброса idempotent() пометка #27 молча терялась бы на этом
+      // прокси (executeQuery вызывает query.idempotent?.(true)), и запрос
+      // выпадал бы из retry-политики при включённом logQueries.
+      idempotent(flag?: boolean) {
+        query.idempotent?.(flag);
         return proxied;
       },
       cancel() {

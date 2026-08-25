@@ -15,6 +15,7 @@ import {
   getEntityDbSchema,
   hasLazyPendingCiphertext,
   getLazyPendingFieldNames,
+  isSyntheticColumn,
 } from '../persistence/entity-persistence.js';
 
 /**
@@ -289,14 +290,4 @@ export class YdbBaseEntity {
     );
     return this;
   }
-}
-
-/** Проверяет, что колонка — synthetic blind index ({field}_bi) */
-function isSyntheticColumn(meta: YdbEntityMetadata, key: string): boolean {
-  return (
-    key.endsWith('_bi') &&
-    meta.encryptedFields.some(
-      (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
-    )
-  );
 }

@@ -164,10 +164,29 @@ describe('wrapExecutorWithLogging', () => {
     const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
     q.parameter('email_encrypted_bi', 'hash-of-plaintext');
     q.parameter('author_email_bi', 'another-hash');
+    // Нумерованные blind-index параметры non-root WHERE ({field}_bi_N,
+    // см. buildFieldCondition) маскируются так же, как корневые.
+    q.parameter('email_bi_0', 'numbered-hash');
     await q;
 
     expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<redacted>');
     expect(logEntries[0].maskedParams.author_email_bi).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.email_bi_0).toBe('<redacted>');
+  });
+
+  it('passes idempotent() through to the wrapped query (#27)', async () => {
+    // Без проброса пометка терялась бы на логирующем прокси, и запрос
+    // выпадал бы из retry-политики при включённом logQueries.
+    const db = createScriptedExecutor();
+    db.expect('SELECT 1').returnsRows({ one: 1 });
+
+    const logging = wrapExecutorWithLogging(db.executor, mockLogger);
+    const q = logging(['SELECT 1'] as unknown as TemplateStringsArray);
+    (q as any).idempotent(true);
+    await q;
+
+    expect(db.calls[0].idempotent).toBe(true);
+    db.assertComplete();
   });
 
   it('redacts non-string sensitive values', async () => {

@@ -43,6 +43,8 @@ export {
 export { YdbEntity } from './decorators/entity.decorator.js';
 export { YdbColumn, YdbPrimaryColumn } from './decorators/column.decorator.js';
 export {
+  BLIND_INDEX_SUFFIX,
+  blindIndexColumnName,
   YdbEncrypted,
   YdbSecurityAAD,
 } from './decorators/encryption.decorator.js';
@@ -114,7 +116,10 @@ export {
   MAX_IN_CLAUSE_VALUES,
   chunkInValues,
   dedupeInValues,
+  resolveRetrieveLimit,
+  resolveRetrieveOffset,
 } from './core/query-limits.js';
+export { executeYdbQuery } from './core/execute-query.js';
 
 // Retry-политика по типу ошибки (#27)
 export {

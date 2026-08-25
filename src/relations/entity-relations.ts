@@ -7,7 +7,7 @@ import {
   type RelationMetadata,
 } from '../decorators/relation.decorators.js';
 import type { QueryOptions } from '../core/query-options.js';
-import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -21,6 +21,7 @@ import {
   runWithTransactionContext,
 } from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
+import { executeYdbQuery } from '../core/execute-query.js';
 import { mapToYdb } from '../core/mapper.js';
 import {
   resolveManyToManyJoinTable,
@@ -160,7 +161,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
     const inverseFks = links
       .map((row) => row[joinTable.inverseColumn])
-      .filter((v) => v !== undefined);
+      .filter((v) => v !== undefined && v !== null);
 
     const targetPkField = getPrimaryKey(Target);
     const relatedEntities = await this.fetchByColumnIn(
@@ -529,7 +530,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
           `Unknown relation: "${name}" on entity ${constructor.name}. ` +
             `Known relations: ${known || '(none)'}. ` +
             `Check the property name or declare the relation ` +
-            `via @OneToMany/@ManyToOne/@OneToOne.`,
+            `via @OneToMany/@ManyToOne/@OneToOne/@ManyToMany.`,
         );
       }
 
@@ -538,22 +539,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   private async executeQuery(
-    query: any,
+    query: YdbQuery,
     options?: QueryOptions,
   ): Promise<any[][]> {
-    const { signal, timeout, idempotent } = options ?? {};
-    if (signal) {
-      if (signal.aborted) throw new Error('Query aborted by signal');
-      query.signal(signal);
-    }
-    if (timeout && timeout > 0) {
-      query.timeout(timeout);
-    }
-    // Пометка идемпотентности (#27): см. core/retry-executor.
-    if (idempotent === true) {
-      query.idempotent?.(true);
-    }
-    return await query;
+    return executeYdbQuery<any[][]>(query, options);
   }
 }
 

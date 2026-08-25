@@ -9,6 +9,10 @@ import type { QueryOptions } from '../core/query-options.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import { getEagerRelations } from '../decorators/eager.decorator.js';
 import {
+  BLIND_INDEX_SUFFIX,
+  blindIndexColumnName,
+} from '../decorators/encryption.decorator.js';
+import {
   YdbEncryptionContext,
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
@@ -19,7 +23,13 @@ import {
 } from '../decorators/timestamp.decorator.js';
 import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
-import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
+import {
+  chunkInValues,
+  dedupeInValues,
+  resolveRetrieveLimit,
+  resolveRetrieveOffset,
+} from '../core/query-limits.js';
+import { executeYdbQuery } from '../core/execute-query.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
   getYdbEnumMetadata,
@@ -98,7 +108,7 @@ export function getEntityDbSchema(
 ): Record<string, YdbPrimitive> {
   const schema: Record<string, YdbPrimitive> = { ...meta.schema };
   for (const ef of meta.encryptedFields) {
-    if (ef.blindIndex) schema[`${ef.propertyKey}_bi`] = 'Utf8';
+    if (ef.blindIndex) schema[blindIndexColumnName(ef.propertyKey)] = 'Utf8';
   }
   return schema;
 }
@@ -440,10 +450,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
       if (ef.blindIndex) {
         const provider = this.requireBlindIndexProvider();
-        encrypted[`${ef.propertyKey}_bi`] = await provider.hash(String(value), {
-          ...baseContext,
-          fieldName: ef.propertyKey,
-        });
+        encrypted[blindIndexColumnName(ef.propertyKey)] = await provider.hash(
+          String(value),
+          {
+            ...baseContext,
+            fieldName: ef.propertyKey,
+          },
+        );
       }
     }
     return encrypted;
@@ -609,7 +622,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           `Cannot search encrypted field "${field}" on entity ${this.entityClass.name} by null or undefined.`,
         );
       }
-      const biField = `${field}_bi`;
+      const biField = blindIndexColumnName(field);
       const paramName = isRoot ? biField : `${biField}_${ctx.counter++}`;
       ctx.values[paramName] = await this.hashBlindIndexForWhere(
         field,
@@ -1157,34 +1170,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     query: YdbQuery,
     options?: QueryOptions,
   ): Promise<U> {
-    const { signal, timeout, idempotent } = options ?? {};
-
-    if (signal) {
-      if (signal.aborted) throw new Error('Query aborted by signal');
-      query.signal(signal);
-    }
-
-    if (timeout && timeout > 0) {
-      query.timeout(timeout);
-    }
-
-    // Пометка идемпотентности (#27): разрешает retry-политике повторять
-    // этот запрос. Без явной пометки запрос выполняется ровно один раз.
-    if (idempotent === true) {
-      query.idempotent?.(true);
-    }
-
-    return (await query) as U;
-  }
-
-  private resolveLimit(limit?: number): number {
-    const value = Number.isFinite(limit) ? Math.floor(limit as number) : 100;
-    return Math.max(1, Math.min(value, 1000));
-  }
-
-  private resolveOffset(offset?: number): number {
-    const value = Number.isFinite(offset) ? Math.floor(offset as number) : 0;
-    return Math.max(0, value);
+    return executeYdbQuery<U>(query, options);
   }
 
   /**
@@ -1341,7 +1327,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const selectClause = options?.select?.length
       ? options.select.map(quoteIdentifier).join(', ')
       : '*';
-    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${this.resolveLimit(options?.limit)} OFFSET ${this.resolveOffset(options?.offset)}`;
+    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindParams(query, values, keys, dbSchema);
@@ -1748,10 +1734,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
         if (ef.blindIndex) {
           const blindIndexProvider = this.requireBlindIndexProvider();
-          data[`${ef.propertyKey}_bi`] = await blindIndexProvider.hash(
-            String(value),
-            { ...context, fieldName: ef.propertyKey },
-          );
+          data[blindIndexColumnName(ef.propertyKey)] =
+            await blindIndexProvider.hash(String(value), {
+              ...context,
+              fieldName: ef.propertyKey,
+            });
         }
       }
     }
@@ -2088,11 +2075,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 }
 
 /** Проверяет, что колонка — synthetic blind index ({field}_bi) */
-function isSyntheticColumn(meta: YdbEntityMetadata, key: string): boolean {
+export function isSyntheticColumn(
+  meta: YdbEntityMetadata,
+  key: string,
+): boolean {
   return (
-    key.endsWith('_bi') &&
+    key.endsWith(BLIND_INDEX_SUFFIX) &&
     meta.encryptedFields.some(
-      (ef) => ef.blindIndex && `${ef.propertyKey}_bi` === key,
+      (ef) => ef.blindIndex && blindIndexColumnName(ef.propertyKey) === key,
     )
   );
 }

@@ -3,6 +3,17 @@ import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbPrimitive } from '../core/types.js';
+import {
+  resolveRetrieveLimit,
+  resolveRetrieveOffset,
+} from '../core/query-limits.js';
+
+// Константы живут в core/query-limits.ts (единая точка семантики LIMIT/OFFSET
+// для билдера и persistence); реэкспорт сохраняет публичный API.
+export {
+  DEFAULT_RETRIEVE_LIMIT,
+  MAX_RETRIEVE_LIMIT,
+} from '../core/query-limits.js';
 
 export type OrderDirection = 'ASC' | 'DESC';
 
@@ -20,12 +31,6 @@ interface CompiledQuery extends BuiltQuery {
 type EntityClass<T extends YdbBaseEntity> = {
   new (): T;
 } & typeof YdbBaseEntity;
-
-/** Защитный лимит по умолчанию, когда limit не задан явно. */
-export const DEFAULT_RETRIEVE_LIMIT = 100;
-
-/** Защитный потолок для положительного LIMIT. */
-export const MAX_RETRIEVE_LIMIT = 1000;
 
 /**
  * Цепочный query builder поверх Active Record сущности.
@@ -311,34 +316,14 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return Object.keys(dbSchema).join(', ');
   }
 
-  /**
-   * Итоговый LIMIT с явной семантикой:
-   * - лимит не задан (limit() и queryOptions.limit отсутствуют) —
-   *   защитный дефолт DEFAULT_RETRIEVE_LIMIT;
-   * - limit(0) — `0` (пустой результат), НЕ клампится в 1;
-   * - положительное целое значение — до MAX_RETRIEVE_LIMIT (потолок);
-   * - отрицательное, дробное или неконечное значение — ошибка.
-   */
+  // Семантика LIMIT/OFFSET — общая с persistence (core/query-limits.ts):
+  // limit() билдера приоритетнее queryOptions.limit; 0 → LIMIT 0;
+  // отрицательные/дробные — ошибка; потолок MAX_RETRIEVE_LIMIT.
   private resolveLimit(): number {
-    const value = this.limitValue ?? this.queryOptions?.limit;
-    if (value === undefined) {
-      return DEFAULT_RETRIEVE_LIMIT;
-    }
-    if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
-      throw new Error(
-        `Invalid LIMIT: ${String(value)}. LIMIT must be a finite non-negative integer.`,
-      );
-    }
-    const num = value;
-    if (num === 0) {
-      return 0;
-    }
-    return Math.min(num, MAX_RETRIEVE_LIMIT);
+    return resolveRetrieveLimit(this.limitValue ?? this.queryOptions?.limit);
   }
 
   private resolveOffset(): number {
-    const value = this.offsetValue ?? this.queryOptions?.offset;
-    const num = Number.isFinite(value) ? Math.floor(value as number) : 0;
-    return Math.max(0, num);
+    return resolveRetrieveOffset(this.offsetValue ?? this.queryOptions?.offset);
   }
 }

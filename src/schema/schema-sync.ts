@@ -22,6 +22,10 @@ import {
   ManyToManyJoinTable,
 } from '../decorators/relation.decorators.js';
 import {
+  BLIND_INDEX_SUFFIX,
+  blindIndexColumnName,
+} from '../decorators/encryption.decorator.js';
+import {
   getYdbIndexesMetadata,
   resolveIndexName,
 } from '../decorators/index.decorator.js';
@@ -247,7 +251,7 @@ export function buildExpectedTableSchema(
 ): ExpectedTableSchema {
   const columns: Record<string, YdbPrimitive> = { ...meta.schema };
   for (const ef of meta.encryptedFields) {
-    if (ef.blindIndex) columns[`${ef.propertyKey}_bi`] = 'Utf8';
+    if (ef.blindIndex) columns[blindIndexColumnName(ef.propertyKey)] = 'Utf8';
   }
 
   if (meta.primaryKeys.length === 0) {
@@ -498,13 +502,6 @@ function ttlSettingsMatch(
 }
 
 /**
- * Синтетические колонки blind index (@YdbEncrypted({ blindIndex: true }))
- * именуются `{propertyKey}_bi`; участие таких колонок (или их «пар»)
- * в расхождении — признак изменения метаданных шифрования, а не переименования.
- */
-const BLIND_INDEX_SUFFIX = '_bi';
-
-/**
  * Детекция вероятного переименования колонки (#23).
  *
  * Консервативная эвристика на структурных признаках схемы, без сравнения
@@ -518,7 +515,7 @@ const BLIND_INDEX_SUFFIX = '_bi';
  *    и ожидаемых) — иначе это изменение индекса, а не переименование;
  *  - ни `from`, ни `to` не являются TTL-колонкой (фактической или ожидаемой);
  *  - расхождение не затрагивает blind index: обе колонки не synthetic `_bi`
- *    и у каждой нет `_bi`-парта в своей схеме.
+ *    (BLIND_INDEX_SUFFIX) и у каждой нет `_bi`-парта в своей схеме.
  *
  * При любом несоответствии возвращается пустой список — остаются прежние
  * ADD/DROP и предупреждения о ручной миграции.

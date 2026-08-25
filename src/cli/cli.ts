@@ -182,11 +182,9 @@ async function runCommand(args: CliArgs): Promise<void> {
     const { driver, executor, close } = await connectCli(config);
     try {
       const syncer = new YdbSchemaSyncer(driver, executor);
-      const expected = config.entities.flatMap((entity) => {
-        const meta = requireEntityMeta(entity);
-        const schemas = [buildExpectedTableSchema(meta)];
-        return schemas;
-      });
+      const expected = config.entities.map((entity) =>
+        buildExpectedTableSchema(requireEntityMeta(entity)),
+      );
       for (const joinTable of getManyToManyJoinTables(config.entities)) {
         expected.push(buildExpectedJoinTableSchema(joinTable));
       }
