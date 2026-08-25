@@ -1163,10 +1163,10 @@
   resolved "https://registry.yarnpkg.com/@unrs/resolver-binding-win32-x64-msvc/-/resolver-binding-win32-x64-msvc-1.12.2.tgz#72da0da48d72b1e87831b9c0308931d3f4669027"
   integrity sha512-nAB74NfSNKknqQ1RrYj6uz8FcXEomu/MATJZxh/x+BArzN2U3JbOYC0APYzUIGhVY3m5hRxA8VPNdPBoG8txlA==
 
-"@ycforge/auth@^0.2.1":
-  version "0.2.1"
-  resolved "https://registry.yarnpkg.com/@ycforge/auth/-/auth-0.2.1.tgz#2916dae751a4fbd4e32c342d126e3f9b330f9365"
-  integrity sha512-nwCioMxltUM44XvqOdUr7bA6CassmJEOalOXdDw6fHnvjfyzJla7nJlDepu1YVsT764yTzMxyKSRigRy/rUUWQ==
+"@ycforge/auth@^0.2.2":
+  version "0.2.2"
+  resolved "https://registry.yarnpkg.com/@ycforge/auth/-/auth-0.2.2.tgz#510745eb4aee157ba140ae52c7473441d411745e"
+  integrity sha512-bsYUGWrPTbdL31FGotGnC71ht8etLAQV+bF/ob4TtEHikVViQALrM9+1IaQxQH96OVmccjGAurYmK4IuCAJJhQ==
 
 "@ycforge/js-dev-tools@^0.1.1":
   version "0.1.1"
