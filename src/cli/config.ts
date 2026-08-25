@@ -13,6 +13,24 @@ export interface YdbCliConfig extends YdbModuleOptions {
   entities?: (new (...args: any[]) => any)[];
 }
 
+/**
+ * Проверяет, что в конфиге задан способ аутентификации.
+ * CLI не создаёт AuthManager самостоятельно: пользователь должен передать
+ * готовый `auth` (createAuth(...)) или CredentialsProvider.
+ */
+function assertCliAuth(config: YdbCliConfig): void {
+  if (
+    config.auth === undefined &&
+    config.credentialsProvider === undefined &&
+    config.driverOptions?.credentialsProvider === undefined
+  ) {
+    throw new Error(
+      'YDB auth is required: pass "auth" (AuthManager) or a CredentialsProvider ' +
+        'in ydb-orm.config.ts.',
+    );
+  }
+}
+
 const DEFAULT_CONFIG_NAMES = [
   'ydb-orm.config.ts',
   'ydb-orm.config.mts',
@@ -112,8 +130,8 @@ export function findDefaultConfig(startDir?: string): string | undefined {
  * Загружает конфиг CLI:
  *  1. --config <path> или ydb-orm.config.{ts,mts,mjs|js}, найденный в CWD
  *     или выше; default и именованные экспорты эквивалентны;
- *  2. иначе — переменные окружения YDB_ENDPOINT / YDB_CONNECTION_STRING,
- *     YDB_AUTH_TYPE (по умолчанию anonymous), YDB_AUTHORIZED_KEY_PATH.
+ *  2. иначе — переменная окружения YDB_ENDPOINT / YDB_CONNECTION_STRING
+ *     (требуется ydb-orm.config.ts для задания auth).
  */
 export async function loadCliConfig(
   configPath?: string,
@@ -129,7 +147,9 @@ export async function loadCliConfig(
     const mod = (await import(
       pathToFileURL(path.resolve(file)).href
     )) as Record<string, unknown>;
-    return extractCliConfig(mod, file);
+    const config = extractCliConfig(mod, file);
+    assertCliAuth(config);
+    return config;
   }
 
   const endpoint =
@@ -140,15 +160,10 @@ export async function loadCliConfig(
     );
   }
 
-  return {
-    endpoint,
-    auth_type:
-      (process.env.YDB_AUTH_TYPE as YdbModuleOptions['auth_type']) ??
-      'anonymous',
-    authOptions: {
-      authorized_key_path: process.env.YDB_AUTHORIZED_KEY_PATH,
-    },
-  };
+  throw new Error(
+    'YDB auth is required: create ydb-orm.config.ts with "auth" (AuthManager) ' +
+      'or a CredentialsProvider.',
+  );
 }
 
 /** Подключение для команд CLI: driver + executor, закрывается через close(). */

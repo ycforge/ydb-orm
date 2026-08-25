@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { Test, TestingModule } from '@nestjs/testing';
 import { DynamicModule, Module, Type } from '@nestjs/common';
+import { createAuth } from '@ycforge/auth';
 import { Driver } from '@ydbjs/core';
 import { create } from '@bufbuild/protobuf';
 import { anyPack } from '@bufbuild/protobuf/wkt';
@@ -101,8 +102,7 @@ function coreImports(
     YdbCoreModule.forRootAsync({
       useFactory: () => ({
         endpoint: 'grpc://localhost:2136/local',
-        auth_type: 'anonymous' as const,
-        authOptions: {},
+        auth: createAuth({ type: 'anonymous' }),
         encryptionProvider: new TestOnlyEncryptionProvider(),
         blindIndexProvider: new TestOnlyEncryptionProvider(),
         sync,
@@ -341,8 +341,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         YdbModule.forRoot({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
-            auth_type: 'anonymous' as const,
-            authOptions: {},
+            auth: createAuth({ type: 'anonymous' }),
             encryptionProvider: new TestOnlyEncryptionProvider(),
             blindIndexProvider: new TestOnlyEncryptionProvider(),
           }),
@@ -375,8 +374,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       return YdbCoreModule.forRootAsync({
         useFactory: () => ({
           endpoint: 'grpc://localhost:2136/local',
-          auth_type: 'anonymous' as const,
-          authOptions: {},
+          auth: createAuth({ type: 'anonymous' }),
           encryptionProvider: new TestOnlyEncryptionProvider(),
           blindIndexProvider: new TestOnlyEncryptionProvider(),
           sync: true,

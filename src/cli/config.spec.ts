@@ -119,6 +119,7 @@ describe('loadCliConfig (#103)', () => {
       path.join(dir, 'ydb-orm.config.mjs'),
       `export const config = {
         endpoint: 'grpc://named:2136/local',
+        credentialsProvider: { getToken: async () => 'token' },
         migrationsDir: './migrations',
       };`,
       'utf-8',
@@ -138,15 +139,43 @@ describe('loadCliConfig (#103)', () => {
     );
   });
 
-  it('falls back to env variables when no config exists', async () => {
+  it('falls back to env endpoint when no config exists', async () => {
     delete process.env.YDB_ENDPOINT;
     delete process.env.YDB_CONNECTION_STRING;
-    delete process.env.YDB_AUTH_TYPE;
     process.env.YDB_ENDPOINT = 'grpc://env:2136/local';
+
+    await expect(loadCliConfig(undefined, dir)).rejects.toThrow(
+      /YDB auth is required/,
+    );
+  });
+
+  it('requires auth in the config file', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'ydb-orm.config.mts'),
+      `export default {
+        endpoint: 'grpc://cfg:2136/local',
+      };`,
+      'utf-8',
+    );
+
+    await expect(loadCliConfig(undefined, dir)).rejects.toThrow(
+      /YDB auth is required/,
+    );
+  });
+
+  it('accepts a config file with an explicit CredentialsProvider', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'ydb-orm.config.mts'),
+      `export default {\n` +
+        `  endpoint: 'grpc://cfg:2136/local',\n` +
+        `  credentialsProvider: { getToken: async () => 'token' },\n` +
+        `};`,
+      'utf-8',
+    );
 
     const config = await loadCliConfig(undefined, dir);
 
-    expect(config.endpoint).toBe('grpc://env:2136/local');
-    expect(config.auth_type).toBe('anonymous');
+    expect(config.endpoint).toBe('grpc://cfg:2136/local');
+    expect(config.credentialsProvider).toBeDefined();
   });
 });

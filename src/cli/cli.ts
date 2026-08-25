@@ -52,8 +52,7 @@ const HELP = `ydb-orm — CLI для миграций и генерации ко
 
 Опции:
   --config <path>   Путь к конфигу (ищется в CWD и выше:
-                    ydb-orm.config.ts|mts|mjs|js, иначе env: YDB_ENDPOINT,
-                    YDB_AUTH_TYPE, YDB_AUTHORIZED_KEY_PATH)
+                    ydb-orm.config.ts|mts|mjs|js, иначе env: YDB_ENDPOINT)
   --dir <path>      Директория миграций (по умолчанию ./migrations)
                     или сущностей для entity:create (по умолчанию ./src)
   --output <file>   Файл вывода для entity:diagram (существующий файл —

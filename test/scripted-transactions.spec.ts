@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
+import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
   YdbModule,
@@ -39,8 +40,7 @@ async function createTestingModule(db: ScriptedMockExecutor) {
       YdbCoreModule.forRootAsync({
         useFactory: () => ({
           endpoint: 'grpc://localhost:2136/local',
-          auth_type: 'anonymous' as const,
-          authOptions: {},
+          auth: createAuth({ type: 'anonymous' }),
           sync: false,
         }),
       }),

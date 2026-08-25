@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { beforeAll, describe, expect, it, jest } from '@jest/globals';
+import { createAuth } from '@ycforge/auth';
 import { YDBError } from '@ydbjs/error';
 import { StatusIds_StatusCode as Code } from '@ydbjs/api/operation';
 import type { YdbModuleOptions } from './interfaces.js';
@@ -13,8 +14,7 @@ import type { YdbModuleOptions } from './interfaces.js';
 
 const BASE_OPTIONS: YdbModuleOptions = {
   endpoint: 'grpc://localhost:2136/local',
-  auth_type: 'anonymous',
-  authOptions: {},
+  auth: createAuth({ type: 'anonymous' }),
 };
 
 /** Управляемый фейк QueryClient: режим «скрипт неудач» или «всегда фатально». */

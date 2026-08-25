@@ -153,8 +153,8 @@ export class YdbCoreModule {
 
         {
           // Провайдер учётных данных (#96): явный opts.credentialsProvider
-          // используется как есть; иначе driverOptions.credentialsProvider;
-          // иначе создаётся по auth_type (meta/auth_key/anonymous).
+          // используется как есть; иначе auth (AuthManager из @ycforge/auth);
+          // иначе driverOptions.credentialsProvider.
           provide: YDB_CREDENTIALS_PROVIDER,
           useFactory: (opts: YdbModuleOptions) => {
             try {

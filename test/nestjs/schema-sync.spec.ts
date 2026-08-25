@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
+import { createAuth } from '@ycforge/auth';
 import { create } from '@bufbuild/protobuf';
 import { anyPack } from '@bufbuild/protobuf/wkt';
 import {
@@ -77,8 +78,7 @@ describe('NestJS integration: schema sync on bootstrap', () => {
         YdbCoreModule.forRootAsync({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
-            auth_type: 'anonymous' as const,
-            authOptions: {},
+            auth: createAuth({ type: 'anonymous' }),
             encryptionProvider: new TestOnlyEncryptionProvider(),
             blindIndexProvider: new TestOnlyEncryptionProvider(),
             sync: true,
@@ -151,8 +151,7 @@ describe('NestJS integration: schema sync on bootstrap', () => {
         YdbCoreModule.forRootAsync({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
-            auth_type: 'anonymous' as const,
-            authOptions: {},
+            auth: createAuth({ type: 'anonymous' }),
             encryptionProvider: new TestOnlyEncryptionProvider(),
             blindIndexProvider: new TestOnlyEncryptionProvider(),
           }),

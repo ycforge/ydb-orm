@@ -13,27 +13,18 @@ import type { YdbRetryPolicyInput } from './retry.js';
 export type { QueryOptions } from './query-options.js';
 export type { QueryLogger, QueryLogEntry } from './query-logger.js';
 
-export interface YdbAuthOptions {
-  authorized_key_path?: string;
-}
-
-export type YdbAuthMethod = 'meta' | 'anonymous' | 'auth_key';
-
 export interface YdbModuleOptions {
   endpoint: string;
-  auth_type?: YdbAuthMethod;
-  authOptions: YdbAuthOptions;
   /**
    * Готовый CredentialsProvider (#96) — паттерн useExisting: передаётся
-   * как есть вместо создания провайдера по auth_type (OAuth-токен,
-   * тестовые реализации, переиспользование провайдера из другого модуля).
-   * Динамическое создание — через useFactory в forRootAsync.
+   * как есть (OAuth-токен, тестовые реализации, переиспользование
+   * провайдера из другого модуля).
    *
    * Приоритет источников провайдера (детерминированный, см.
    * resolveCredentialsProvider):
    *   credentialsProvider → auth (AuthManager из @ycforge/auth) →
    *   DI-провайдер YDB_CREDENTIALS_PROVIDER →
-   *   driverOptions.credentialsProvider → создание по auth_type.
+   *   driverOptions.credentialsProvider.
    * Задание одновременно credentialsProvider и
    * driverOptions.credentialsProvider — ошибка конфигурации:
    * молчаливый выбор одного из них запрещён.
@@ -47,7 +38,7 @@ export interface YdbModuleOptions {
    *
    * Приоритет: сразу после явного `credentialsProvider` и перед
    * DI-провайдером `YDB_CREDENTIALS_PROVIDER` /
-   * `driverOptions.credentialsProvider` / созданием по `auth_type`.
+   * `driverOptions.credentialsProvider`.
    * Задание одновременно `auth` и `driverOptions.credentialsProvider` —
    * ошибка конфигурации (`Conflicting YDB credentials configuration`).
    */

@@ -4,6 +4,7 @@
  *   провайдеры, sync). forFeature — инжектирует executor/провайдеры в сущности.
  */
 import { Module } from '@nestjs/common';
+import { createAuth } from '@ycforge/auth';
 import { YdbModule } from '../../src/index.js';
 import { PostEntity } from '../entities/index.js';
 import { PostService } from './post.service.js';
@@ -14,8 +15,7 @@ import { createEncryptionProvider } from '../providers/aes-gcm-encryption.provid
     YdbModule.forRoot({
       useFactory: () => ({
         endpoint: process.env.YDB_ENDPOINT ?? 'grpc://localhost:2136/local',
-        auth_type: 'anonymous',
-        authOptions: {},
+        auth: createAuth({ type: 'anonymous' }),
         // Автоматическое создание/правка схемы при старте приложения.
         // В проде вместо sync используйте миграции.
         sync: true,
