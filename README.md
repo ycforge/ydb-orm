@@ -4,7 +4,7 @@
 [![NPM](https://img.shields.io/npm/l/@ycforge/ydb-orm)](./LICENSE)
 [![GitHub issues](https://img.shields.io/github/issues/ycforge/ydb-orm)](https://github.com/ycforge/ydb-orm/issues)
 
-TypeORM-like ORM для [YDB (Yandex Database)](https://ydb.tech/) на TypeScript: Active Record, relations, шифрование полей с blind index, schema sync, транзакции и интеграция с NestJS.
+TypeORM-like ORM для [YDB (Yandex Database)](https://ydb.tech/) на TypeScript: Active Record, relations, шифрование полей с blind index, schema sync, транзакции и миграции. **Ядро пакета каркасно-нейтральное** — работает без NestJS; интеграция с NestJS вынесена в подпакет `@ycforge/ydb-orm/nest`.
 
 Принципы: удобство, минимализм (по памяти и CPU) и функционал.
 
@@ -13,25 +13,117 @@ Runtime — Node.js ≥ 22.18 (нативный импорт `.ts` через ty
 ## Установка
 
 ```bash
+# ядро:
 yarn add @ycforge/ydb-orm
-# peer-зависимости, если используете NestJS-интеграцию:
-yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
+
+# опционально, NestJS-интеграция:
+yarn add @ycforge/ydb-orm/nest @nestjs/common @nestjs/core reflect-metadata rxjs
 ```
 
-## Быстрый старт (NestJS)
+`@nestjs/*`, `rxjs` и `reflect-metadata` — optional peerDependencies; без них основной пакет работает в полном объёме (standalone, CLI, скрипты).
+
+---
+
+## Быстрый старт (standalone, без фреймворков)
+
+### 1. Определение сущности
+
+```ts
+import {
+  YdbBaseEntity, YdbEntity, YdbPrimaryColumn, YdbColumn,
+  configureEntities,
+  createDriver, createExecutor,
+  YdbTransactionManager,
+} from '@ycforge/ydb-orm';
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
+@YdbEntity('users')
+class UserEntity extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid!: string;
+
+  @YdbColumn('Utf8')
+  name!: string;
+}
+```
+
+### 2. Настройка executor'а
+
+```ts
+const driver = createDriver({
+  endpoint: 'grpcs://ydb.serverless.yandexcloud.net:2135/?database=/ru-central1/...',
+  auth: createAuth(authKeyFromFile('./authorized_key.json')),
+});
+
+const executor = createExecutor(driver);
+
+configureEntities(executor, [UserEntity]);
+// с этого момента Active Record-методы сущности работают
+```
+
+`configureEntities` связывает executor и провайдеры шифрования с сущностями напрямую, без DI.
+
+### 3. Active Record
+
+```ts
+// одна запись по PK
+const user = await UserEntity.find({ uuid: '...' });
+
+// выборка с условиями и лимитом
+const admins = await UserEntity.findAll({ is_admin: true }, { limit: 50 });
+
+// INSERT/UPDATE
+const u = new UserEntity();
+u.name = 'Ivan';
+await UserEntity.save(u);  // uuid генерируется автоматически (v7)
+
+// транзакции
+const txManager = new YdbTransactionManager(executor);
+await txManager.runInTransaction(async (trx) => {
+  await UserEntity.save(user, { trx });
+});
+```
+
+### Схема.sync в standalone-режиме
+
+```ts
+import { YdbSchemaSyncer } from '@ycforge/ydb-orm';
+
+const syncer = new YdbSchemaSyncer(executor);
+
+// проверка без изменений
+const issues = await syncer.verify([UserEntity]);
+console.log(issues);
+
+// применение (CREATE TABLE / ALTER TABLE ADD COLUMN)
+await syncer.sync([UserEntity]);
+```
+
+---
+
+## Быстрый старт (NestJS, опционально)
+
+Для NestJS-приложений — подпакет `@ycforge/ydb-orm/nest`:
 
 ```ts
 import { Module } from '@nestjs/common';
 import { createAuth, authKeyFromFile } from '@ycforge/auth';
-import { YdbCoreModule, YdbModule, YdbBaseEntity, YdbEntity, YdbPrimaryColumn, YdbColumn } from '@ycforge/ydb-orm';
+import {
+  YdbCoreModule,
+  YdbOrmModule,
+  YdbBaseEntity,
+  YdbEntity,
+  YdbPrimaryColumn,
+  YdbColumn,
+} from '@ycforge/ydb-orm/nest';
 
 @YdbEntity('users')
 export class UserEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
-  uuid: string;
+  uuid!: string;
 
   @YdbColumn('Utf8')
-  name: string;
+  name!: string;
 }
 
 @Module({
@@ -43,21 +135,21 @@ export class UserEntity extends YdbBaseEntity {
         sync: true, // как synchronize в TypeORM — только для dev!
       }),
     }),
-    YdbModule.forFeature([UserEntity]),
+    YdbOrmModule.forFeature([UserEntity]),
   ],
 })
 export class AppModule {}
 ```
 
-`forRootAsync` поддерживает `useFactory` / `useClass` / `useExisting` (как в NestJS). `forFeature([...Entity])` обязателен: без него статические методы сущности упадут с «YDB executor not set».
+`YdbCoreModule.forRootAsync` поддерживает `useFactory` / `useClass` / `useExisting` (как в NestJS). `YdbOrmModule.forFeature([...Entity])` обязателен для NestJS: без него статические методы сущности упадут с «YDB executor not set».
 
-## Репозиторий (DI-вариант)
+### Репозиторий (NestJS DI)
 
-Помимо Active Record (`UserEntity.find(...)`) `YdbModule.forFeature` регистрирует инжектируемый `YdbRepository<Entity>`. Это удобнее в NestJS-сервисах и не требует глобальных статиков:
+Помимо Active Record (`UserEntity.find(...)`) `YdbOrmModule.forFeature` регистрирует инжектируемый `YdbRepository<Entity>`:
 
 ```ts
 import { Injectable } from '@nestjs/common';
-import { InjectRepository, YdbRepository } from '@ycforge/ydb-orm';
+import { InjectRepository, YdbRepository } from '@ycforge/ydb-orm/nest';
 import { UserEntity } from './user.entity.js';
 
 @Injectable()
@@ -74,6 +166,8 @@ export class UserService {
 ```
 
 Также доступен `YdbEntityManager` — фабрика репозиториев (`manager.getRepository(UserEntity)`). `YdbRepository` — ядро ORM: вся CRUD-логика живёт в нём (и в `YdbEntityPersistence`/`YdbEntityRelations` под капотом). Active Record остаётся полностью работоспособным: статические методы `UserEntity.find(...)` и т.д. — тонкий фасад, делегирующий в репозиторий.
+
+---
 
 ## Active Record
 
@@ -294,7 +388,7 @@ class User extends YdbBaseEntity {
 
 ## Шифрование
 
-Провайдеры передаются в опции модуля:
+Провайдеры передаются в опции модуля/standalone-конфиг:
 
 ```ts
 {
@@ -348,25 +442,456 @@ await EventEntity.query()
 
 ## Schema sync
 
-`sync: true` в опциях `forRootAsync` при старте приложения подстраивает схему БД под метаданные всех зарегистрированных сущностей:
+### Standalone
+
+```ts
+import { YdbSchemaSyncer } from '@ycforge/ydb-orm';
+
+const syncer = new YdbSchemaSyncer(executor);
+
+// verify — проверяет схему, ничего не меняет
+const issues = await syncer.verify([UserEntity, PostEntity]);
+
+// sync — подстраивает схему
+await syncer.sync([UserEntity, PostEntity]);
+```
 
 - нет таблицы → `CREATE TABLE`;
 - нет колонок → `ALTER TABLE ADD COLUMN`;
 - лишние колонки → только warn в лог (данные не удаляются);
 - расхождение типа колонки или PK → ошибка (в YDB не меняется, нужна миграция).
 
-Провайдер `YDB_SCHEMA_SYNC` экспортируется из модуля: `syncer.verify(entities)` проверяет схему без изменений. Генераторы DDL (`generateCreateTableYql` и т.д.) доступны в публичном API — их можно использовать для миграций.
+### NestJS
 
-### Жизненный цикл модуля (#93)
+В NestJS-приложении schema sync выполняется автоматически в `onApplicationBootstrap`:
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: '...',
+    auth: createAuth(authKeyFromFile('./authorized_key.json')),
+    sync: true, // только для dev! В проде — миграции.
+  }),
+});
+```
+
+Провайдер `YDB_SCHEMA_SYNC` экспортируется из `YdbCoreModule` (подпакет `nest`): `syncer.verify(entities)` проверяет схему без изменений. Генераторы DDL (`generateCreateTableYql` и т.д.) доступны в публичном API — их можно использовать для миграций.
+
+#### Жизненный цикл модуля (#93)
 
 - **Schema sync выполняется в `onApplicationBootstrap`**, а не в DI-фабрике: к этому моменту зарегистрированы все сущности всех модулей, порядок инициализации детерминирован, а ошибка DDL приходит из `app.init()` как исходная ошибка схемы. Для тестов это значит: sync срабатывает после `module.init()` / `app.init()`, а не после `compile()`.
 - **Защита от двойного `forRootAsync`**: повторная инициализация ядра в одном процессе, пока предыдущее приложение не закрыто (`app.close()`), падает с понятной ошибкой `Duplicate YDB module initialization`. Последовательные бутстрапы (тесты, hot-restart) разрешены.
-- **Изоляция реестра сущностей**: у каждого экземпляра `YdbCoreModule` (каждого Nest-приложения) есть собственный скоуп сущностей — он создаётся на статической стороне `forRootAsync` и доступен провайдерам через DI-токен `YDB_CORE_SCOPE`. `YdbModule.forFeature([...])` при создании провайдеров привязывает объявленные сущности к скоупу СВОЕГО приложения: декоратор `@YdbEntity` выполняется один раз за жизнь процесса (кеш модулей), поэтому восстановление видимости при повторном бутстрапе делает сама forFeature. Порядок резолва провайдеров роли не играет — приложение, упавшее с `Duplicate YDB module initialization`, не может загрязнить сущностями живое (#142). После `app.close()` набор приложения уходит вместе с его состоянием; CLI/standalone видят весь глобальный реестр.
+- **Изоляция реестра сущностей**: у каждого экземпляра `YdbCoreModule` (каждого Nest-приложения) есть собственный скоуп сущностей — он создаётся на статической стороне `forRootAsync` и доступен провайдерам через DI-токен `YDB_CORE_SCOPE`. `YdbOrmModule.forFeature([...])` при создании провайдеров привязывает объявленные сущности к скоупу СВОЕГО приложения: декоратор `@YdbEntity` выполняется один раз за жизнь процесса (кеш модулей), поэтому восстановление видимости при повторном бутстрапе делает сама forFeature. Порядок резолва провайдеров роли не играет — приложение, упавшее с `Duplicate YDB module initialization`, не может загрязнить сущностями живое (#142). После `app.close()` набор приложения уходит вместе с его состоянием; CLI/standalone видят весь глобальный реестр.
 - **Graceful shutdown**: драйвер, созданный модулем, закрывается в `onApplicationShutdown` (включите `app.enableShutdownHooks()`). Драйверы, переданные извне через `overrideProvider`, не закрываются. Опция `driverFactory` позволяет подставить собственную фабрику драйвера — такой драйвер считается принадлежащим модулю и тоже закрывается.
+
+## Транзакции
+
+### Standalone
+
+```ts
+import { YdbTransactionManager, createExecutor, createDriver } from '@ycforge/ydb-orm';
+import { createAuth } from '@ycforge/auth';
+
+const driver = createDriver({
+  endpoint: '...',
+  auth: createAuth({ type: 'anonymous' }),
+});
+const executor = createExecutor(driver);
+const txManager = new YdbTransactionManager(executor);
+
+await txManager.runInTransaction(async (trx) => {
+  const user = await UserEntity.find({ uuid: userId }, { trx });
+  await UserEntity.save(user, { trx });
+});
+```
+
+### NestJS
+
+В NestJS `YdbTransactionManager` инжектируется из DI (предоставляется автоматически `YdbCoreModule`):
+
+```ts
+@Injectable()
+export class OrderService {
+  constructor(private readonly txManager: YdbTransactionManager) {}
+
+  async transfer(fromId: string, toId: string) {
+    await this.txManager.runInTransaction(async (trx) => {
+      const from = await UserEntity.find({ uuid: fromId }, { trx });
+      await UserEntity.save(from, { trx });
+    });
+  }
+}
+```
+
+### Опции исполнения (#98)
+
+`runInTransaction(fn, options)` принимает опции, которые пробрасываются в вызов транзакции SDK (`client.transaction(options, ...)`):
+
+```ts
+await txManager.runInTransaction(
+  async (trx, signal) => {
+    await OrderEntity.save(order, { trx });
+  },
+  {
+    isolation: 'snapshotReadWrite',   // serializableReadWrite (по умолчанию) | snapshotReadOnly | snapshotReadWrite
+    timeout: 5_000,                    // таймаут НА КАЖДУЮ ПОПЫТКУ (см. ниже)
+    signal: controller.signal,         // ГЛОБАЛЬНАЯ отмена: вся операция, все попытки
+    idempotent: true,                  // см. «Retry-семантика» ниже
+  },
+);
+```
+
+**Семантика отмены при `idempotent: true`** — у `signal` и `timeout` разный охват:
+
+- `signal` — **глобальный**: пробрасывается в SDK как есть и отменяет операцию целиком, включая все retry-попытки;
+- `timeout` — **на каждую попытку**: SDK может повторить колбэк заново (`idempotent: true`), и каждая попытка получает свежее окно таймаута — retry никогда не стартует с уже истёкшим дедлайном первой попытки. Сигнал, который получает колбэк (`fn(trx, signal)`), объединяет сигнал попытки от SDK и `AbortSignal.timeout(timeout)` этой попытки.
+
+Полный дедлайн на всю операцию задаётся явно через пользовательский сигнал:
+
+```ts
+await txManager.runInTransaction(fn, {
+  idempotent: true,
+  signal: AbortSignal.timeout(30_000), // общий лимит на все попытки
+});
+```
+
+Опции валидируются fail-fast: неизвестный ключ (опечатка), невалидный уровень изоляции, неположительный `timeout`, не-`AbortSignal` — ошибка сразу.
+
+### Вложенные транзакции
+
+Вложенный `runInTransaction()` по умолчанию **запрещён**: второй вызов откроет независимую транзакцию на другой сессии, что почти всегда ошибка. Чтобы присоединиться к активной транзакции (коммит/откат остаются у внешнего вызова), передайте `{ reuse: true }`:
+
+```ts
+await txManager.runInTransaction(async () => {
+  await txManager.runInTransaction(async (trx2) => {
+    // Error: Nested runInTransaction() detected ...
+  });
+});
+
+await txManager.runInTransaction(async () => {
+  await txManager.runInTransaction(async (sameTrx) => {
+    // та же транзакция, что и снаружи
+  }, { reuse: true });
+});
+```
+
+Вложенность определяется по AsyncLocalStorage-цепочке и только для того же executor'а БД; вложенные транзакции на другом драйвере/базе считаются независимыми.
+
+### Ambient-контекст (opt-in)
+
+Один пропущенный `{ trx }` — и запрос молча уйдёт вне транзакции. Ambient-режим решает это: операции репозиториев без явного `{ trx }` автоматически выполняются в активной транзакции.
+
+```ts
+// NestJS: глобально при инициализации модуля
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    // ...
+    transactions: { ambient: true },
+  }),
+});
+
+// Standalone: через опции модуля (YdbModuleOptions)
+// или точечно, на один вызов:
+await txManager.runInTransaction(async () => {
+  await OrderEntity.save(order);          // уйдёт в транзакцию автоматически
+  await OrderEntity.save(other, { trx }); // явный trx тоже работает
+}, { ambient: true });
+```
+
+Правила безопасности:
+
+- если при активной ambient-транзакции явно передан **другой** `{ trx }` — ошибка смешивания, а не молчаливое расхождение данных;
+- после commit/rollback контекст очищается;
+- параллельные транзакции не перетекают друг в друга;
+- ambient выключен по умолчанию: явный `{ trx }` работает как раньше.
+
+### Запросы вне транзакции
+
+Для отладки можно включить предупреждение о каждом запросе вне какой бы то ни было транзакции:
+
+```ts
+transactions: { warnOutsideTransaction: true } // console.warn на каждый такой запрос
+```
+
+По умолчанию выключено — предупреждения не шумят.
+
+### Retry-семантика (важно!)
+
+SDK (`@ydbjs/query`) при `idempotent: true` повторяет **весь колбэк** транзакции при retryable-ошибках (сбой сети, смерть сессии). Это значит:
+
+- побочные эффекты колбэка выполняются повторно;
+- lifecycle hooks (`@BeforeInsert`, `@AfterInsert`, ...) срабатывают больше одного раза;
+- каждая попытка получает новую сессию/транзакцию (новый `trx`).
+
+Колбэк должен быть устойчив к повтору. Без `idempotent: true` повторов нет. Настраиваемая политика ORM с ограничением попыток — опцией `retry`: см. «Retry-политика по типу ошибки (#27)» ниже.
+
+### Retry-политика по типу ошибки (#27)
+
+SDK (`@ydbjs/query`) ретраит одиночные запросы и тело транзакции **внутри себя** (неограниченный бюджет по умолчанию, настройкам не поддаётся). ORM подключает свою политику **плагинами** в executor и транзакции так, чтобы слои повтора не перемножались. Приоритет слоёв детерминирован:
+
+| Конфигурация | Кто ретраит | Попытки |
+|---|---|---|
+| Политика выключена (по умолчанию) | только SDK (как в #98) | без изменений |
+| `retry` на executor'е / `YdbModuleOptions` | политика ORM для ЯВНО помеченных идемпотентных запросов; внутренний цикл SDK гасится через событие `retry` запроса | ровно `maxAttempts` обращений к БД |
+| `retry` в `runInTransaction()` | политика ORM: одна попытка тела на попытку политики (внутренний цикл SDK гасится защитным лимитом) | ровно `maxAttempts` исполнений колбэка |
+
+#### Правило идемпотентности (#27, fail-safe)
+
+Политика повторяет **только явно помеченные идемпотентными** запросы:
+
+```ts
+// ❌ Не помечен (INSERT/UPSERT/UPDATE/DELETE по умолчанию):
+// выполнится РОВНО ОДИН раз даже при retry: true.
+await UserEntity.save(user);
+
+// ❌ Транзитная ошибка у незнакомой записи → повтор небезопасен:
+await OrderEntity.findBy({ status: 'new' }); // тоже один раз
+
+// ✅ Помечен идемпотентным: политика может повторить при
+// ABORTED / UNAVAILABLE / OVERLOADED.
+const users = await UserEntity.findAll({}, { idempotent: true });
+await UserEntity.save(user, { idempotent: true }); // операция устойчива к повтору
+await executor`SELECT ...`.idempotent(true);       // прямой executor
+```
+
+Почему так: после двусмысленного сбоя транспорта (`UNAVAILABLE` и т.п.) невозможно знать, применилась ли запись на сервере. Повтор незнакомой записи может продублировать побочные эффекты, поэтому по умолчанию любой непомеченный запрос выполняется ровно один раз (внутренний цикл SDK для него тоже гасится). Помечайте `{ idempotent: true }` только операции, устойчивые к повтору. Пометка пробрасывается в SDK как `.idempotent(true)`.
+
+Транзакции — отдельный контракт: опция `retry` в `runInTransaction()` управляет телом целиком и требует идемпотентности КОЛБЭКА (#98); пометки отдельных запросов внутри тела на это не влияют (SDK их там игнорирует).
+
+#### Подключение к executor
+
+```ts
+import { createAuth } from '@ycforge/auth';
+import { createExecutor, createDriver } from '@ycforge/ydb-orm';
+
+const driver = createDriver({ endpoint: '...', auth: createAuth({ type: 'anonymous' }) });
+
+// standalone:
+const executor = createExecutor(driver, { retry: { maxAttempts: 5 } });
+
+// Вручную поверх готового executor'а (оборачивать ОДИН раз):
+import { withRetryPolicy } from '@ycforge/ydb-orm';
+const resilient = withRetryPolicy(executor, { maxAttempts: 5 });
+```
+
+NestJS:
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: '...',
+    auth: createAuth({ type: 'anonymous' }),
+    retry: true, // или объект YdbRetryPolicyOptions; false/undefined — выключено
+  }),
+});
+```
+
+#### Подключение к транзакциям
+
+```ts
+await txManager.runInTransaction(
+  async (trx) => {
+    await OrderEntity.save(order, { trx });
+  },
+  {
+    idempotent: true,   // семантика #98: колбэк обязан быть устойчивым к повтору
+    retry: true,        // или объект политики; нельзя совмещать с reuse
+    maxAttempts: 5,
+  },
+);
+```
+
+При заданной политике повторами тела владеет ORM: между попытками — bounded backoff с jitter, повторяются только транзитные статусы, `timeout` по-прежнему действует на каждую попытку (свежее окно), глобальный `signal` и `idempotent` пробрасываются в SDK как раньше. Без опции `retry` поведение прежнее (#98): тело ретраит только SDK.
+
+#### Классификация ошибок
+
+Структурная — по статус-кодам YDB (`@ydbjs/error`), текст сообщений не анализируется:
+
+- **повторяются только** `ABORTED`, `UNAVAILABLE`, `OVERLOADED` (и `CommitError`, в причине которого такой статус);
+- всё остальное пробрасывается немедленно: детерминированные ошибки приложения/валидации/схемы, включая статусы, которые SDK ретраит сам (`BAD_SESSION`, `SESSION_BUSY`, `SESSION_EXPIRED`, `UNDETERMINED`, `TIMEOUT`);
+- при исчерпании попыток наружу выходит **последняя исходная ошибка** как есть.
+
+**Задержка** перед попыткой N: `min(baseDelayMs * 2^(N-1), maxDelayMs)`, затем jitter сжимает её в коридор `[(1 - jitterRatio) * raw, raw]`. Дефолты: `maxAttempts: 3`, `baseDelayMs: 100`, `maxDelayMs: 5000`, `jitterRatio: 0.25`. Для тестов инъецируются `sleep(ms, signal)` и `rng()`.
+
+**Требования идемпотентности** — те же, что у `idempotent`-транзакций (#98): при повторе заново выполняется вся операция (колбэк/запрос), побочные эффекты и lifecycle hooks могут сработать больше одного раза. Отмена (`signal.reason`) не превращается в повтор — операция завершается причиной отмены. Для запросов через executor действует правило идемпотентности выше: без явной пометки запрос не ретрается вовсе.
+
+Для составных потоков вне транзакции доступна и явная обёртка:
+
+```ts
+import { runWithRetry } from '@ycforge/ydb-orm';
+
+const result = await runWithRetry(async () => {
+  const user = await UserEntity.find({ uuid }, {});
+  const orders = await OrderEntity.findBy({ userId: user.uuid }, { limit: 50 });
+  return buildReport(user, orders);
+}, { maxAttempts: 5 });
+```
+
+Не вкладывайте `runWithRetry()` внутрь уже покрытых политикой executor'а/`runInTransaction()` — это то самое перемножение, которое встроенные интеграции исключают. Точка расширения для нестандартных обёрток ошибок — `shouldRetry(error)`; утилиты `classifyYdbError()` / `isTransientYdbError()` доступны отдельно.
+
+
+## Логирование запросов
+
+### Standalone
+
+```ts
+import { createExecutor, createDriver, ConsoleQueryLogger } from '@ycforge/ydb-orm';
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
+const driver = createDriver({
+  endpoint: '...',
+  auth: createAuth(authKeyFromFile('./authorized_key.json')),
+});
+
+const executor = createExecutor(driver, {
+  logQueries: true, // ConsoleQueryLogger по умолчанию
+});
+```
+
+### NestJS
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: '...',
+    auth: createAuth(authKeyFromFile('./authorized_key.json')),
+    logQueries: true,
+    // logQueries: myLogger, // или свой экземпляр QueryLogger
+  }),
+});
+```
+
+- `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (все значения маскируются), `durationMs` и опциональную `error`.
+- Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
+- Маскирование параметров: секреты/PII по имени параметра (`password`, `token`, `secret`, `authorization`, `email`, credential, phone, card, blind index `{field}_bi` и т.п.) заменяются на `<redacted>` для значений любой длины; бинарные/зашифрованные данные логируются только длиной (`<bytes:N>`); остальные длинные строки обрезаются до 64 символов.
+
+## Аутентификация
+
+Аутентификация делегируется пакету [`@ycforge/auth`](https://github.com/ycforge/auth):
+`ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
+типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
+передаётся в опцию `auth`:
+
+```ts
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
+// authorized key сервисного аккаунта
+const auth = createAuth(authKeyFromFile('./authorized_key.json'));
+
+// или другие стратегии:
+const auth = createAuth({ type: 'metadata' });
+const auth = createAuth({ type: 'anonymous' });
+const auth = createAuth({ type: 'iam_token', token: process.env.IAM_TOKEN! });
+const auth = createAuth({ type: 'static', username: 'user', password: 'pass' });
+```
+
+Standalone:
+
+```ts
+const driver = createDriver({
+  endpoint: process.env.YDB_ENDPOINT!,
+  auth,
+});
+```
+
+NestJS:
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: process.env.YDB_ENDPOINT!,
+    auth,
+  }),
+});
+```
+
+`AuthManager` адаптируется в `CredentialsProvider` через
+`createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
+`@ycforge/auth/ydb` (ORM делает это автоматически). Для стратегии `static`
+адаптеру нужен `endpoint` модуля.
+
+### Вместе с `@ycforge/auth/nestjs`
+
+Если в проекте уже используется `@ycforge/auth/nestjs`, можно создать
+`AuthManager` в DI и передать его в ORM (NestJS):
+
+```ts
+import { Module } from '@nestjs/common';
+import { YcAuthModule, InjectAuth } from '@ycforge/auth/nestjs';
+import { YdbCoreModule } from '@ycforge/ydb-orm/nest';
+
+@Module({
+  imports: [
+    YcAuthModule.forRoot({
+      config: authKeyFromFile('./authorized_key.json'),
+      global: true,
+    }),
+    YdbCoreModule.forRootAsync({
+      useFactory: (@InjectAuth() auth) => ({
+        endpoint: process.env.YDB_ENDPOINT!,
+        auth,
+      }),
+      inject: [YcAuthModule], // или токен YCFORGE_AUTH
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+### Кастомный CredentialsProvider
+
+Готовый провайдер можно передать напрямую — опция `credentialsProvider`
+(тип `CredentialsProvider` из `@ydbjs/auth`, реэкспортирован из пакета):
+
+```ts
+import { CredentialsProvider } from '@ycforge/ydb-orm';
+import { createDriver } from '@ycforge/ydb-orm';
+
+class OAuthTokenProvider extends CredentialsProvider {
+  getToken(): Promise<string> {
+    return fetchOAuthToken(); // ваша реализация получения токена
+  }
+}
+
+// standalone
+const driver = createDriver({
+  endpoint: process.env.YDB_ENDPOINT!,
+  credentialsProvider: new OAuthTokenProvider(),
+});
+```
+
+NestJS:
+
+```ts
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: process.env.YDB_ENDPOINT!,
+    credentialsProvider: new OAuthTokenProvider(),
+  }),
+});
+```
+
+Провайдер также доступен для инжекции через DI-токен `YDB_CREDENTIALS_PROVIDER`
+(экспортируется из подпакета `nest`). Приоритет источников провайдера детерминирован:
+
+1. `credentialsProvider` — явная опция модуля;
+2. `auth` — `AuthManager` из `@ycforge/auth`;
+3. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
+4. `driverOptions.credentialsProvider`.
+
+Задание одновременно `driverOptions.credentialsProvider` и верхнеуровневого
+источника (`credentialsProvider` или `auth`) — ошибка конфигурации
+(`Conflicting YDB credentials configuration`): молчаливый выбор одного из них
+не выполняется. Если ни `auth`, ни `credentialsProvider`, ни инжектированный
+провайдер не заданы — `ydb-orm` бросает `YDB auth is required: pass "auth"`
+(AuthManager) or a CredentialsProvider`.
+
+---
 
 ## Миграции
 
-По аналогии с TypeORM: миграция — класс с `up`/`down`, получающий `YdbExecutor`. Применённые миграции хранятся в таблице `ydb_migrations` (создаётся автоматически). Файлы миграций — `<timestamp>-<Name>.ts` в директории `./migrations`, порядок выполнения — по имени файла. Node ≥ 22.18 импортирует `.ts` напрямую, отдельный ts-node не нужен. Из-за нативного стриппинга типов типы (`YdbMigration`, `YdbExecutor`) импортируйте через `import type` — обычный именованный импорт типа упадёт в рантайме.
+По аналогии с TypeORM: миграция — класс с `up`/`down`, получающий `YdbExecutor`. Применённые миграции хранятся в таблице `ydb_migrations` (создаётся автоматически). Файлы миграций — `<timestamp>-<Name>.ts` в директории `./migrations`, порядок выполнения — по имени файла. Node ≥ 22.18 импортирует `.ts` напрямую, отдельный ts-node не нужен. Из-за нативного стриппинга типы (`YdbMigration`, `YdbExecutor`) импортируйте через `import type` — обычный именованный импорт типа упадёт в рантайме.
 
 Надёжность выполнения (#101):
 
@@ -544,334 +1069,7 @@ export default {
 
 `YdbMigrationRunner` (run/revert/status, восстановление после сбоев — `markMigrationApplied`/`removeMigrationRecord`), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.
 
-## Транзакции
-
-```ts
-constructor(private readonly txManager: YdbTransactionManager) {}
-
-await this.txManager.runInTransaction(async (trx) => {
-  const from = await UserEntity.find({ uuid: fromId }, { trx });
-  await UserEntity.save(from, { trx });
-});
-```
-
-### Опции исполнения (#98)
-
-`runInTransaction(fn, options)` принимает опции, которые пробрасываются в вызов транзакции SDK (`client.transaction(options, ...)`):
-
-```ts
-await this.txManager.runInTransaction(
-  async (trx, signal) => {
-    await OrderEntity.save(order, { trx });
-  },
-  {
-    isolation: 'snapshotReadWrite',   // serializableReadWrite (по умолчанию) | snapshotReadOnly | snapshotReadWrite
-    timeout: 5_000,                    // таймаут НА КАЖДУЮ ПОПЫТКУ (см. ниже)
-    signal: controller.signal,         // ГЛОБАЛЬНАЯ отмена: вся операция, все попытки
-    idempotent: true,                  // см. «Retry-семантика» ниже
-  },
-);
-```
-
-**Семантика отмены при `idempotent: true`** — у `signal` и `timeout` разный охват:
-
-- `signal` — **глобальный**: пробрасывается в SDK как есть и отменяет операцию целиком, включая все retry-попытки;
-- `timeout` — **на каждую попытку**: SDK может повторить колбэк заново (`idempotent: true`), и каждая попытка получает свежее окно таймаута — retry никогда не стартует с уже истёкшим дедлайном первой попытки. Сигнал, который получает колбэк (`fn(trx, signal)`), объединяет сигнал попытки от SDK и `AbortSignal.timeout(timeout)` этой попытки.
-
-Полный дедлайн на всю операцию задаётся явно через пользовательский сигнал:
-
-```ts
-await this.txManager.runInTransaction(fn, {
-  idempotent: true,
-  signal: AbortSignal.timeout(30_000), // общий лимит на все попытки
-});
-```
-
-Опции валидируются fail-fast: неизвестный ключ (опечатка), невалидный уровень изоляции, неположительный `timeout`, не-`AbortSignal` — ошибка сразу.
-
-### Вложенные транзакции
-
-Вложенный `runInTransaction()` по умолчанию **запрещён**: второй вызов откроет независимую транзакцию на другой сессии, что почти всегда ошибка. Чтобы присоединиться к активной транзакции (коммит/откат остаются у внешнего вызова), передайте `{ reuse: true }`:
-
-```ts
-await txManager.runInTransaction(async () => {
-  await txManager.runInTransaction(async (trx2) => {
-    // Error: Nested runInTransaction() detected ...
-  });
-});
-
-await txManager.runInTransaction(async () => {
-  await txManager.runInTransaction(async (sameTrx) => {
-    // та же транзакция, что и снаружи
-  }, { reuse: true });
-});
-```
-
-Вложенность определяется по AsyncLocalStorage-цепочке и только для того же executor'а БД; вложенные транзакции на другом драйвере/базе считаются независимыми.
-
-### Ambient-контекст (opt-in)
-
-Один пропущенный `{ trx }` — и запрос молча уйдёт вне транзакции. Ambient-режим решает это: операции репозиториев без явного `{ trx }` автоматически выполняются в активной транзакции.
-
-```ts
-YdbCoreModule.forRootAsync({
-  useFactory: () => ({
-    // ...
-    transactions: { ambient: true }, // глобально для процесса
-  }),
-});
-
-// либо точечно, на один вызов:
-await txManager.runInTransaction(async () => {
-  await OrderEntity.save(order);          // уйдёт в транзакцию автоматически
-  await OrderEntity.save(other, { trx }); // явный trx тоже работает
-}, { ambient: true });
-```
-
-Правила безопасности:
-
-- если при активной ambient-транзакции явно передан **другой** `{ trx }` — ошибка смешивания, а не молчаливое расхождение данных;
-- после commit/rollback контекст очищается;
-- параллельные транзакции не перетекают друг в друга;
-- ambient выключен по умолчанию: явный `{ trx }` работает как раньше.
-
-### Запросы вне транзакции
-
-Для отладки можно включить предупреждение о каждом запросе вне какой бы то ни было транзакции:
-
-```ts
-transactions: { warnOutsideTransaction: true } // console.warn на каждый такой запрос
-```
-
-По умолчанию выключено — предупреждения не шумят.
-
-### Retry-семантика (важно!)
-
-SDK (`@ydbjs/query`) при `idempotent: true` повторяет **весь колбэк** транзакции при retryable-ошибках (сбой сети, смерть сессии). Это значит:
-
-- побочные эффекты колбэка выполняются повторно;
-- lifecycle hooks (`@BeforeInsert`, `@AfterInsert`, ...) срабатывают больше одного раза;
-- каждая попытка получает новую сессию/транзакцию (новый `trx`).
-
-Колбэк должен быть устойчив к повтору. Без `idempotent: true` повторов нет. Настраиваемая политика ORM с ограничением попыток — опцией `retry`: см. «Retry-политика по типу ошибки (#27)» ниже.
-
-### Retry-политика по типу ошибки (#27)
-
-SDK (`@ydbjs/query`) ретраит одиночные запросы и тело транзакции **внутри себя** (неограниченный бюджет по умолчанию, настройкам не поддаётся). ORM подключает свою политику **плагинами** в executor и транзакции так, чтобы слои повтора не перемножались. Приоритет слоёв детерминирован:
-
-| Конфигурация | Кто ретраит | Попытки |
-|---|---|---|
-| Политика выключена (по умолчанию) | только SDK (как в #98) | без изменений |
-| `retry` на executor'е / `YdbModuleOptions.retry | политика ORM для ЯВНО помеченных идемпотентных запросов; внутренний цикл SDK гасится через событие `retry запроса | ровно `maxAttempts обращений к БД |
-| `retry в `runInTransaction() | политика ORM: одна попытка тела на попытку политики (внутренний цикл SDK гасится защитным лимитом) | ровно `maxAttempts исполнений колбэка |
-
-#### Правило идемпотентности (#27, fail-safe)
-
-Политика повторяет **только явно помеченные идемпотентными** запросы:
-
-```ts
-// ❌ Не помечен (INSERT/UPSERT/UPDATE/DELETE по умолчанию):
-// выполнится РОВНО ОДИН раз даже при retry: true.
-await UserEntity.save(user);
-
-// ❌ Транзитная ошибка у незнакомой записи → повтор небезопасен:
-await OrderEntity.findBy({ status: 'new' }); // тоже один раз
-
-// ✅ Помечен идемпотентным: политика может повторить при
-// ABORTED / UNAVAILABLE / OVERLOADED.
-const users = await UserEntity.findAll({}, { idempotent: true });
-await UserEntity.save(user, { idempotent: true }); // операция устойчива к повтору
-await executor`SELECT ...`.idempotent(true);       // прямой executor
-```
-
-Почему так: после двусмысленного сбоя транспорта (`UNAVAILABLE и т.п.) невозможно знать, применилась ли запись на сервере. Повтор незнакомой записи может продублировать побочные эффекты, поэтому по умолчанию любой непомеченный запрос выполняется ровно один раз (внутренний цикл SDK для него тоже гасится). Помечайте `{ idempotent: true } только операции, устойчивые к повтору. Пометка пробрасывается в SDK как `.idempotent(true).
-
-Транзакции — отдельный контракт: опция `retry в runInTransaction() управляет телом целиком и требует идемпотентности КОЛБЭКА (#98); пометки отдельных запросов внутри тела на это не влияют (SDK их там игнорирует).
-
-#### Подключение к executor
-
-```ts
-import { createAuth } from '@ycforge/auth';
-
-// NestJS — опция модуля, действует для всех операций всех сущностей:
-YdbCoreModule.forRootAsync({
-  useFactory: () => ({
-    endpoint: '...',
-    auth: createAuth({ type: 'anonymous' }),
-    retry: true, // или объект YdbRetryPolicyOptions; false/undefined — выключено
-  }),
-});
-
-// Standalone/CLI:
-const executor = createExecutor(driver, { ...opts, retry: { maxAttempts: 5 } });
-
-// Вручную поверх готового executor'а (оборачивать ОДИН раз):
-const resilient = withRetryPolicy(executor, { maxAttempts: 5 });
-```
-
-#### Подключение к транзакциям
-
-```ts
-await this.txManager.runInTransaction(
-  async (trx) => {
-    await OrderEntity.save(order, { trx });
-  },
-  {
-    idempotent: true,   // семантика #98: колбэк обязан быть устойчивым к повтору
-    retry: true,        // или объект политики; нельзя совмещать с reuse
-    maxAttempts: 5,
-  },
-);
-```
-
-При заданной политике повторами тела владеет ORM: между попытками — bounded backoff с jitter, повторяются только транзитные статусы, `timeout` по-прежнему действует на каждую попытку (свежее окно), глобальный `signal` и `idempotent` пробрасываются в SDK как раньше. Без опции `retry` поведение прежнее (#98): тело ретраит только SDK.
-
-#### Классификация ошибок
-
-Структурная — по статус-кодам YDB (`@ydbjs/error`), текст сообщений не анализируется:
-
-- **повторяются только** `ABORTED`, `UNAVAILABLE`, `OVERLOADED` (и `CommitError`, в причине которого такой статус);
-- всё остальное пробрасывается немедленно: детерминированные ошибки приложения/валидации/схемы, включая статусы, которые SDK ретраит сам (`BAD_SESSION`, `SESSION_BUSY`, `SESSION_EXPIRED`, `UNDETERMINED`, `TIMEOUT`);
-- при исчерпании попыток наружу выходит **последняя исходная ошибка** как есть.
-
-**Задержка** перед попыткой N: `min(baseDelayMs * 2^(N-1), maxDelayMs)`, затем jitter сжимает её в коридор `[(1 - jitterRatio) * raw, raw]`. Дефолты: `maxAttempts: 3`, `baseDelayMs: 100`, `maxDelayMs: 5000`, `jitterRatio: 0.25`. Для тестов инъецируются `sleep(ms, signal)` и `rng()`.
-
-**Требования идемпотентности** — те же, что у `idempotent`-транзакций (#98): при повторе заново выполняется вся операция (колбэк/запрос), побочные эффекты и lifecycle hooks могут сработать больше одного раза. Отмена (`signal.reason`) не превращается в повтор — операция завершается причиной отмены. Для запросов через executor действует правило идемпотентности выше: без явной пометки запрос не ретрается вовсе.
-
-Для составных потоков вне транзакции доступна и явная обёртка:
-
-```ts
-import { runWithRetry } from '@ycforge/ydb-orm';
-
-const result = await runWithRetry(async () => {
-  const user = await UserEntity.find({ uuid }, {});
-  const orders = await OrderEntity.findBy({ userId: user.uuid }, { limit: 50 });
-  return buildReport(user, orders);
-}, { maxAttempts: 5 });
-```
-
-Не вкладывайте `runWithRetry()` внутрь уже покрытых политикой executor'а/`runInTransaction()` — это то самое перемножение, которое встроенные интеграции исключают. Точка расширения для нестандартных обёрток ошибок — `shouldRetry(error)`; утилиты `classifyYdbError()` / `isTransientYdbError()` доступны отдельно.
-
-
-## Логирование запросов
-
-Опция `logQueries` в `forRootAsync` (`YdbModuleOptions`) включает логирование всех запросов:
-
-```ts
-import { createAuth, authKeyFromFile } from '@ycforge/auth';
-
-YdbCoreModule.forRootAsync({
-  useFactory: () => ({
-    endpoint: '...',
-    auth: createAuth(authKeyFromFile('./authorized_key.json')),
-    logQueries: true, // консольный логгер по умолчанию
-    // logQueries: myLogger, // или свой экземпляр QueryLogger
-  }),
-})
-```
-
-- `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (все значения маскируются), `durationMs` и опциональную `error`.
-- Аналогично работает standalone `createExecutor(driver, opts)` (учитывает `poolOptions` и `logQueries`). Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
-- Маскирование параметров: секреты/PII по имени параметра (`password`, `token`, `secret`, `authorization`, `email`, credential, phone, card, blind index `{field}_bi` и т.п.) заменяются на `<redacted>` для значений любой длины; бинарные/зашифрованные данные логируются только длиной (`<bytes:N>`); остальные длинные строки обрезаются до 64 символов.
-
-## Аутентификация
-
-Аутентификация делегируется пакету [`@ycforge/auth`](https://github.com/ycforge/auth):
-`ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
-типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
-передаётся в опции `auth`:
-
-```ts
-import { createAuth, authKeyFromFile } from '@ycforge/auth';
-
-// authorized key сервисного аккаунта
-const auth = createAuth(authKeyFromFile('./authorized_key.json'));
-
-// или другие стратегии:
-const auth = createAuth({ type: 'metadata' });
-const auth = createAuth({ type: 'anonymous' });
-const auth = createAuth({ type: 'iam_token', token: process.env.IAM_TOKEN! });
-const auth = createAuth({ type: 'static', username: 'user', password: 'pass' });
-
-YdbCoreModule.forRootAsync({
-  useFactory: () => ({
-    endpoint: process.env.YDB_ENDPOINT!,
-    auth,
-    sync: true,
-  }),
-});
-```
-
-`AuthManager` адаптируется в `CredentialsProvider` через
-`createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
-`@ycforge/auth/ydb` (ORM делает это автоматически). Для стратегии `static`
-адаптеру нужен `endpoint` модуля.
-
-### Вместе с `@ycforge/auth/nestjs`
-
-Если в проекте уже используется `@ycforge/auth/nestjs`, можно создать
-`AuthManager` в DI и передать его в ORM:
-
-```ts
-import { Module } from '@nestjs/common';
-import { YcAuthModule, InjectAuth } from '@ycforge/auth/nestjs';
-import { YdbCoreModule } from '@ycforge/ydb-orm';
-
-@Module({
-  imports: [
-    YcAuthModule.forRoot({
-      config: authKeyFromFile('./authorized_key.json'),
-      global: true,
-    }),
-    YdbCoreModule.forRootAsync({
-      useFactory: (@InjectAuth() auth) => ({
-        endpoint: process.env.YDB_ENDPOINT!,
-        auth,
-      }),
-      inject: [YcAuthModule], // или токен YCFORGE_AUTH
-    }),
-  ],
-})
-export class AppModule {}
-```
-
-### Кастомный CredentialsProvider
-
-Готовый провайдер можно передать напрямую — опция `credentialsProvider`
-(тип `CredentialsProvider` из `@ydbjs/auth`, реэкспортирован из пакета):
-
-```ts
-import { CredentialsProvider } from '@ycforge/ydb-orm';
-
-class OAuthTokenProvider extends CredentialsProvider {
-  getToken(): Promise<string> {
-    return fetchOAuthToken(); // ваша реализация получения токена
-  }
-}
-
-YdbCoreModule.forRootAsync({
-  useFactory: () => ({
-    endpoint: process.env.YDB_ENDPOINT!,
-    credentialsProvider: new OAuthTokenProvider(),
-  }),
-});
-```
-
-Провайдер также доступен для инжекции через DI-токен `YDB_CREDENTIALS_PROVIDER`
-(экспортируется ядром). Приоритет источников провайдера детерминирован:
-
-1. `credentialsProvider` — явная опция модуля;
-2. `auth` — `AuthManager` из `@ycforge/auth`;
-3. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
-4. `driverOptions.credentialsProvider`.
-
-Задание одновременно `driverOptions.credentialsProvider` и верхнеуровневого
-источника (`credentialsProvider` или `auth`) — ошибка конфигурации
-(`Conflicting YDB credentials configuration`): молчаливый выбор одного из них
-не выполняется. Если ни `auth`, ни `credentialsProvider`, ни инжектированный
-провайдер не заданы — `ydb-orm` бросает `YDB auth is required: pass "auth"
-(AuthManager) or a CredentialsProvider`.
+---
 
 ## Разработка
 

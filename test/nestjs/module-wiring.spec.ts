@@ -5,13 +5,13 @@ import { createAuth } from '@ycforge/auth';
 import { Uuid } from '@ydbjs/value/primitive';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YdbTransactionManager,
   YDB_DRIVER,
   YDB_QUERY,
   YDB_SCHEMA_SYNC,
   YdbSchemaSyncer,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { UserRoleEntity } from '../fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
@@ -19,7 +19,7 @@ import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
-  imports: [YdbModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
+  imports: [YdbOrmModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
 })
 class TestFeatureModule {}
 

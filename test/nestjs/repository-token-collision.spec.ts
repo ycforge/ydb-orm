@@ -4,14 +4,14 @@ import { Injectable, Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { createAuth } from '@ycforge/auth';
 import {
-  YdbModule,
+  YdbOrmModule,
   YdbRepository,
   InjectRepository,
   getRepositoryToken,
   YDB_DRIVER,
   YDB_QUERY,
   YDB_SCHEMA_SYNC,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 // Одноимённые классы из разных файлов: оба называются DupEntity
 import { DupEntity as DupEntityA } from '../fixtures/token_collision_a/dup.entity.js';
 import { DupEntity as DupEntityB } from '../fixtures/token_collision_b/dup.entity.js';
@@ -30,7 +30,7 @@ class DupService {
   ) {}
 }
 
-const dupFeature = YdbModule.forFeature([DupEntityA, DupEntityB]);
+const dupFeature = YdbOrmModule.forFeature([DupEntityA, DupEntityB]);
 
 @Module({
   imports: [dupFeature],
@@ -57,7 +57,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
 
     module = await Test.createTestingModule({
       imports: [
-        YdbModule.forRoot({
+        YdbOrmModule.forRoot({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
@@ -133,7 +133,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
     const mock = createMockExecutor([[{ uuid: UUID_A, title: 'again' }]]);
     const extra = await Test.createTestingModule({
       imports: [
-        YdbModule.forRoot({
+        YdbOrmModule.forRoot({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
@@ -141,7 +141,7 @@ describe('NestJS integration: коллизия DI-токенов одноимё�
             sync: false,
           }),
         }),
-        YdbModule.forFeature([DupEntityA, DupEntityA]),
+        YdbOrmModule.forFeature([DupEntityA, DupEntityA]),
       ],
     })
       .overrideProvider(YDB_DRIVER)

@@ -171,7 +171,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     if (!db) {
       throw new Error(
         `YDB executor not set for entity ${this.entityClass.name}. ` +
-          `Register the entity via YdbModule.forFeature([${this.entityClass.name}]) (NestJS) ` +
+          `Register the entity via YdbOrmModule.forFeature([${this.entityClass.name}]) (NestJS) ` +
           `or pass it to configureEntities([${this.entityClass.name}], { executor }) (standalone).`,
       );
     }
@@ -196,7 +196,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       throw new Error(
         `Encryption provider is not configured for entity ${this.entityClass.name} ` +
           `but it has @YdbEncrypted fields. Pass "encryptionProvider" ` +
-          `in YdbCoreModule.forRootAsync() options or configureEntities().`,
+          `in configureEntities() options or YdbOrmModule.forRootAsync() opts (NestJS).`,
       );
     }
     return provider;
@@ -208,7 +208,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       throw new Error(
         `Blind index provider is not configured for entity ${this.entityClass.name} ` +
           `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
-          `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+          `Pass "blindIndexProvider" in configureEntities() options ` +
           `or configureEntities().`,
       );
     }
@@ -543,7 +543,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       throw new Error(
         `Blind index provider is not configured for entity ${this.entityClass.name} ` +
           `but it has @YdbEncrypted({ blindIndex: true }) fields. ` +
-          `Pass "blindIndexProvider" in YdbCoreModule.forRootAsync() options ` +
+          `Pass "blindIndexProvider" in configureEntities() options ` +
           `or configureEntities().`,
       );
     }

@@ -1,5 +1,3 @@
-import { Injectable, Inject } from '@nestjs/common';
-import { YDB_QUERY } from '../core/constants.js';
 import { resolveYdbRetryPolicy, runWithRetry } from '../core/retry.js';
 import type { YdbRetryPolicyInput } from '../core/retry.js';
 import type {
@@ -209,9 +207,8 @@ export function validateRunInTransactionOptions(
  *   то же, что у idempotent-транзакций #98.
  * Смешивания слоёв нет: попытки не перемножаются ни в одной из конфигураций.
  */
-@Injectable()
 export class YdbTransactionManager {
-  constructor(@Inject(YDB_QUERY) private readonly db: YdbExecutor) {}
+  constructor(private readonly db: YdbExecutor) {}
 
   /**
    * Выполняет fn внутри транзакции YDB.

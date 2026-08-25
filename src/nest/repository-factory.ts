@@ -6,7 +6,7 @@ import {
   YDB_BLIND_INDEX_PROVIDER,
   YDB_VALIDATION_PROVIDER,
   YDB_CORE_SCOPE,
-} from '../core/constants.js';
+} from './constants.js';
 import type { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import {
   YdbBlindIndexProvider,
@@ -15,7 +15,7 @@ import {
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
-import { getActiveRecordInitToken } from '../repository/repository-token.js';
+import { getActiveRecordInitToken } from './repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
 import {

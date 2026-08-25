@@ -92,15 +92,11 @@ export function resolveCredentialsProvider(
   const provider =
     opts.credentialsProvider ??
     (opts.auth !== undefined
-      ? createYdbCredentialsProvider(
-          opts.auth,
-          YDB_AUTH_USAGE,
-          {
-            endpoint: opts.endpoint,
-            // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
-            secure: !opts.endpoint.startsWith('grpc://'),
-          },
-        )
+      ? createYdbCredentialsProvider(opts.auth, YDB_AUTH_USAGE, {
+          endpoint: opts.endpoint,
+          // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
+          secure: !opts.endpoint.startsWith('grpc://'),
+        })
       : undefined) ??
     injected ??
     opts.driverOptions?.credentialsProvider;

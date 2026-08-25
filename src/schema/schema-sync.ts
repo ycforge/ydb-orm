@@ -1,4 +1,3 @@
-import { Logger } from '@nestjs/common';
 import { Driver } from '@ydbjs/core';
 import { anyUnpack } from '@bufbuild/protobuf/wkt';
 import {
@@ -13,6 +12,7 @@ import { Type, Type_PrimitiveTypeId } from '@ydbjs/api/value';
 import { YdbPrimitive } from '../core/types.js';
 import { YdbExecutor } from '../core/interfaces.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
+import { YdbDevLogger } from '../core/dev-logger.js';
 import {
   getYdbEntityMetadata,
   YdbEntityMetadata,
@@ -912,7 +912,7 @@ export function diffSchemas(
  * в YDB невозможно — такие расхождения приводят к ошибке.
  */
 export class YdbSchemaSyncer {
-  private readonly logger = new Logger(YdbSchemaSyncer.name);
+  private readonly logger = new YdbDevLogger(YdbSchemaSyncer.name);
 
   constructor(
     private readonly driver: Driver,

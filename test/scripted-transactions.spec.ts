@@ -2,13 +2,13 @@ import 'reflect-metadata';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
+import { YdbTransactionManager } from '../src/index.js';
 import {
   YdbCoreModule,
-  YdbModule,
-  YdbTransactionManager,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
-} from '../src/index.js';
+} from '../src/nest/index.js';
 import { createScriptedExecutor } from './helpers/ydb-mock.js';
 import { unavailableError } from './helpers/ydb-responses.js';
 import type { ScriptedMockExecutor } from './helpers/ydb-mock.js';
@@ -30,7 +30,7 @@ const UUID_A = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';
 const UUID_B = '6ad91505-d4f6-4a81-ab65-9dbc68cf4ed6';
 
 @Module({
-  imports: [YdbModule.forFeature([OrderStatusEntity])],
+  imports: [YdbOrmModule.forFeature([OrderStatusEntity])],
 })
 class OrdersFeatureModule {}
 

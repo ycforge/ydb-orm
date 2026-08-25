@@ -5,7 +5,7 @@ import { jest } from '@jest/globals';
 import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
   YDB_VALIDATION_PROVIDER,
@@ -13,8 +13,8 @@ import {
   YdbEntity,
   YdbPrimaryColumn,
   YdbColumn,
-} from '../../src/index.js';
-import type { YdbValidationProvider } from '../../src/index.js';
+} from '../../src/nest/index.js';
+import type { YdbValidationProvider } from '../../src/nest/index.js';
 import { getEntityRuntime } from '../../src/entity/entity-runtime.js';
 import { createMockExecutor, MockExecutor } from '../helpers/mock-executor.js';
 
@@ -28,7 +28,7 @@ class ValidationPlain extends YdbBaseEntity {
 }
 
 @Module({
-  imports: [YdbModule.forFeature([ValidationPlain])],
+  imports: [YdbOrmModule.forFeature([ValidationPlain])],
 })
 class TestFeatureModule {}
 

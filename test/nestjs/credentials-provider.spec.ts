@@ -10,7 +10,7 @@ import {
   YDB_QUERY,
   type YdbModuleOptions,
   type YdbOptionsFactory,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import type { TestingModule } from '@nestjs/testing';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 

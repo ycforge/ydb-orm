@@ -2,15 +2,15 @@ import { jest } from '@jest/globals';
 import { Injectable } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { createAuth } from '@ycforge/auth';
-import { YdbModule, YdbRepository } from '../../src/index.js';
+import { YdbOrmModule, YdbRepository } from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
-import { InjectRepository } from '../../src/repository/repository-token.js';
+import { InjectRepository } from '../../src/nest/repository-token.js';
 import {
   YDB_DRIVER,
   YDB_QUERY,
   YDB_SCHEMA_SYNC,
-} from '../../src/core/constants.js';
+} from '../../src/nest/constants.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 
 @Injectable()
@@ -45,7 +45,7 @@ describe('YdbRepository DI', () => {
 
     module = await Test.createTestingModule({
       imports: [
-        YdbModule.forRoot({
+        YdbOrmModule.forRoot({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             database: '/local',
@@ -54,7 +54,7 @@ describe('YdbRepository DI', () => {
             blindIndexProvider: new TestOnlyEncryptionProvider(),
           }),
         }),
-        YdbModule.forFeature([UserEntity]),
+        YdbOrmModule.forFeature([UserEntity]),
       ],
       providers: [UserService],
     })

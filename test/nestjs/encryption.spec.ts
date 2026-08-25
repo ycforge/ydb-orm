@@ -5,17 +5,17 @@ import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
 import { createMockExecutor, MockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
-  imports: [YdbModule.forFeature([PhotoEntity])],
+  imports: [YdbOrmModule.forFeature([PhotoEntity])],
 })
 class TestFeatureModule {}
 

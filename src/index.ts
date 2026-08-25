@@ -7,8 +7,6 @@
 export type { YdbPrimitive } from './core/types.js';
 export type {
   YdbModuleOptions,
-  YdbOptionsFactory,
-  YdbModuleAsyncOptions,
   YdbQuery,
   YdbExecutor,
   YdbIsolationLevel,
@@ -19,17 +17,6 @@ export type {
   QueryLogger,
   QueryLogEntry,
 } from './core/interfaces.js';
-export {
-  YDB_DRIVER,
-  YDB_QUERY,
-  YDB_OPTIONS,
-  YDB_CREDENTIALS_PROVIDER,
-  YDB_ENCRYPTION_PROVIDER,
-  YDB_BLIND_INDEX_PROVIDER,
-  YDB_VALIDATION_PROVIDER,
-  YDB_SCHEMA_SYNC,
-  YDB_CORE_SCOPE,
-} from './core/constants.js';
 export { mapToYdb } from './core/mapper.js';
 export { quoteIdentifier, validateIdentifier } from './core/sql-utils.js';
 export {
@@ -145,9 +132,6 @@ export type {
 export {
   YdbRepository,
   YdbEntityManager,
-  getRepositoryToken,
-  getActiveRecordInitToken,
-  InjectRepository,
   getOrCreateRepository,
 } from './repository/index.js';
 export type { YdbEntityConstructor } from './repository/index.js';
@@ -197,10 +181,6 @@ export {
   registerYdbEntity,
   getRegisteredYdbEntities,
 } from './metadata/entity-registry.js';
-
-// Интеграция с NestJS
-export { YdbModule } from './module/ydb.module.js';
-export { YdbCoreModule } from './module/ydb-core.module.js';
 
 // Schema sync
 export {

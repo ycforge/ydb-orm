@@ -25,13 +25,9 @@ import {
   YDB_SCHEMA_SYNC,
   YDB_CORE_LIFECYCLE,
   YDB_CORE_SCOPE,
-} from '../core/constants.js';
-import {
-  YdbModuleAsyncOptions,
-  YdbModuleOptions,
-  YdbOptionsFactory,
-  YdbExecutor,
-} from '../core/interfaces.js';
+} from './constants.js';
+import { YdbModuleAsyncOptions, YdbOptionsFactory } from './interfaces.js';
+import type { YdbModuleOptions, YdbExecutor } from '../core/interfaces.js';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -246,7 +242,11 @@ export class YdbCoreModule {
           inject: [YDB_SCHEMA_SYNC],
         },
 
-        YdbTransactionManager,
+        {
+          provide: YdbTransactionManager,
+          useFactory: (db: YdbExecutor) => new YdbTransactionManager(db),
+          inject: [YDB_QUERY],
+        },
       ],
       exports: [
         YDB_OPTIONS,
