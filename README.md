@@ -776,8 +776,36 @@ YdbCoreModule.forRootAsync({
 ## Аутентификация (`auth_type`)
 
 - `meta` — IAM из metadata-сервиса (внутри Yandex Cloud);
-- `auth_key` — authorized key JSON сервисного аккаунта (`authOptions.authorized_key_path`); JWT-обмен реализован на `fetch`, без тяжёлых SDK;
+- `auth_key` — authorized key JSON сервисного аккаунта (`authOptions.authorized_key_path`); JWT-обмен реализован на `fetch`, без тяжёлых SDK (делегируется `AuthKeyTokenProvider` из пакета `@ycforge/auth`);
 - `anonymous` — локальная YDB.
+
+### AuthManager из `@ycforge/auth`
+
+Вместо `auth_type` можно передать готовый `AuthManager` из пакета
+[`@ycforge/auth`](https://github.com/ycforge/auth) — опция `auth`. Он покрывает
+стратегии `iam_token` / `metadata` / `auth_key` / `access_token` / `anonymous` /
+`static` (login/password) и единый кэш/refresh токенов:
+
+```ts
+import { createAuth, authKeyFromFile } from '@ycforge/auth';
+
+const auth = createAuth(authKeyFromFile('./authorized_key.json'));
+// или несколько именованных конфигов: createAuth({ configs: { default: {...}, iot: {...} } })
+
+YdbCoreModule.forRootAsync({
+  useFactory: () => ({
+    endpoint: process.env.YDB_ENDPOINT!,
+    authOptions: {},
+    auth,
+  }),
+});
+```
+
+`AuthManager` адаптируется в `CredentialsProvider` через
+`createYdbCredentialsProvider` из `@ycforge/auth/ydb` (для стратегии `static`
+используется `endpoint` из опций модуля). По приоритету `auth` идёт сразу после
+явного `credentialsProvider` и перед остальными источниками; комбинация
+`auth` + `driverOptions.credentialsProvider` — ошибка конфигурации.
 
 ### Кастомный CredentialsProvider
 
@@ -806,13 +834,15 @@ YdbCoreModule.forRootAsync({
 (экспортируется ядром). Приоритет источников провайдера детерминирован:
 
 1. `credentialsProvider` — явная опция модуля;
-2. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
-3. `driverOptions.credentialsProvider`;
-4. создание по `auth_type`.
+2. `auth` — `AuthManager` из `@ycforge/auth`;
+3. DI-провайдер `YDB_CREDENTIALS_PROVIDER`;
+4. `driverOptions.credentialsProvider`;
+5. создание по `auth_type`.
 
-Задание одновременно `credentialsProvider` и `driverOptions.credentialsProvider`
-— ошибка конфигурации (`Conflicting YDB credentials configuration`): молчаливый
-выбор одного из них не выполняется. Без кастомного провайдера поведение
+Задание одновременно `driverOptions.credentialsProvider` и верхнеуровневого
+источника (`credentialsProvider` или `auth`) — ошибка конфигурации
+(`Conflicting YDB credentials configuration`): молчаливый выбор одного из них
+не выполняется. Без кастомного провайдера поведение
 по умолчанию (`meta` / `auth_key` / `anonymous`) не меняется.
 
 ## Разработка

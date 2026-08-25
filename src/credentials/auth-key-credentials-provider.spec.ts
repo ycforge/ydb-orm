@@ -6,9 +6,9 @@ import {
   afterEach,
   beforeEach,
 } from '@jest/globals';
-import { Logger } from '@nestjs/common';
 import {
   AuthKeyCredentialsProvider,
+  type AuthKeyCredentialsProviderOptions,
   type IamJWTKeyCredentials,
 } from './auth-key-credentials-provider.js';
 
@@ -49,8 +49,10 @@ const CREDENTIALS: IamJWTKeyCredentials = {
 
 const originalFetch = globalThis.fetch;
 
-function makeProvider(fetchTimeoutMs: number): AuthKeyCredentialsProvider {
-  return new AuthKeyCredentialsProvider(CREDENTIALS, { fetchTimeoutMs });
+function makeProvider(
+  options: AuthKeyCredentialsProviderOptions,
+): AuthKeyCredentialsProvider {
+  return new AuthKeyCredentialsProvider(CREDENTIALS, options);
 }
 
 function okJsonResponse(body: Record<string, unknown>): Response {
@@ -112,26 +114,33 @@ function setFetchMock(mock: jest.Mock): void {
 }
 
 describe('AuthKeyCredentialsProvider (#97)', () => {
-  let errorSpy: jest.SpiedFunction<typeof Logger.prototype.error>;
-  let warnSpy: jest.SpiedFunction<typeof Logger.prototype.warn>;
-  let debugSpy: jest.SpiedFunction<typeof Logger.prototype.debug>;
+  let warnSpy: jest.SpiedFunction<typeof console.warn>;
+  let errorSpy: jest.SpiedFunction<typeof console.error>;
+  let logSpy: jest.SpiedFunction<typeof console.log>;
+  let debugSpy: jest.SpiedFunction<typeof console.debug>;
 
   beforeEach(() => {
-    errorSpy = jest
-      .spyOn(Logger.prototype, 'error')
-      .mockImplementation(() => {});
-    warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
-    debugSpy = jest
-      .spyOn(Logger.prototype, 'debug')
-      .mockImplementation(() => {});
+    // Провайдер делегирует @ycforge/auth, который логирует через console.*.
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    debugSpy = jest.spyOn(console, 'debug').mockImplementation(() => {});
   });
 
   afterEach(() => {
-    errorSpy.mockRestore();
     warnSpy.mockRestore();
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
     debugSpy.mockRestore();
     (globalThis as { fetch: unknown }).fetch = originalFetch;
   });
+
+  function allLogs(): string {
+    return [warnSpy, errorSpy, logSpy, debugSpy]
+      .flatMap((spy) => spy.mock.calls)
+      .map((c) => c.map((a) => String(a)).join(' '))
+      .join('\n');
+  }
 
   it('keeps normal successful caching and refresh behavior', async () => {
     const fetchMock = jest.fn(() =>
@@ -142,7 +151,7 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     expect(await provider.getToken()).toBe('tok-cached');
     expect(await provider.getToken()).toBe('tok-cached');
@@ -155,9 +164,9 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
-    await expect(provider.getToken()).rejects.toThrow(/Invalid expiresAt/);
+    await expect(provider.getToken()).rejects.toThrow(/Invalid timestamp/);
     // Детерминированная ошибка — без ретраев и без шторма на IAM API.
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -168,10 +177,10 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     await expect(provider.getToken()).rejects.toThrow(
-      /Invalid numeric expiresAt/,
+      /Invalid numeric timestamp/,
     );
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -180,7 +189,7 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     const fetchMock = jest.fn(() => okJsonResponse({ iamToken: 'tok-ns' }));
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     expect(await provider.getToken()).toBe('tok-ns');
     expect(await provider.getToken()).toBe('tok-ns');
@@ -198,7 +207,7 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     expect(await provider.getToken()).toBe('tok-ms');
     expect(await provider.getToken()).toBe('tok-ms');
@@ -212,7 +221,7 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     expect(await provider.getToken()).toBe('tok-s');
     expect(await provider.getToken()).toBe('tok-s');
@@ -222,7 +231,10 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
   it('aborts the IAM fetch after the configured timeout (#97)', async () => {
     setFetchMock(abortAwareFetch());
 
-    const provider = makeProvider(30);
+    const provider = makeProvider({
+      fetchTimeoutMs: 30,
+      retry: { attempts: 1 },
+    });
 
     await expect(provider.getToken()).rejects.toThrow(/timed out after 30 ms/);
   });
@@ -230,7 +242,10 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
   it('forwards an external abort signal to the IAM fetch (#97)', async () => {
     setFetchMock(abortAwareFetch());
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({
+      fetchTimeoutMs: 60_000,
+      retry: { attempts: 1 },
+    });
     const controller = new AbortController();
 
     const pending = provider.getToken(false, controller.signal);
@@ -248,7 +263,10 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(first);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({
+      fetchTimeoutMs: 60_000,
+      retry: { attempts: 1 },
+    });
     await expect(provider.getToken()).resolves.toBe('stale-token');
 
     const failing = jest.fn(() => Promise.reject(new Error('IAM is down')));
@@ -275,30 +293,34 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     const fetchMock = jest.fn(() => httpErrorResponse(500, secretBody));
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({
+      fetchTimeoutMs: 60_000,
+      retry: { attempts: 2, baseDelayMs: 1, factor: 1 },
+    });
 
     await expect(provider.getToken()).rejects.toThrow(/status 500/);
 
-    const errorLogs = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(errorLogs).toContain('IAM token exchange failed with status 500');
-    expect(errorLogs).not.toContain(secretBody);
+    const logs = allLogs();
+    expect(logs).toContain('IAM token exchange failed with status 500');
+    expect(logs).not.toContain(secretBody);
   });
 
-  it('logs errors with the actual stack instead of arbitrary objects (#97)', async () => {
+  it('logs retry attempts with the error message, without the response body (#97)', async () => {
     const fetchMock = jest.fn(() => httpErrorResponse(500, 'body'));
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({
+      fetchTimeoutMs: 60_000,
+      retry: { attempts: 3, baseDelayMs: 1, factor: 1 },
+    });
 
     await expect(provider.getToken()).rejects.toThrow(/status 500/);
 
-    const firstCall = errorSpy.mock.calls[0];
-    expect(String(firstCall[0])).toContain(
-      'IAM token exchange failed with status 500',
-    );
-    const stack = firstCall[1];
-    expect(typeof stack).toBe('string');
-    expect(stack).toContain('Error: IAM token exchange failed with status 500');
+    // Две неудачные попытки до последней → два предупреждения о ретрае.
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    const warnMessages = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(warnMessages).toContain('IAM token exchange attempt 1 failed');
+    expect(warnMessages).toContain('IAM token exchange failed with status 500');
   });
 
   it('does not log the IAM payload or token material (#97)', async () => {
@@ -311,18 +333,11 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     await provider.getToken();
 
-    const allLogs = [
-      ...errorSpy.mock.calls,
-      ...warnSpy.mock.calls,
-      ...debugSpy.mock.calls,
-    ]
-      .map((c) => c.map((a) => String(a)).join(' '))
-      .join('\n');
-    expect(allLogs).not.toContain(token);
+    expect(allLogs()).not.toContain(token);
   });
 
   it('does not expose the payload when iamToken is missing (#97)', async () => {
@@ -334,14 +349,13 @@ describe('AuthKeyCredentialsProvider (#97)', () => {
     );
     setFetchMock(fetchMock);
 
-    const provider = makeProvider(60_000);
+    const provider = makeProvider({ fetchTimeoutMs: 60_000 });
 
     await expect(provider.getToken()).rejects.toThrow(/no iamToken/);
 
-    const errorLogs = errorSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(errorLogs).toContain('no iamToken');
-    expect(errorLogs).not.toContain('2026-01-01');
-    expect(errorLogs).not.toContain('sensitive-extra');
+    const logs = allLogs();
+    expect(logs).not.toContain('2026-01-01');
+    expect(logs).not.toContain('sensitive-extra');
   });
 
   it('rejects non-positive fetchTimeoutMs at construction (#97)', () => {

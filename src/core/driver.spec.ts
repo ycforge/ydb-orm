@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it, jest } from '@jest/globals';
 import { CredentialsProvider } from '@ydbjs/auth';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
 import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
+import { createAuth } from '@ycforge/auth';
 import type { YdbModuleOptions } from './interfaces.js';
 
 /**
@@ -120,6 +121,74 @@ describe('resolveCredentialsProvider (#96)', () => {
         authOptions: {},
       }),
     ).toThrow(/authorized_key_path.*is required/);
+  });
+});
+
+describe('resolveCredentialsProvider: opts.auth (@ycforge/auth)', () => {
+  it('opts.auth адаптируется в CredentialsProvider: anonymous → AnonymousCredentialsProvider', () => {
+    const resolved = mod.resolveCredentialsProvider({
+      ...BASE_OPTIONS,
+      auth: createAuth({ type: 'anonymous' }),
+    });
+
+    // instanceof по классу из @ydbjs/auth не используем: у file:-зависимости
+    // @ycforge/auth своя копия пакета, поэтому сверяем имя конструктора.
+    expect(resolved.constructor.name).toBe('AnonymousCredentialsProvider');
+  });
+
+  it('opts.auth: getToken делегирует AuthManager (usage ydb)', async () => {
+    const resolved = mod.resolveCredentialsProvider({
+      ...BASE_OPTIONS,
+      auth: createAuth({ type: 'access_token', token: 'tok-auth' }),
+    });
+
+    await expect(resolved.getToken()).resolves.toBe('tok-auth');
+  });
+
+  it('явный opts.credentialsProvider приоритетнее opts.auth', () => {
+    const custom = makeProvider('custom');
+    const resolved = mod.resolveCredentialsProvider({
+      ...BASE_OPTIONS,
+      credentialsProvider: custom,
+      auth: createAuth({ type: 'anonymous' }),
+    });
+
+    expect(resolved).toBe(custom);
+  });
+
+  it('opts.auth приоритетнее injected (DI) провайдера', () => {
+    const injected = makeProvider('injected');
+    const resolved = mod.resolveCredentialsProvider(
+      {
+        ...BASE_OPTIONS,
+        auth: createAuth({ type: 'access_token', token: 'tok-auth' }),
+      },
+      injected,
+    );
+
+    expect(resolved).not.toBe(injected);
+  });
+
+  it('конфликт auth и driverOptions.credentialsProvider — ошибка', () => {
+    expect(() =>
+      mod.resolveCredentialsProvider({
+        ...BASE_OPTIONS,
+        auth: createAuth({ type: 'anonymous' }),
+        driverOptions: { credentialsProvider: makeProvider('low-level') },
+      }),
+    ).toThrow(
+      /Conflicting YDB credentials configuration[\s\S]*"auth"[\s\S]*"driverOptions.credentialsProvider"/,
+    );
+  });
+
+  it('validateYdbModuleOptions: fail-fast на конфликт auth + driverOptions', () => {
+    expect(() =>
+      mod.validateYdbModuleOptions({
+        ...BASE_OPTIONS,
+        auth: createAuth({ type: 'anonymous' }),
+        driverOptions: { credentialsProvider: makeProvider('low-level') },
+      }),
+    ).toThrow(/Conflicting YDB credentials configuration/);
   });
 });
 

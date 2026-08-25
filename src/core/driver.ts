@@ -3,6 +3,7 @@ import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
 import { MetadataCredentialsProvider } from '@ydbjs/auth/metadata';
 import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
+import { createYdbCredentialsProvider } from '@ycforge/auth/ydb';
 import { AuthKeyCredentialsProvider } from '../credentials/auth-key-credentials-provider.js';
 import {
   YdbExecutor,
@@ -35,20 +36,25 @@ export function validateYdbModuleOptions(opts: YdbModuleOptions): void {
 }
 
 /**
- * Конфликт источников CredentialsProvider (#96): если заданы и явный
- * credentialsProvider, и низкоуровневый driverOptions.credentialsProvider,
- * приоритет не выбирается молча — это ошибка конфигурации.
+ * Конфликт источников CredentialsProvider (#96): если задан низкоуровневый
+ * driverOptions.credentialsProvider вместе с верхнеуровневым источником
+ * (явный credentialsProvider или auth/AuthManager), приоритет не выбирается
+ * молча — это ошибка конфигурации.
  */
 function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
-  if (
-    opts.credentialsProvider !== undefined &&
-    opts.driverOptions?.credentialsProvider !== undefined
-  ) {
+  const lowLevel = opts.driverOptions?.credentialsProvider !== undefined;
+  if (!lowLevel) return;
+  const names: string[] = [];
+  if (opts.credentialsProvider !== undefined)
+    names.push('"credentialsProvider"');
+  if (opts.auth !== undefined) names.push('"auth"');
+  if (names.length > 0) {
+    names.push('"driverOptions.credentialsProvider"');
     throw new Error(
-      'Conflicting YDB credentials configuration: both "credentialsProvider" ' +
-        'and "driverOptions.credentialsProvider" are set. Keep only one source: ' +
-        'either pass the provider via the top-level "credentialsProvider" option ' +
-        'or remove it from "driverOptions".',
+      `Conflicting YDB credentials configuration: ${names.join(' and ')} ` +
+        'are set. Keep only one source: either pass the provider via the ' +
+        'top-level "credentialsProvider"/"auth" option or remove it from ' +
+        '"driverOptions".',
     );
   }
 }
@@ -57,12 +63,14 @@ function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
  * Разрешает итоговый CredentialsProvider по детерминированному приоритету (#96):
  *
  *   1. opts.credentialsProvider — явный провайдер из опций модуля;
- *   2. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
+ *   2. opts.auth — AuthManager из @ycforge/auth (адаптер
+ *      createYdbCredentialsProvider из '@ycforge/auth/ydb');
+ *   3. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
  *      переданный аргументом в createDriver();
- *   3. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера;
- *   4. создание по auth_type (createCredentialsProvider).
+ *   4. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера;
+ *   5. создание по auth_type (createCredentialsProvider).
  *
- * Комбинация (1) + (3) запрещена — ошибка конфигурации, а не молчаливый
+ * Комбинация (1)/(2) + (4) запрещена — ошибка конфигурации, а не молчаливый
  * выбор. Используется NestJS-модулем, createDriver() и CLI.
  */
 export function resolveCredentialsProvider(
@@ -72,6 +80,13 @@ export function resolveCredentialsProvider(
   assertNoCredentialsProviderConflict(opts);
   return (
     opts.credentialsProvider ??
+    (opts.auth !== undefined
+      ? createYdbCredentialsProvider(opts.auth, undefined, {
+          endpoint: opts.endpoint,
+          // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
+          secure: !opts.endpoint.startsWith('grpc://'),
+        })
+      : undefined) ??
     injected ??
     opts.driverOptions?.credentialsProvider ??
     createCredentialsProvider(opts)
