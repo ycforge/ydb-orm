@@ -157,13 +157,13 @@ export function wrapExecutorWithLogging(
   executor: YdbExecutor,
   logger: QueryLogger,
 ): YdbExecutor {
-  const wrapped: any = (strings: TemplateStringsArray) => {
+  const wrapped: any = (strings: TemplateStringsArray, ...args: any[]) => {
     const sql = strings[0];
     const startTime = performance.now();
     const paramNames: string[] = [];
     const maskedParams: Record<string, unknown> = {};
 
-    const query = executor(strings);
+    const query = executor(strings, ...args);
     const originalParameter = query.parameter.bind(query);
 
     const proxied: any = {
