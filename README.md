@@ -111,6 +111,30 @@ import { YdbEntityManager } from '@ycforge/ydb-orm';
 const manager = new YdbEntityManager();
 const userRepo = manager.getRepository(UserEntity);
 const postRepo = manager.getRepository(PostEntity);
+
+// CRUD через репозиторий
+const user = await userRepo.findOneBy({ uuid });
+const users = await userRepo.findAll({ is_admin: true }, { limit: 10 });
+await userRepo.save(user);
+
+const posts = await postRepo.findBy({ author_uuid: user.uuid });
+await postRepo.insertMany([post1, post2, post3]);
+await postRepo.updateBy({ status: 'draft' }, { status: 'published' });
+await postRepo.deleteBy({ status: 'archived' });
+
+// QueryBuilder
+const popular = await postRepo.query()
+  .where({ is_public: true })
+  .orderBy('views', 'DESC')
+  .limit(20)
+  .getMany();
+
+// Транзакции — передаём { trx } в любой метод
+const txManager = new YdbTransactionManager(executor);
+await txManager.runInTransaction(async (trx) => {
+  await userRepo.save(user, { trx });
+  await postRepo.save(post, { trx });
+});
 ```
 
 `YdbRepository` — ядро ORM: вся CRUD-логика живёт в нём (и в `YdbEntityPersistence`/`YdbEntityRelations` под капотом). Active Record остаётся полностью работоспособным: статические методы `UserEntity.find(...)` — тонкий фасад, делегирующий в тот же репозиторий. Оба стиля (Active Record и Repository) можно смешивать в одном приложении.
