@@ -1,6 +1,6 @@
 {
   "name": "@ycforge/ydb-orm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "TypeORM-like ORM для YDB (Yandex Database): Active Record, relations, шифрование полей, schema sync, транзакции и миграции. Опциональная интеграция с NestJS — подпакет @ycforge/ydb-orm/nest",
   "keywords": [
     "ydb",
