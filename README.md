@@ -84,6 +84,37 @@ await txManager.runInTransaction(async (trx) => {
 });
 ```
 
+### Репозиторий (standalone)
+
+Помимо Active Record (`UserEntity.find(...)`) доступен прямой доступ к репозиторию:
+
+```ts
+import { getOrCreateRepository } from '@ycforge/ydb-orm';
+
+// репозиторий создаётся автоматически после configureEntities
+const repo = getOrCreateRepository(UserEntity);
+
+const user = await repo.findOneBy({ uuid });
+const users = await repo.findAll({ name: 'Ivan' }, { limit: 50 });
+const count = await repo.count({ is_admin: true });
+await repo.save(entity);
+await repo.insertMany([u1, u2]);
+await repo.updateBy({ status: 'old' }, { status: 'archived' });
+await repo.deleteBy({ status: 'deprecated' });
+```
+
+`YdbEntityManager` — фабрика репозиториев (удобно, если нужно работать с разными сущностями через единый интерфейс):
+
+```ts
+import { YdbEntityManager } from '@ycforge/ydb-orm';
+
+const manager = new YdbEntityManager();
+const userRepo = manager.getRepository(UserEntity);
+const postRepo = manager.getRepository(PostEntity);
+```
+
+`YdbRepository` — ядро ORM: вся CRUD-логика живёт в нём (и в `YdbEntityPersistence`/`YdbEntityRelations` под капотом). Active Record остаётся полностью работоспособным: статические методы `UserEntity.find(...)` — тонкий фасад, делегирующий в тот же репозиторий. Оба стиля (Active Record и Repository) можно смешивать в одном приложении.
+
 ### Схема.sync в standalone-режиме
 
 ```ts
