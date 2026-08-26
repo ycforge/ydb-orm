@@ -16,7 +16,8 @@
  * В проде используйте миграции вместо sync: true.
  */
 import { Injectable, Inject } from '@nestjs/common';
-import { YDB_SCHEMA_SYNC, YdbSchemaSyncer } from '../../src/index.js';
+import { YdbSchemaSyncer } from '../../src/index.js';
+import { YDB_SCHEMA_SYNC } from '../../src/nest/index.js';
 import { UserEntity, PostEntity, ProfileEntity } from '../entities/index.js';
 
 @Injectable()

@@ -4,7 +4,7 @@ import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
   YdbEncryptionProvider,
@@ -13,14 +13,14 @@ import {
   YdbEntity,
   YdbPrimaryColumn,
   YdbColumn,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
-import { createActiveRecordEntityProvider } from '../../src/module/repository-factory.js';
+import { createActiveRecordEntityProvider } from '../../src/nest/repository-factory.js';
 import { getEntityRuntime } from '../../src/entity/entity-runtime.js';
 import { createMockExecutor, MockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
-  imports: [YdbModule.forFeature([PhotoEntity])],
+  imports: [YdbOrmModule.forFeature([PhotoEntity])],
 })
 class TestFeatureModule {}
 

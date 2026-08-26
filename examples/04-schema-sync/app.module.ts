@@ -3,14 +3,14 @@
  */
 import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
-import { YdbModule } from '../../src/index.js';
+import { YdbOrmModule } from '../../src/nest/index.js';
 import { UserEntity, PostEntity, ProfileEntity } from '../entities/index.js';
 import { SchemaService } from './schema.service.js';
 import { createEncryptionProvider } from '../providers/aes-gcm-encryption.provider.js';
 
 @Module({
   imports: [
-    YdbModule.forRoot({
+    YdbOrmModule.forRoot({
       useFactory: () => ({
         endpoint: process.env.YDB_ENDPOINT ?? 'grpc://localhost:2136/local',
         auth: createAuth({ type: 'anonymous' }),
@@ -22,7 +22,7 @@ import { createEncryptionProvider } from '../providers/aes-gcm-encryption.provid
         blindIndexProvider: createEncryptionProvider(),
       }),
     }),
-    YdbModule.forFeature([UserEntity, PostEntity, ProfileEntity]),
+    YdbOrmModule.forFeature([UserEntity, PostEntity, ProfileEntity]),
   ],
   providers: [SchemaService],
 })

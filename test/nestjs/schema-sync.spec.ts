@@ -12,10 +12,10 @@ import {
 import { StatusIds_StatusCode, IssueMessageSchema } from '@ydbjs/api/operation';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { UserRoleEntity } from '../fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
@@ -23,7 +23,7 @@ import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
-  imports: [YdbModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
+  imports: [YdbOrmModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
 })
 class TestFeatureModule {}
 

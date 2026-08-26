@@ -6,8 +6,8 @@ import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { validateYdbModuleOptions } from '../src/core/driver.js';
 import { configureEntities } from '../src/core/standalone.js';
-import { YdbCoreModule } from '../src/module/ydb-core.module.js';
-import { YDB_OPTIONS } from '../src/core/constants.js';
+import { YdbCoreModule } from '../src/nest/ydb-core.module.js';
+import { YDB_OPTIONS } from '../src/nest/constants.js';
 import { YdbEntity, YdbColumn, YdbBaseEntity } from '../src/index.js';
 
 /** Сущность без PK-колонки (ни @YdbPrimaryColumn, ни uuid). */
@@ -33,9 +33,9 @@ describe('error guards: понятные fail-fast ошибки', () => {
   });
 
   describe('YDB executor not set', () => {
-    it('подсказывает про YdbModule.forFeature и configureEntities', async () => {
+    it('подсказывает про YdbOrmModule.forFeature и configureEntities', async () => {
       await expect(UserEntity.find({ uuid: uuid1 })).rejects.toThrow(
-        /YDB executor not set for entity UserEntity\. .*YdbModule\.forFeature\(\[UserEntity]\).*configureEntities/s,
+        /YDB executor not set for entity UserEntity\. .*YdbOrmModule\.forFeature\(\[UserEntity]\).*configureEntities/s,
       );
     });
   });

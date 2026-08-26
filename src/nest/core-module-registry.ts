@@ -46,7 +46,7 @@ export function claimCoreModuleInit(state: CoreModuleState): void {
         'YdbCoreModule.forRootAsync() has already created an active connection ' +
         'in this process and it has not been shut down yet. ' +
         'Only one YDB connection per process is supported: import the same ' +
-        'YdbModule.forRoot()/YdbCoreModule.forRootAsync() once from the root module ' +
+        'YdbOrmModule.forRoot()/YdbCoreModule.forRootAsync() once from the root module ' +
         'so that all entities share one executor, or shut down the previous ' +
         'application (app.close()) before initializing a new one.',
     );

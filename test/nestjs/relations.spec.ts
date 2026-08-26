@@ -4,10 +4,10 @@ import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_DRIVER,
   YDB_QUERY,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { UserProfileEntity } from '../fixtures/user_profile/user_profile.entity.js';
 import { PhotoWithTagsEntity } from '../fixtures/photo_with_tags/photo_with_tags.entity.js';
 import { TagEntity } from '../fixtures/tag/tag.entity.js';
@@ -16,7 +16,11 @@ import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
   imports: [
-    YdbModule.forFeature([UserProfileEntity, PhotoWithTagsEntity, TagEntity]),
+    YdbOrmModule.forFeature([
+      UserProfileEntity,
+      PhotoWithTagsEntity,
+      TagEntity,
+    ]),
   ],
 })
 class RelationFeatureModule {}

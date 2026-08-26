@@ -14,7 +14,7 @@ import { IssueMessageSchema, StatusIds_StatusCode } from '@ydbjs/api/operation';
 import { TypeSchema, Type_PrimitiveTypeId } from '@ydbjs/api/value';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YDB_CORE_SCOPE,
   YDB_DRIVER,
   YDB_QUERY,
@@ -23,7 +23,7 @@ import {
   YdbPrimaryColumn,
   getRegisteredYdbEntities,
   registerYdbEntity,
-} from '../../src/index.js';
+} from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { UserRoleEntity } from '../fixtures/user_role/user_role.entity.js';
 import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
@@ -31,7 +31,7 @@ import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
 @Module({
-  imports: [YdbModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
+  imports: [YdbOrmModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
 })
 class TestFeatureModule {}
 
@@ -334,11 +334,11 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
     await retry.init();
   });
 
-  it('YdbModule.forRoot наследует защиту от дублей', async () => {
+  it('YdbOrmModule.forRoot наследует защиту от дублей', async () => {
     const mock = createMockExecutor();
     const first = await Test.createTestingModule({
       imports: [
-        YdbModule.forRoot({
+        YdbOrmModule.forRoot({
           useFactory: () => ({
             endpoint: 'grpc://localhost:2136/local',
             auth: createAuth({ type: 'anonymous' }),
@@ -418,11 +418,11 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       // больше не выполнится (кеш ESM-модулей). Оба приложения объявляют его
       // только через forFeature — второе обязано восстановить видимость
       // самостоятельно.
-      await bootstrappSyncedApp([YdbModule.forFeature([UserEntity])]);
+      await bootstrappSyncedApp([YdbOrmModule.forFeature([UserEntity])]);
       await closeOpenModules();
 
       const ddl = await bootstrappSyncedApp([
-        YdbModule.forFeature([UserEntity]),
+        YdbOrmModule.forFeature([UserEntity]),
       ]);
       expect(ddl.some((sql) => sql.startsWith('CREATE TABLE `users`'))).toBe(
         true,
@@ -447,7 +447,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       const mockA = createMockExecutor();
       const { driver: drvA } = createFakeDriver();
       const appA = await Test.createTestingModule({
-        imports: [syncedCoreImport(), YdbModule.forFeature([EntityA])],
+        imports: [syncedCoreImport(), YdbOrmModule.forFeature([EntityA])],
       })
         .overrideProvider(YDB_DRIVER)
         .useValue(drvA)
@@ -462,7 +462,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       const mockB = createMockExecutor();
       await expect(
         Test.createTestingModule({
-          imports: [syncedCoreImport(), YdbModule.forFeature([EntityB])],
+          imports: [syncedCoreImport(), YdbOrmModule.forFeature([EntityB])],
         })
           .overrideProvider(YDB_DRIVER)
           .useValue({})
@@ -481,7 +481,9 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       // 5. После закрытия A свежее приложение видит тот же уже импортированный
       // класс EntityB и нормально синкается
       await closeOpenModules();
-      const ddl = await bootstrappSyncedApp([YdbModule.forFeature([EntityB])]);
+      const ddl = await bootstrappSyncedApp([
+        YdbOrmModule.forFeature([EntityB]),
+      ]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_foreign_b`')),
       ).toBe(true);
@@ -495,7 +497,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
         uuid!: string;
       }
 
-      await bootstrappSyncedApp([YdbModule.forFeature([ScopedA])]); // A
+      await bootstrappSyncedApp([YdbOrmModule.forFeature([ScopedA])]); // A
       await closeOpenModules();
 
       @YdbEntity('scoped_b_only')
@@ -506,7 +508,9 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
 
       // B объявляет только ScopedB: в его sync нет ни scoped_a_only,
       // ни файловых фикстур (users), принятых и отпущенных скоупом A
-      const ddl = await bootstrappSyncedApp([YdbModule.forFeature([ScopedB])]);
+      const ddl = await bootstrappSyncedApp([
+        YdbOrmModule.forFeature([ScopedB]),
+      ]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_b_only`')),
       ).toBe(true);
@@ -554,7 +558,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
 
       const mockFailing = createMockExecutor();
       const failedModule = await Test.createTestingModule({
-        imports: [syncedCoreImport(), YdbModule.forFeature([ScopedFail])],
+        imports: [syncedCoreImport(), YdbOrmModule.forFeature([ScopedFail])],
       })
         .overrideProvider(YDB_DRIVER)
         .useValue(failingDriver)
@@ -581,7 +585,7 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       }
 
       const ddl = await bootstrappSyncedApp([
-        YdbModule.forFeature([ScopedAfterFail]),
+        YdbOrmModule.forFeature([ScopedAfterFail]),
       ]);
       expect(
         ddl.some((sql) => sql.startsWith('CREATE TABLE `scoped_after_fail`')),
@@ -605,12 +609,12 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       }
 
       @Module({
-        imports: [YdbModule.forFeature([FeatOne])],
+        imports: [YdbOrmModule.forFeature([FeatOne])],
       })
       class FeatureOneModule {}
 
       @Module({
-        imports: [YdbModule.forFeature([FeatTwo])],
+        imports: [YdbOrmModule.forFeature([FeatTwo])],
       })
       class FeatureTwoModule {}
 

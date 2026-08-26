@@ -34,7 +34,7 @@ let settings: Required<YdbTransactionsSettings> = {
 
 /**
  * Конфигурирует транзакционное поведение процесса (#98).
- * Вызывается YdbCoreModule при инициализации; доступен и standalone-пользователям.
+ * Вызывается YdbOrmModule при инициализации; доступен и standalone-пользователям.
  * Настройки глобальные для процесса — как реестр сущностей.
  */
 export function configureTransactionContext(

@@ -6,15 +6,15 @@ import { createAuth } from '@ycforge/auth';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import {
   YdbCoreModule,
-  YdbModule,
+  YdbOrmModule,
   YdbTransactionManager,
   YDB_DRIVER,
   YDB_QUERY,
   type YdbModuleOptions,
   type YdbExecutor,
   type YdbTransactionHandle,
-} from '../../src/index.js';
-import { getActiveTransaction } from '../../src/index.js';
+} from '../../src/nest/index.js';
+import { getActiveTransaction } from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
 
@@ -92,7 +92,7 @@ function createTaggedDb(): TaggedDb {
 }
 
 @Module({
-  imports: [YdbModule.forFeature([UserEntity])],
+  imports: [YdbOrmModule.forFeature([UserEntity])],
 })
 class TestFeatureModule {}
 

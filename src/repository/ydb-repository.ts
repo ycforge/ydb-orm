@@ -14,7 +14,7 @@ export type { YdbEntityConstructor };
  *
  * Содержит `YdbEntityPersistence` (CRUD, шифрование, lifecycle hooks)
  * и `YdbEntityRelations` (eager/lazy relations). Является публичным DI-API:
- * `YdbModule.forFeature([...])` регистрирует инжектируемый `YdbRepository<Entity>`.
+ * `YdbOrmModule.forFeature([...])` регистрирует инжектируемый `YdbRepository<Entity>`.
  *
  * Использование в NestJS:
  * ```ts

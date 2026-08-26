@@ -1,7 +1,7 @@
 {
   "name": "@ycforge/ydb-orm",
   "version": "0.2.0-beta.0",
-  "description": "TypeORM-like ORM для YDB (Yandex Database): Active Record, relations, шифрование полей, schema sync, транзакции и интеграция с NestJS",
+  "description": "TypeORM-like ORM для YDB (Yandex Database): Active Record, relations, шифрование полей, schema sync, транзакции и миграции. Опциональная интеграция с NestJS — подпакет @ycforge/ydb-orm/nest",
   "keywords": [
     "ydb",
     "yandex-database",
@@ -20,6 +20,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./nest": {
+      "types": "./dist/nest/index.d.ts",
+      "default": "./dist/nest/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -63,6 +67,15 @@
   },
   "peerDependenciesMeta": {
     "class-validator": {
+      "optional": true
+    },
+    "@nestjs/common": {
+      "optional": true
+    },
+    "@nestjs/core": {
+      "optional": true
+    },
+    "rxjs": {
       "optional": true
     }
   },

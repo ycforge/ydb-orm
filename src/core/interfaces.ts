@@ -1,4 +1,3 @@
-import { ModuleMetadata, Type } from '@nestjs/common';
 import { Driver, DriverOptions } from '@ydbjs/core';
 import type { CredentialsProvider } from '@ydbjs/auth';
 import type { AuthManager } from '@ycforge/auth';
@@ -117,17 +116,6 @@ export interface YdbModuleOptions {
 export interface YdbTransactionsSettings {
   ambient?: boolean;
   warnOutsideTransaction?: boolean;
-}
-
-export interface YdbOptionsFactory {
-  createYdbOptions(): Promise<YdbModuleOptions> | YdbModuleOptions;
-}
-
-export interface YdbModuleAsyncOptions extends Pick<ModuleMetadata, 'imports'> {
-  useFactory?: (...args: any[]) => Promise<YdbModuleOptions> | YdbModuleOptions;
-  inject?: any[];
-  useClass?: Type<YdbOptionsFactory>;
-  useExisting?: Type<YdbOptionsFactory>;
 }
 
 export interface YdbQuery {
