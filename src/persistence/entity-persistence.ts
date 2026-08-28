@@ -393,7 +393,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
    * Возвращает копию сущности с зашифрованными полями и _bi колонками.
    * Исходный объект не мутируется: он должен хранить plaintext, иначе
    * повторный save() зашифрует ciphertext повторно.
-   * Null/undefined не шифруются.
+   * Не шифруются: undefined (колонка опускается — омиссия) и null
+   * (колонка очищается). Явный null дополнительно очищает blind index
+   * ({field}_bi = null, #175): иначе старый хеш остался бы в строке и
+   * поиск прежнего plaintext вернул бы очищенную запись.
    *
    * Lazy-поля: если инстанс пришёл из БД и поле не менялось (в нём всё ещё
    * ciphertext), оно прокидывается как есть — повторное шифрование и
@@ -428,10 +431,22 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const encrypted = { ...entity };
     for (const ef of meta.encryptedFields) {
       const value = entity[ef.propertyKey];
-      if (value === null || value === undefined) continue;
+      // undefined — поле не задано: колонки в результате вовсе нет
+      // (write-пути фильтруют по `!== undefined`). Омиссия, не очистка.
+      if (value === undefined) continue;
 
       if (ef.lazy && pendingLazy?.get(ef.propertyKey) === value) {
         encrypted[ef.propertyKey] = value;
+        continue;
+      }
+
+      // Явный null — очистка: ciphertext (уже null в spread) И blind index
+      // (#175). Старый хеш в {field}_bi иначе остался бы и поиск прежнего
+      // plaintext вернул бы очищенную строку.
+      if (value === null) {
+        if (ef.blindIndex) {
+          encrypted[blindIndexColumnName(ef.propertyKey)] = null;
+        }
         continue;
       }
 
@@ -1773,7 +1788,23 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       const encryptionProvider = this.requireEncryptionProvider();
       for (const ef of encryptedFieldsToProcess) {
         const value = data[ef.propertyKey];
-        if (value === null || value === undefined) continue;
+        // undefined — поле не задано: исключаем из patch (омиссия), чтобы
+        // колонка осталась как есть и в SET не попадала ни она, ни её
+        // blind index (#175). null же — ЯВНАЯ очистка, см. ниже.
+        if (value === undefined) {
+          delete data[ef.propertyKey];
+          continue;
+        }
+
+        // Явный null — очистка ciphertext и blind index вместе (#175):
+        // иначе старый хеш в {field}_bi остался бы, и поиск прежнего
+        // plaintext вернул бы обновлённые строки.
+        if (value === null) {
+          if (ef.blindIndex) {
+            data[blindIndexColumnName(ef.propertyKey)] = null;
+          }
+          continue;
+        }
 
         let aadFields: Record<string, string> = {};
         if (!ef.aadOverride && meta.aadFields.length) {
