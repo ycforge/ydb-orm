@@ -9,6 +9,7 @@ on:
       - labeled
 
 permissions:
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -36,7 +37,8 @@ jobs:
 
     steps:
       - name: DeepSeek Code Review
-        uses: hustcer/deepseek-review@v1
+        # Пин по полному SHA коммита (#167): 'v1' — mutable тег.
+        uses: hustcer/deepseek-review@eccde2e9781008d795e366b951e313e37af88dd5
         with:
           chat-token: ${{ secrets.DEEPSEEK_CHAT_TOKEN }}
           base-url: ${{ secrets.DEEPSEEK_BASE_URL }}
