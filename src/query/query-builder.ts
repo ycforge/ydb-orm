@@ -71,20 +71,30 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Добавить условие, объединённое с предыдущими через OR.
-   * Формирует объектный оператор $or, поддерживаемый buildWhere.
+   * Добавить условие, объединённое со ВСЕМ накопленным предикатом через OR
+   * (#173): `.where(A).orWhere(B)` — `A OR B`, а не `A AND (B)`.
+   *
+   * Повторные orWhere выстраивают плоскую цепочку `A OR B OR C`; следующий
+   * andWhere/where связывается через AND: `(A OR B OR C) AND D`.
    */
   orWhere(criteria: Record<string, any>): this {
-    const existing = this.whereValues.$or;
-    const currentOr = Array.isArray(existing)
-      ? existing
-      : existing !== undefined
-        ? [existing]
-        : [];
-    this.whereValues = {
-      ...this.whereValues,
-      $or: [...currentOr, criteria],
-    };
+    const keys = Object.keys(this.whereValues).filter(
+      (key) => this.whereValues[key] !== undefined,
+    );
+    // Накопленного предиката нет — первый orWhere задаёт просто предикат.
+    if (keys.length === 0) {
+      this.whereValues = criteria;
+      return this;
+    }
+    // Накопленный предикат — ровно $or: дополняем существующий список,
+    // сохраняя плоскую цепочку `A OR B OR C` без вложенности.
+    if (keys.length === 1 && keys[0] === '$or') {
+      const existing = this.whereValues.$or;
+      const list = Array.isArray(existing) ? existing : [existing];
+      this.whereValues = { $or: [...list, criteria] };
+      return this;
+    }
+    this.whereValues = { $or: [this.whereValues, criteria] };
     return this;
   }
 
