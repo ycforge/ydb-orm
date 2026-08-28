@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { jest } from '@jest/globals';
 import {
   createEntityFile,
@@ -69,7 +70,7 @@ describe('createEntityFile', () => {
     expect(content).toContain(`from '@ycforge/ydb-orm'`);
   });
 
-  it('refuses to overwrite an existing file', () => {
+  it('#170: refuses to overwrite an existing file', () => {
     createEntityFile(dir, 'photo');
     expect(() => createEntityFile(dir, 'photo')).toThrow(/already exists/);
   });
@@ -83,22 +84,74 @@ describe('createEntityFile', () => {
     expect(fs.readFileSync(target, 'utf-8')).toBe('keep me');
   });
 
-  it('#170: concurrent attempts yield one winner and one existence error', () => {
-    let created = 0;
-    const failures: string[] = [];
-    for (let i = 0; i < 8; i++) {
-      try {
-        createEntityFile(dir, 'race');
-        created++;
-      } catch (err) {
-        failures.push((err as Error).message);
-      }
+  it('#170: pins exclusive mode (openSync "wx"), not check-then-write', () => {
+    // Регресс-пин: атомарность живёт в одном системном вызове open(2) с
+    // O_CREAT|O_EXCL. Если реализацию вернут к existsSync()+writeFileSync,
+    // этот тест падает детерминированно.
+    const openSpy = jest.spyOn(fs, 'openSync');
+    try {
+      createEntityFile(dir, 'pinned');
+      expect(openSpy).toHaveBeenCalledWith(expect.any(String), 'wx');
+    } finally {
+      openSpy.mockRestore();
     }
-    // При эксклюзивной записи ('wx') ровно одна попытка создаёт файл,
-    // остальные атомарно получают EEXIST — независимо от таймингов.
-    expect(created).toBe(1);
-    expect(failures).toHaveLength(7);
-    expect(failures.every((e) => /already exists/.test(e))).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'pinned.entity.ts'))).toBe(true);
+  });
+
+  it('#170: simultaneous writers from separate processes — exactly one wins', async () => {
+    // Настоящий race на уровне процессов: каждый child повторяет точную
+    // syscall-последовательность production-кода (openSync 'wx' → write →
+    // close) против одного и того же пути. Атомарность O_EXCL гарантирует
+    // ровно одного победителя независимо от таймингов процессов. Разные
+    // большие payload'ы позволяют поймать частичное/перекрёстное усечение
+    // (характерно для existsSync+truncate TOCTOU).
+    const target = path.join(dir, 'race.entity.ts');
+    const count = 8;
+    const filler = 'x'.repeat(64 * 1024);
+    const payloads = Array.from(
+      { length: count },
+      (_, i) => `payload-${i}-${filler}`,
+    );
+
+    const spawnWriter = (payload: string) =>
+      new Promise<number>((resolve) => {
+        const script = `
+          const fs = require('node:fs');
+          try {
+            const fd = fs.openSync(process.env.YDB_TEST_TARGET, 'wx');
+            fs.writeFileSync(fd, process.env.YDB_TEST_PAYLOAD, 'utf-8');
+            fs.closeSync(fd);
+            process.exit(0);
+          } catch (err) {
+            process.exit(err && err.code === 'EEXIST' ? 1 : 2);
+          }
+        `;
+        const child = execFile(process.execPath, ['-e', script], {
+          env: {
+            ...process.env,
+            YDB_TEST_TARGET: target,
+            YDB_TEST_PAYLOAD: payload,
+          },
+          cwd: dir,
+        });
+        child.on('exit', (code) => resolve(code ?? -1));
+        child.on('error', () => resolve(-1));
+      });
+
+    const codes = await Promise.all(payloads.map(spawnWriter));
+
+    const winners = codes.filter((c) => c === 0).length;
+    const losers = codes.filter((c) => c === 1).length;
+    expect(winners).toBe(1);
+    expect(losers).toBe(count - 1);
+    expect(codes).not.toContain(2);
+
+    // Файл содержит ровно один целый payload — никакого смешивания/обрезки.
+    const content = fs.readFileSync(target, 'utf-8');
+    expect(payloads).toContain(content);
+
+    // Публичный API видит файл как существующий и не перезаписывает.
+    expect(() => createEntityFile(dir, 'race')).toThrow(/already exists/);
   });
 });
 
