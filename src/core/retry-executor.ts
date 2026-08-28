@@ -3,7 +3,11 @@ import type {
   YdbQuery,
   YdbTransactionOptions,
 } from './interfaces.js';
-import { resolveYdbRetryPolicy, runWithRetry } from './retry.js';
+import {
+  abortReasonToError,
+  resolveYdbRetryPolicy,
+  runWithRetry,
+} from './retry.js';
 import type {
   YdbResolvedRetryPolicy,
   YdbRetryPolicyInput,
@@ -61,6 +65,18 @@ function policyToOptions(
  * воспроизводятся на КАЖДОЙ попытке политики (у SDK-запроса результат
  * выполнения кешируется в инстансе — переиспользовать его нельзя).
  *
+ * Прокси владеет ОДНИМ общим исполнением операции (#172): первый же
+ * `.then()`/await создаёт промис исполнения и кеширует его; повторные
+ * подписки того же запроса цепляются за тот же промис и НЕ вызывают
+ * `makeBase()` повторно. Это касается и непомеченных (fail-safe)
+ * запросов — дублирования обращения к БД из-за двух await нет.
+ *
+ * Отмена (.cancel()) — тоже на уровне прокси (#172): общий AbortController
+ * собирается в сигнал операции (вместе с пользовательским и политики) и
+ * используется И для попыток SDK, И для backoff политики. Поэтому cancel()
+ * полностью останавливает операцию: отменяет летящую попытку, прерывает
+ * ожидание задержки и запрещает новые попытки.
+ *
  * Правило безопасности (#27): повторять можно ТОЛЬКО запрос, явно
  * помеченный идемпотентным (`.idempotent(true)` / `{ idempotent: true }`).
  * Непомеченный запрос выполняется РОВНО ОДИН раз даже при включённой
@@ -80,6 +96,55 @@ function createPolicyQuery(
   let markedIdempotent: boolean | undefined;
   let current: YdbQuery | undefined;
 
+  // Общий сигнал отмены прокси (#172): cancel() абортит его — он отменяет
+  // и текущую попытку SDK (сигнал доходит до запроса через combineSignals),
+  // и backoff политики (signal в runWithRetry), и запрещает новые попытки.
+  const controller = new AbortController();
+  const cancelError: Error = new Error('The operation was aborted');
+  cancelError.name = 'AbortError';
+
+  // Единственное исполнение операции на весь прокси-запрос (#172):
+  // два .then()/await на одном запросе НЕ дублируют обращение к БД.
+  let settled: Promise<unknown> | undefined;
+
+  const runOnce = async (policySignal?: AbortSignal): Promise<unknown> => {
+    // Отмена до старта (cancel() до первого await) — ни одного обращения
+    // к БД (#172); для помеченных запросов дублирует проверку runWithRetry.
+    if (policySignal?.aborted) throw abortReasonToError(policySignal.reason);
+
+    const query = makeBase();
+    current = query;
+    for (const [name, value] of params) query.parameter(name, value);
+    if (timeoutMs !== undefined) query.timeout(timeoutMs);
+    if (markedIdempotent === true) query.idempotent?.(true);
+
+    // Гашение внутреннего ретрая SDK: после первой неудачи SDK хочет
+    // повторить (событие 'retry' после своей задержки) — отменяем сигнал
+    // попытки, SDK бросает AbortError ДО следующего обращения к БД, а мы
+    // подменяем его исходной ошибкой из контекста события. Для
+    // непомеченного запроса это даёт строго однократное исполнение.
+    const attemptController = new AbortController();
+    let captured = false;
+    let capturedError: unknown;
+    query.on?.('retry', (ctx) => {
+      if (!captured) {
+        captured = true;
+        capturedError = ctx.error;
+      }
+      attemptController.abort();
+    });
+
+    const combined = combineSignals([policySignal, attemptController.signal]);
+    if (combined) query.signal(combined);
+
+    try {
+      return await query;
+    } catch (error) {
+      if (captured && isAbortLike(error)) throw capturedError;
+      throw error;
+    }
+  };
+
   const proxy: YdbQuery = {
     parameter(name: string, value: unknown): YdbQuery {
       params.push([name, value]);
@@ -98,55 +163,37 @@ function createPolicyQuery(
       return proxy;
     },
     cancel(): YdbQuery {
+      // Текущая попытка SDK + весь жизненный цикл операции.
       current?.cancel();
+      controller.abort(cancelError);
       return proxy;
     },
     then(onFulfilled?, onRejected?) {
-      const runOnce = async (policySignal?: AbortSignal): Promise<unknown> => {
-        const query = makeBase();
-        current = query;
-        for (const [name, value] of params) query.parameter(name, value);
-        if (timeoutMs !== undefined) query.timeout(timeoutMs);
-        if (markedIdempotent === true) query.idempotent?.(true);
-
-        // Гашение внутреннего ретрая SDK: после первой неудачи SDK хочет
-        // повторить (событие 'retry' после своей задержки) — отменяем сигнал
-        // попытки, SDK бросает AbortError ДО следующего обращения к БД, а мы
-        // подменяем его исходной ошибкой из контекста события. Для
-        // непомеченного запроса это даёт строго однократное исполнение.
-        const attemptController = new AbortController();
-        let captured = false;
-        let capturedError: unknown;
-        query.on?.('retry', (ctx) => {
-          if (!captured) {
-            captured = true;
-            capturedError = ctx.error;
-          }
-          attemptController.abort();
-        });
-
-        const combined = combineSignals([
+      // Первый подписчик создаёт и кеширует общее исполнение операции
+      // (#172); последующие подписки цепляются за тот же промис и не
+      // трогают БД повторно.
+      if (settled === undefined) {
+        const operationSignal = combineSignals([
           userSignal,
-          policySignal,
-          attemptController.signal,
+          policy.signal,
+          controller.signal,
         ]);
-        if (combined) query.signal(combined);
+        const options = {
+          ...policyToOptions(policy),
+          signal: operationSignal,
+        };
 
-        try {
-          return await query;
-        } catch (error) {
-          if (captured && isAbortLike(error)) throw capturedError;
-          throw error;
-        }
-      };
-
-      // Fail-safe (#27): без явной пометки идемпотентности политика НЕ
-      // применяется — ровно одна попытка БД.
-      const result =
-        markedIdempotent === true
-          ? runWithRetry(runOnce, policyToOptions(policy))
-          : Promise.resolve().then(() => runOnce());
-      return result.then(onFulfilled, onRejected);
+        // Fail-safe (#27): без явной пометки идемпотентности политика НЕ
+        // применяется — ровно одна попытка БД.
+        settled =
+          markedIdempotent === true
+            ? runWithRetry(runOnce, options)
+            : Promise.resolve().then(() => runOnce(operationSignal));
+        // Кешированное отклонение не должно стать unhandled rejection,
+        // пока у операции нет подписчиков (#172).
+        settled.catch(() => {});
+      }
+      return settled.then(onFulfilled, onRejected);
     },
   };
   return proxy;
