@@ -5,6 +5,7 @@ import {
   YdbPrimaryColumn,
   YdbBaseEntity,
   YdbEnum,
+  YdbEncrypted,
   getYdbEnumMetadata,
   EagerLoad,
   OneToMany,
@@ -12,6 +13,8 @@ import {
   getEagerRelations,
   getYdbEntityMetadata,
 } from '../src/index.js';
+import type { YdbEncryptionContext } from '../src/index.js';
+import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import { createMockExecutor } from './helpers/mock-executor.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +165,75 @@ class AadDuplicated extends YdbBaseEntity {
   id!: string;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Фикстуры @YdbEncrypted (last-write-wins, #177)
+// ─────────────────────────────────────────────────────────────────────────────
+
+@YdbEntity('inh_enc_parent')
+class EncParent extends YdbBaseEntity {
+  @YdbEncrypted({ blindIndex: true })
+  secret!: string;
+
+  @YdbEncrypted({ blindIndex: false, lazy: true, aadOverride: 'other-aad' })
+  other!: string;
+}
+
+/** Ребёнок переопределяет унаследованный `secret` — опции должны замениться. */
+@YdbEntity('inh_enc_child')
+class EncChild extends EncParent {
+  @YdbEncrypted({ lazy: true, blindIndex: false, aadOverride: 'child-aad' })
+  declare secret: string;
+}
+
+/** Двойное применение на одном и том же поле класса: остаётся одна запись. */
+@YdbEntity('inh_enc_dup')
+class EncDuplicated extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  declare uuid: string;
+
+  @YdbEncrypted({ blindIndex: false, lazy: true, aadOverride: 'last-aad' })
+  @YdbEncrypted({ blindIndex: true })
+  secret!: string;
+}
+
+/**
+ * Двойное применение без lazy — обе декларации шифруются eagerly:
+ * поведенческая проверка «encrypt/decrypt один раз» (#177).
+ */
+@YdbEntity('inh_enc_dup_eager')
+class EncDuplicatedEager extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  declare uuid: string;
+
+  @YdbEncrypted({ blindIndex: false, aadOverride: 'last-aad' })
+  @YdbEncrypted({ blindIndex: true })
+  secret!: string;
+}
+
+/** Провайдер, считающий вызовы encrypt/decrypt. */
+class CountingEncryptionProvider extends TestOnlyEncryptionProvider {
+  encryptCalls = 0;
+  decryptCalls = 0;
+
+  override async encrypt(
+    plaintext: string,
+    aad: string,
+    context: YdbEncryptionContext,
+  ): Promise<Uint8Array> {
+    this.encryptCalls++;
+    return super.encrypt(plaintext, aad, context);
+  }
+
+  override async decrypt(
+    ciphertext: Uint8Array,
+    aad: string,
+    context: YdbEncryptionContext,
+  ): Promise<string> {
+    this.decryptCalls++;
+    return super.decrypt(ciphertext, aad, context);
+  }
+}
+
 describe('decorator inheritance semantics (#107)', () => {
   describe('@EagerLoad', () => {
     it('ребёнок без собственного @EagerLoad наследует связи родителя', () => {
@@ -293,6 +365,94 @@ describe('decorator inheritance semantics (#107)', () => {
     it('метаданные родителя не содержат AAD-полей ребёнка (copy-on-write)', () => {
       const meta = getYdbEntityMetadata(AadParent)!;
       expect(meta.aadFields).toEqual(['id']);
+    });
+  });
+
+  describe('@YdbEncrypted (#177)', () => {
+    afterEach(() => {
+      EncDuplicated.setExecutor(undefined);
+      EncDuplicated.setEncryptionProvider(undefined);
+      EncDuplicated.setBlindIndexProvider(undefined);
+      EncDuplicatedEager.setExecutor(undefined);
+      EncDuplicatedEager.setEncryptionProvider(undefined);
+      EncDuplicatedEager.setBlindIndexProvider(undefined);
+    });
+
+    it('повторное применение на том же классе: одна запись, last-write-wins', () => {
+      const meta = getYdbEntityMetadata(EncDuplicated)!;
+      expect(meta.encryptedFields).toHaveLength(1);
+      expect(meta.encryptedFields[0]).toEqual({
+        propertyKey: 'secret',
+        blindIndex: false,
+        aadOverride: 'last-aad',
+        lazy: true,
+      });
+    });
+
+    it('наследник заменяет унаследованную запись, родитель не тронут', () => {
+      const childMeta = getYdbEntityMetadata(EncChild)!;
+      const parentMeta = getYdbEntityMetadata(EncParent)!;
+
+      expect(childMeta.encryptedFields).toHaveLength(2);
+      const overridden = childMeta.encryptedFields.find(
+        (e) => e.propertyKey === 'secret',
+      )!;
+      expect(overridden).toEqual({
+        propertyKey: 'secret',
+        blindIndex: false,
+        aadOverride: 'child-aad',
+        lazy: true,
+      });
+      // Непереопределённое поле родителя наследуется как есть.
+      const inherited = childMeta.encryptedFields.find(
+        (e) => e.propertyKey === 'other',
+      )!;
+      expect(inherited.aadOverride).toBe('other-aad');
+      expect(inherited.lazy).toBe(true);
+
+      const parent = parentMeta.encryptedFields.find(
+        (e) => e.propertyKey === 'secret',
+      )!;
+      expect(parent).toEqual({
+        propertyKey: 'secret',
+        blindIndex: true,
+        aadOverride: undefined,
+        lazy: false,
+      });
+    });
+
+    it('зашифрованное поле дешифруется один раз при чтении', async () => {
+      const provider = new CountingEncryptionProvider();
+      EncDuplicatedEager.setEncryptionProvider(provider);
+      const ciphertext = await provider.encrypt('hello', 'last-aad', {
+        entityName: 'EncDuplicatedEager',
+        tableName: 'inh_enc_dup_eager',
+        fieldName: 'secret',
+        primaryKeyValue: undefined,
+        aadFields: {},
+      });
+      const mock = createMockExecutor([[{ secret: ciphertext }]]);
+      EncDuplicatedEager.setExecutor(mock.executor);
+
+      const [entity] = await EncDuplicatedEager.findAll({});
+
+      expect(provider.decryptCalls).toBe(1);
+      expect(entity.secret).toBe('hello');
+    });
+
+    it('поле шифруется один раз при save', async () => {
+      const provider = new CountingEncryptionProvider();
+      EncDuplicatedEager.setEncryptionProvider(provider);
+      EncDuplicatedEager.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      EncDuplicatedEager.setExecutor(mock.executor);
+
+      const entity = new EncDuplicatedEager();
+      (entity as any).uuid = '00000000-0000-0000-0000-000000000001';
+      (entity as any).secret = 'sensitive';
+      await EncDuplicatedEager.insertMany([entity]);
+
+      expect(provider.encryptCalls).toBe(1);
     });
   });
 });

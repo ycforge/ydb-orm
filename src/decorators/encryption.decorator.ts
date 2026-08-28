@@ -37,8 +37,14 @@ export interface YdbEncryptedOptions {
  * @YdbColumn для таких полей игнорируется, объявлять его не нужно.
  * Опция lazy: true откладывает дешифровку до явного вызова
  * decryptField()/decryptLazyFields() на инстансе.
- * Метаданные клонируются перед изменением (copy-on-write), чтобы
- * наследники не портили метаданные родительского класса.
+ *
+ * Семантика наследования и повторного применения: последняя декларация
+ * побеждает (last-write-wins, как у @YdbEnum) — повторное применение на
+ * том же классе и переопределение унаследованного свойства не создаёт
+ * дублей в метаданных. Иначе дешифровка обработала бы поле дважды:
+ * второй проход отдал бы провайдеру уже расшифрованный plaintext как
+ * ciphertext. Метаданные клонируются перед изменением (copy-on-write),
+ * чтобы наследники не портили метаданные родительского класса.
  */
 export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
   return (target, propertyKey) => {
@@ -46,7 +52,7 @@ export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
     const inherited: EncryptedFieldMeta[] =
       Reflect.getMetadata(YDB_ENCRYPTED_KEY, constructor) || [];
     const list: EncryptedFieldMeta[] = [
-      ...inherited,
+      ...inherited.filter((e) => e.propertyKey !== propertyKey),
       {
         propertyKey: propertyKey as string,
         blindIndex: options?.blindIndex ?? true,
