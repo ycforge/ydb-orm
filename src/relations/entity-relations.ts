@@ -27,6 +27,14 @@ import {
   resolveManyToManyJoinTable,
   type ResolvedJoinTable,
 } from './resolve-join-table.js';
+import { valueIdentityKey } from '../core/value-identity.js';
+
+/** Канонический value-ключ отношений (#174): Bytes и Date сравниваются
+ * по значению, а не по ссылке (гидрация создаёт независимые инстансы
+ * Uint8Array/Date — по ссылке валидные связи «не находились»). */
+function relationKey(value: unknown): string {
+  return valueIdentityKey([value]);
+}
 
 /**
  * Зависимости relations-модуля.
@@ -172,22 +180,22 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       hydration,
     );
 
-    const byInversePk = new Map<any, YdbBaseEntity>();
+    const byInversePk = new Map<string, YdbBaseEntity>();
     for (const entity of relatedEntities) {
-      byInversePk.set((entity as any)[targetPkField], entity);
+      byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
     }
 
-    const result = new Map<any, YdbBaseEntity[]>();
+    const result = new Map<string, YdbBaseEntity[]>();
     for (const row of links) {
       const ownerFk = row[joinTable.ownerColumn];
       const inverseFk = row[joinTable.inverseColumn];
-      const entity = byInversePk.get(inverseFk);
+      const entity = byInversePk.get(relationKey(inverseFk));
       if (!entity) continue;
-      const group = result.get(ownerFk);
+      const group = result.get(relationKey(ownerFk));
       if (group) {
         group.push(entity);
       } else {
-        result.set(ownerFk, [entity]);
+        result.set(relationKey(ownerFk), [entity]);
       }
     }
 
@@ -348,21 +356,21 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         hydration,
       );
 
-      const byFk = new Map<any, YdbBaseEntity[]>();
+      const byFk = new Map<string, YdbBaseEntity[]>();
       for (const child of children) {
         const fk = (child as any)[joinColumnName];
-        const group = byFk.get(fk);
+        const group = byFk.get(relationKey(fk));
         if (group) {
           group.push(child);
         } else {
-          byFk.set(fk, [child]);
+          byFk.set(relationKey(fk), [child]);
         }
       }
 
       // Копия массива на инстанс: два инстанса с одним PK не должны
       // разделять один массив (раньше у каждого был свой findAll).
       for (const item of items) {
-        const group = byFk.get((item as any)[pkField]);
+        const group = byFk.get(relationKey((item as any)[pkField]));
         (item as any)[rel.propertyKey] = group ? [...group] : [];
       }
       return children;
@@ -412,7 +420,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       );
 
       for (const item of items) {
-        const group = related.get((item as any)[pkField]);
+        const group = related.get(relationKey((item as any)[pkField]));
         (item as any)[rel.propertyKey] = group ? [...group] : [];
       }
 
@@ -467,14 +475,14 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       hydration,
     );
 
-    const byPk = new Map<any, YdbBaseEntity>();
+    const byPk = new Map<string, YdbBaseEntity>();
     for (const parent of parents) {
-      byPk.set((parent as any)[targetPk], parent);
+      byPk.set(relationKey((parent as any)[targetPk]), parent);
     }
 
     for (const item of items) {
       (item as any)[rel.propertyKey] =
-        byPk.get((item as any)[joinColumnName]) ?? null;
+        byPk.get(relationKey((item as any)[joinColumnName])) ?? null;
     }
     return parents;
   }

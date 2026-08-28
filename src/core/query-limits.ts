@@ -27,6 +27,7 @@ export const MAX_IN_CLAUSE_VALUES = 500;
  * Режет список значений на чанки по MAX_IN_CLAUSE_VALUES (или явному size).
  * Порядок элементов сохраняется; последний чанк может быть меньше.
  */
+import { valueIdentityKey } from './value-identity.js';
 export function chunkInValues<T>(
   values: readonly T[],
   size: number = MAX_IN_CLAUSE_VALUES,
@@ -43,13 +44,19 @@ export function chunkInValues<T>(
 
 /**
  * Дедупликация значений FK/PK с сохранением порядка первого вхождения.
- * Set сравнивает по SameValueZero: скаляры (string/number/bigint/boolean)
- * дедуплицируются по значению, а объекты (Uint8Array и т.п.) — по ссылке,
- * поэтому бинарные значения дедуплицируются только при повторе той же
- * ссылки (для FK/PK-потоков это приемлемо).
+ *
+ * Ключ дедупликации — канонический value-ключ (#174): скаляры
+ * (string/number/bigint/boolean) сравниваются по значению, а Bytes и
+ * Date — ПО ЗНАЧЕНИЮ (два равных `Uint8Array` или две равные `Date`)
+ * тоже схлопываются в одно значение, хотя по ссылке это разные объекты.
  */
 export function dedupeInValues<T>(values: readonly T[]): T[] {
-  return [...new Set(values)];
+  const seen = new Map<string, T>();
+  for (const value of values) {
+    const key = valueIdentityKey([value]);
+    if (!seen.has(key)) seen.set(key, value);
+  }
+  return [...seen.values()];
 }
 
 /** Защитный лимит строк по умолчанию для SELECT без явного limit (#133). */
