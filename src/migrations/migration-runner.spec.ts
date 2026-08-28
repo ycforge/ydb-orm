@@ -206,6 +206,198 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(alters[1].sql).toContain('ADD COLUMN `state` Utf8');
     });
 
+    /** Колонки таблицы учёта для DescribeTable-шва (#176). */
+    const bookkeepingColumns = (hasHash: boolean, hasState: boolean) =>
+      new Map<string, unknown>([
+        ['id', 3],
+        ['timestamp', 3],
+        ['name', 4],
+        ...(hasHash ? ([['hash', 4]] as const) : []),
+        ...(hasState ? ([['state', 4]] as const) : []),
+      ]);
+
+    it('#176 adds both missing columns by DescribeTable metadata', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.resolve({
+          columns: bookkeepingColumns(false, false),
+          primaryKey: ['id'],
+          indexes: [],
+        }),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await runner.getAppliedMigrations();
+
+      const alters = mock.queries.filter((q) =>
+        q.sql.startsWith('ALTER TABLE'),
+      );
+      expect(alters).toHaveLength(2);
+      expect(alters[0].sql).toContain('ADD COLUMN `hash` Utf8');
+      expect(alters[1].sql).toContain('ADD COLUMN `state` Utf8');
+    });
+
+    it('#176 adding columns is resumable after a failure between ALTERs', async () => {
+      const store = new Map<string, StoreRow>();
+      const failOnState = (sql: string) =>
+        sql.includes('ADD COLUMN `state`')
+          ? new Error('boom on state')
+          : undefined;
+      const mock1 = createStatefulExecutor({ store, failOn: failOnState });
+
+      let hasHash = false;
+      const hasState = false;
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.resolve({
+          columns: bookkeepingColumns(hasHash, hasState),
+          primaryKey: ['id'],
+          indexes: [],
+        }),
+      );
+
+      const first = new YdbMigrationRunner(
+        mock1.executor,
+        undefined,
+        describeTable,
+      );
+      await expect(first.getAppliedMigrations()).rejects.toThrow(
+        'boom on state',
+      );
+      expect(
+        mock1.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(1);
+
+      // Первый ALTER (`hash`) прошёл; повторный запуск добавляет только `state`.
+      hasHash = true;
+      const mock2 = createStatefulExecutor({ store });
+      const second = new YdbMigrationRunner(
+        mock2.executor,
+        undefined,
+        describeTable,
+      );
+      await second.getAppliedMigrations();
+
+      const alters = [
+        ...mock1.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+        ...mock2.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ];
+      expect(alters).toHaveLength(2);
+      expect(alters[0].sql).toContain('ADD COLUMN `hash` Utf8');
+      expect(alters[1].sql).toContain('ADD COLUMN `state` Utf8');
+    });
+
+    it('#176 adds only the missing `hash` column', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.resolve({
+          columns: bookkeepingColumns(false, true),
+          primaryKey: ['id'],
+          indexes: [],
+        }),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await runner.getAppliedMigrations();
+
+      const alters = mock.queries.filter((q) =>
+        q.sql.startsWith('ALTER TABLE'),
+      );
+      expect(alters).toHaveLength(1);
+      expect(alters[0].sql).toContain('ADD COLUMN `hash` Utf8');
+    });
+
+    it('#176 adds only the missing `state` column', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.resolve({
+          columns: bookkeepingColumns(true, false),
+          primaryKey: ['id'],
+          indexes: [],
+        }),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await runner.getAppliedMigrations();
+
+      const alters = mock.queries.filter((q) =>
+        q.sql.startsWith('ALTER TABLE'),
+      );
+      expect(alters).toHaveLength(1);
+      expect(alters[0].sql).toContain('ADD COLUMN `state` Utf8');
+    });
+
+    it('#176 fully upgraded table performs no ALTER statements', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.resolve({
+          columns: bookkeepingColumns(true, true),
+          primaryKey: ['id'],
+          indexes: [],
+        }),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await runner.getAppliedMigrations();
+
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
+    });
+
+    it('#176 transient DescribeTable error propagates without any ALTER', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.reject(new Error('table is unavailable')),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await expect(runner.getAppliedMigrations()).rejects.toThrow(
+        'table is unavailable',
+      );
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
+    });
+
+    it('#176 permission DescribeTable error propagates without any ALTER', async () => {
+      const mock = createStatefulExecutor();
+      const describeTable = jest.fn((_t: string): Promise<any> =>
+        Promise.reject(new Error('SCHEME_ERROR: access denied')),
+      );
+      const runner = new YdbMigrationRunner(
+        mock.executor,
+        undefined,
+        describeTable,
+      );
+
+      await expect(runner.getAppliedMigrations()).rejects.toThrow(
+        'access denied',
+      );
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
+    });
+
     it('ensures the table only once per runner instance (#101)', async () => {
       // Раньше ensureMigrationsTable выполнялся перед каждым чтением
       const mock = createStatefulExecutor({

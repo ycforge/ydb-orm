@@ -295,9 +295,9 @@ async function runCommand(args: CliArgs): Promise<void> {
           '(schema changes were rolled back manually).',
       );
     }
-    const { executor, close } = await connectCli(config);
+    const { driver, executor, close } = await connectCli(config);
     try {
-      const runner = new YdbMigrationRunner(executor);
+      const runner = new YdbMigrationRunner(executor, driver);
       const target = args.positional as string;
       if (args.asApplied) {
         await runner.markMigrationApplied(target);
@@ -313,9 +313,9 @@ async function runCommand(args: CliArgs): Promise<void> {
   }
 
   if (command === 'migration:run' || command === 'migration:revert') {
-    const { executor, close } = await connectCli(config);
+    const { driver, executor, close } = await connectCli(config);
     try {
-      const runner = new YdbMigrationRunner(executor);
+      const runner = new YdbMigrationRunner(executor, driver);
       const migrations = await loadMigrationsFromDir(migrationsDir);
 
       if (command === 'migration:run') {
