@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
+import type { Driver } from '@ydbjs/core';
 import { YdbExecutor } from '../core/interfaces.js';
 import { mapToYdb } from '../core/mapper.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
+import {
+  YdbSchemaSyncer,
+  type YdbTableDescription,
+} from '../schema/schema-sync.js';
 import { YdbMigration, executeSql } from './migration.interface.js';
 
 /** Таблица учёта применённых миграций. */
@@ -271,7 +276,22 @@ export class YdbMigrationRunner {
   /** Кеш ensure: один round-trip на инстанс вместо каждого чтения (#101). */
   private ensurePromise?: Promise<void>;
 
-  constructor(private readonly executor: YdbExecutor) {}
+  constructor(
+    private readonly executor: YdbExecutor,
+    /**
+     * Драйвер нужен для гарантированного апгрейда легаси-таблицы учёта
+     * (#176): DescribeTable через Table service отличает «колонки нет»
+     * от транзиентной ошибки, SELECT-проба этого не умела.
+     */
+    private readonly driver?: Driver,
+    /**
+     * Шов для тестов поверх пути DescribeTable.
+     * Возвращает null, если таблицы не существует (или схему читать нельзя).
+     */
+    private readonly describeTable?: (
+      tableName: string,
+    ) => Promise<YdbTableDescription | null>,
+  ) {}
 
   /** Создаёт таблицу учёта миграций, если её ещё нет (один раз на инстанс). */
   async ensureMigrationsTable(): Promise<void> {
@@ -290,10 +310,36 @@ export class YdbMigrationRunner {
         'PRIMARY KEY (`id`)' +
         ')',
     );
-    // Апгрейд таблицы старого формата (созданной до #101): колонок `hash`
-    // и `state` может не быть — SELECT несуществующей колонки падает,
-    // добавляем колонки. На уже обновлённых таблицах это лишний дешёвый
-    // SELECT один раз на инстанс раннера.
+
+    // Апгрейд таблицы старого формата (созданной до #101): колонок
+    // `hash`/`state` может не быть. Колонки добавляются ТОЛЬКО по реальным
+    // метаданным DescribeTable (#176): Select-проба не отличала отсутствие
+    // колонки от транзиентной/авторизационной ошибки, а безусловная пара
+    // ALTER не переживала частичного апгрейда (сбой между ALTER оставлял
+    // таблицу в состоянии, при котором повторный запуск падал на
+    // дубликате колонки и никогда не доходил до второй).
+    let description: YdbTableDescription | null = null;
+    if (this.driver || this.describeTable) {
+      description = await this.describeMigrationsTable();
+    }
+    if (description) {
+      const missing = (['hash', 'state'] as const).filter(
+        (column) => !description.columns.has(column),
+      );
+      for (const column of missing) {
+        await executeSql(
+          this.executor,
+          `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ` +
+            `ADD COLUMN \`${column}\` Utf8`,
+        );
+      }
+      return;
+    }
+
+    // Легаси-путь для раннеров, созданных без driver (программный вызов):
+    // DescribeTable недоступен — SELECT-проба с безусловным ремонтом. В CLI
+    // и NestJS-путях всегда передаётся driver, поэтому сюда попадают только
+    // явно сконструированные без драйвера раннеры.
     try {
       await executeSql(
         this.executor,
@@ -309,6 +355,23 @@ export class YdbMigrationRunner {
         `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ADD COLUMN \`state\` Utf8`,
       );
     }
+  }
+
+  /**
+   * Метаданные таблицы учёта через существующий путь DescribeTable.
+   * Ошибки DescribeTable (нет прав, транзиентные) пробрасываются наверх
+   * без ALTER — только явное отсутствие колонки ведёт к ALTER (#176).
+   */
+  private async describeMigrationsTable(): Promise<YdbTableDescription | null> {
+    if (this.describeTable) {
+      return this.describeTable(MIGRATIONS_TABLE);
+    }
+    if (this.driver) {
+      return new YdbSchemaSyncer(this.driver, this.executor).describeTable(
+        MIGRATIONS_TABLE,
+      );
+    }
+    return null;
   }
 
   /** Список применённых миграций в порядке применения. */
