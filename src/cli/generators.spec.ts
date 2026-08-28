@@ -73,6 +73,33 @@ describe('createEntityFile', () => {
     createEntityFile(dir, 'photo');
     expect(() => createEntityFile(dir, 'photo')).toThrow(/already exists/);
   });
+
+  it('#170: refuses to follow a symlink to an existing target', () => {
+    const target = path.join(dir, 'target.txt');
+    fs.writeFileSync(target, 'keep me', 'utf-8');
+    const link = path.join(dir, 'photo.entity.ts');
+    fs.symlinkSync(target, link);
+    expect(() => createEntityFile(dir, 'photo')).toThrow(/already exists/);
+    expect(fs.readFileSync(target, 'utf-8')).toBe('keep me');
+  });
+
+  it('#170: concurrent attempts yield one winner and one existence error', () => {
+    let created = 0;
+    const failures: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      try {
+        createEntityFile(dir, 'race');
+        created++;
+      } catch (err) {
+        failures.push((err as Error).message);
+      }
+    }
+    // При эксклюзивной записи ('wx') ровно одна попытка создаёт файл,
+    // остальные атомарно получают EEXIST — независимо от таймингов.
+    expect(created).toBe(1);
+    expect(failures).toHaveLength(7);
+    expect(failures.every((e) => /already exists/.test(e))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

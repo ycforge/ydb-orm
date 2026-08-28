@@ -55,13 +55,35 @@ function writeFile(dir: string, fileName: string, content: string): string {
   return writeFileAt(path.join(dir, fileName), content);
 }
 
-/** Пишет файл по точному пути; существующий файл никогда не перезаписывается. */
+/**
+ * Пишет файл по точному пути; существующий файл никогда не перезаписывается.
+ *
+ * Используется эксклюзивное открытие (флаг 'wx', как в entity-diagram.ts):
+ * check-then-write через existsSync оставляет окно для гонки, где другой
+ * процесс может подсунуть существующий файл или symlink между проверкой и
+ * записью, и writeFileSync молча усекёт его. 'wx' не следует symlink и
+ * атомарно падает EEXIST, гарантируя one-writer semantics (#170).
+ */
 function writeFileAt(filePath: string, content: string): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  if (fs.existsSync(filePath)) {
-    throw new Error(`File already exists: ${filePath}`);
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'wx');
+  } catch (error) {
+    // Проверка по коду без instanceof: в VM-окружениях (jest ESM) ошибка
+    // из нативного fs может не наследовать Error этого контекста.
+    if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') {
+      throw new Error(
+        `File already exists: ${filePath} — never overwrites existing files.`,
+      );
+    }
+    throw error;
   }
-  fs.writeFileSync(filePath, content, 'utf-8');
+  try {
+    fs.writeFileSync(fd, content, 'utf-8');
+  } finally {
+    fs.closeSync(fd);
+  }
   return filePath;
 }
 
