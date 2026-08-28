@@ -6,6 +6,7 @@ import {
   YdbEncrypted,
   YdbSecurityAAD,
   YdbBaseEntity,
+  buildAad,
 } from '../src/index.js';
 import type { YdbEncryptionContext } from '../src/index.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
@@ -39,6 +40,30 @@ class AadUniqueEntity extends YdbBaseEntity {
   pinned_secret?: string;
 }
 
+/** AAD-поля всех примитивных типов: один контракт сериализации (#166). */
+@YdbEntity('aad_scalar_test')
+class AadScalarEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Utf8')
+  declare tenant_id: string;
+
+  @YdbSecurityAAD()
+  @YdbColumn('Timestamp')
+  declare starts_at: Date;
+
+  @YdbSecurityAAD()
+  @YdbColumn('Int64')
+  declare org_rank: bigint;
+
+  @YdbSecurityAAD()
+  @YdbColumn('Bool')
+  declare active: boolean;
+
+  @YdbEncrypted({ blindIndex: true })
+  @YdbColumn('Utf8')
+  secret?: string;
+}
+
 /** Провайдер, записывающий AAD/контекст encrypt для проверки. */
 class RecordingEncryptionProvider extends TestOnlyEncryptionProvider {
   encrypts: { aad: string; context: YdbEncryptionContext }[] = [];
@@ -60,6 +85,9 @@ describe('#166: updateBy() требует однозначный AAD-преди�
     AadUniqueEntity.setExecutor(undefined);
     AadUniqueEntity.setEncryptionProvider(undefined);
     AadUniqueEntity.setBlindIndexProvider(undefined);
+    AadScalarEntity.setExecutor(undefined);
+    AadScalarEntity.setEncryptionProvider(undefined);
+    AadScalarEntity.setBlindIndexProvider(undefined);
   });
 
   it('прямое скалярное равенство по всем AAD-полям', async () => {
@@ -102,8 +130,11 @@ describe('#166: updateBy() требует однозначный AAD-преди�
     ['$in', { tenant_id: { $in: ['t1', 't2'] }, org_id: 'o1' }],
     ['$between', { tenant_id: { $between: ['t1', 't2'] }, org_id: 'o1' }],
     ['$gt range', { tenant_id: { $gt: 't0' }, org_id: 'o1' }],
+    ['$gte range', { tenant_id: { $gte: 't0' }, org_id: 'o1' }],
+    ['$lt range', { tenant_id: { $lt: 't5' }, org_id: 'o1' }],
     ['$lte range', { tenant_id: { $lte: 't5' }, org_id: 'o1' }],
     ['$ne', { tenant_id: { $ne: 't2' }, org_id: 'o1' }],
+    ['$like', { tenant_id: { $like: 't%' }, org_id: 'o1' }],
     ['$or logical group', { tenant_id: { $or: ['t1', 't2'] }, org_id: 'o1' }],
     ['multi-operator', { tenant_id: { $eq: 't1', $gt: 't0' }, org_id: 'o1' }],
     ['array value', { tenant_id: ['t1', 't2'], org_id: 'o1' }],
@@ -161,5 +192,67 @@ describe('#166: updateBy() требует однозначный AAD-преди�
     expect(mock.queries).toHaveLength(1);
     expect(provider.encrypts).toHaveLength(1);
     expect(provider.encrypts[0].aad).toBe('fixed-aad');
+  });
+
+  const makeScalarWhere = (when: Date) => ({
+    tenant_id: 't1',
+    starts_at: when,
+    org_rank: 7n,
+    active: true,
+  });
+
+  /**
+   * Ожидаемый AAD по единому контракту (#166, v2 по умолчанию): aadFields
+   * отсортированы алфавитно (entity-metadata), значения — каноническое
+   * toAadString (Date → ISO, bigint/Bool → String), сборка — buildAad.
+   * Тот же порядок и на encrypt-пути, и в updateBy.
+   */
+  const SCALAR_AAD_FIELDS = ['active', 'org_rank', 'starts_at', 'tenant_id'];
+  const scalarAad = (when: Date): string => {
+    const values = makeScalarWhere(when) as Record<string, unknown>;
+    return buildAad(SCALAR_AAD_FIELDS, (name) => values[name]);
+  };
+
+  it('#166 единый контракт: updateBy() шифрует AAD-поля типов Date/Int64/Bool той же строкой', async () => {
+    const provider = new RecordingEncryptionProvider();
+    AadScalarEntity.setEncryptionProvider(provider);
+    AadScalarEntity.setBlindIndexProvider(provider);
+    const mock = createMockExecutor([[]]);
+    AadScalarEntity.setExecutor(mock.executor);
+    const when = new Date('2026-08-28T12:00:00.000Z');
+
+    await AadScalarEntity.updateBy(makeScalarWhere(when), { secret: 'x' });
+
+    expect(mock.queries).toHaveLength(1);
+    expect(provider.encrypts[0].aad).toBe(scalarAad(when));
+  });
+
+  it('#166 updateBy() и обычный encrypt-путь дают одинаковый AAD для тех же значений', async () => {
+    const when = new Date('2026-08-28T12:00:00.000Z');
+
+    const viaUpdate = new RecordingEncryptionProvider();
+    AadScalarEntity.setEncryptionProvider(viaUpdate);
+    AadScalarEntity.setBlindIndexProvider(viaUpdate);
+    AadScalarEntity.setExecutor(createMockExecutor([[]]).executor);
+    await AadScalarEntity.updateBy(makeScalarWhere(when), { secret: 'x' });
+
+    const viaSave = new RecordingEncryptionProvider();
+    AadScalarEntity.setEncryptionProvider(viaSave);
+    AadScalarEntity.setBlindIndexProvider(viaSave);
+    AadScalarEntity.setExecutor(createMockExecutor([[]]).executor);
+
+    const entity = new AadScalarEntity();
+    entity.tenant_id = 't1';
+    entity.starts_at = when;
+    entity.org_rank = 7n;
+    entity.active = true;
+    entity.secret = 'x';
+    // Мок не знает о существовании записи: UPDATE вернёт пусто и save()
+    // упадёт после шифрования — AAD для пути encrypt уже записан.
+    await AadScalarEntity.save(entity).catch(() => undefined);
+
+    expect(viaUpdate.encrypts[0].aad).toBe(scalarAad(when));
+    expect(viaSave.encrypts[0].aad).toBe(scalarAad(when));
+    expect(viaUpdate.encrypts[0].aad).toBe(viaSave.encrypts[0].aad);
   });
 });
