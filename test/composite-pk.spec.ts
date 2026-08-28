@@ -285,7 +285,9 @@ describe('Composite PK CRUD', () => {
       expect(membership.user?.uuid).toBe(userRow.uuid);
       // #86: many-to-one грузится одним батч-IN по PK вместо find() на элемент.
       const [q] = mock.queries;
-      expect(q.sql).toContain('SELECT * FROM `users`');
+      expect(q.sql).toContain(
+        'SELECT `uuid`, `email_encrypted`, `full_name` FROM `users`',
+      );
       expect(q.sql).toContain('WHERE `uuid` IN ($p0)');
     });
   });

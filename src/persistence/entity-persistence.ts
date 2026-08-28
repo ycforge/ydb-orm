@@ -1244,7 +1244,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const instance = new Ctor();
     const enums = getYdbEnumMetadata(this.entityClass);
     for (const [key, value] of Object.entries(row)) {
-      if (isSyntheticColumn(meta, key)) continue;
+      // Только объявленные колонки. Synthetic {field}_bi и ЛЮБЫЕ столбцы,
+      // выпиленные из метаданных (#164), в инстанс не попадают — иначе
+      // legacy-секреты утекли бы в toJSON()/JSON.stringify().
+      if (!meta.schema[key]) continue;
       const enumMeta = enums.find((e) => e.propertyKey === key);
       let converted = this.convertEnumIn(value, enumMeta);
       converted = this.convertJsonIn(key, converted);
@@ -1339,6 +1342,16 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     }
   }
 
+  /**
+   * Дефолтная проекция SELECT: только объявленные (физические) колонки
+   * сущности (#164). SELECT * утянул бы и столбцы, выпиленные из
+   * метаданных (например legacy recovery_token) — в инстансы и JSON
+   * они попадать не должны.
+   */
+  private buildDefaultSelect(meta: YdbEntityMetadata): string {
+    return Object.keys(meta.schema).map(quoteIdentifier).join(', ');
+  }
+
   async find(
     where: Record<string, any>,
     options?: QueryOptions,
@@ -1358,7 +1371,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     const selectClause = options?.select?.length
       ? options.select.map(quoteIdentifier).join(', ')
-      : '*';
+      : this.buildDefaultSelect(meta);
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT 1`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
@@ -1387,7 +1400,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       await this.buildWhere(where);
     const selectClause = options?.select?.length
       ? options.select.map(quoteIdentifier).join(', ')
-      : '*';
+      : this.buildDefaultSelect(meta);
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
@@ -2083,7 +2096,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     for (const chunk of chunkInValues(uniqueValues)) {
       const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
-      const sql = `SELECT * FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
+      const selectClause = this.buildDefaultSelect(meta);
+      const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} WHERE ${quoteIdentifier(column)} IN (${inParams})`;
 
       const query = exec([sql] as unknown as TemplateStringsArray);
       chunk.forEach((value, i) => {

@@ -40,7 +40,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
       expect(user?.full_name).toBe('Ivan');
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('SELECT * FROM `users`');
+      expect(q.sql).toContain('SELECT `uuid`, `email_encrypted`, `full_name`');
       expect(q.sql).toContain('WHERE `uuid` = $uuid');
       expect(q.sql).toContain('LIMIT 1');
       expect(q.params.uuid).toBeInstanceOf(Uuid);
@@ -101,7 +101,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
       await UserEntity.find({ uuid: userRow.uuid }, { timeout: 100, signal });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('SELECT *');
+      expect(q.sql).toContain('SELECT `uuid`, `email_encrypted`, `full_name`');
     });
   });
 

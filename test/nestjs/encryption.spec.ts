@@ -128,7 +128,9 @@ describe('NestJS integration: encryption providers', () => {
     );
     expect(photo).toBeInstanceOf(PhotoEntity);
     expect(photo?.author_email).toBe('a@b.c');
-    expect(mock.queries[0].sql).toContain('SELECT * FROM `photos`');
+    expect(mock.queries[0].sql).toContain(
+      'SELECT `uuid`, `title`, `description`, `width`, `height`, `file_size`, `rating`, `is_public`, `like_count`, `author_email` FROM `photos`',
+    );
   });
 
   it('searches by encrypted field via blind index hash', async () => {
