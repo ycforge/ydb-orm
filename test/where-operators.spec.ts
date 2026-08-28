@@ -246,7 +246,7 @@ describe('WHERE operators', () => {
   });
 
   describe('QueryBuilder', () => {
-    it('supports orWhere()', async () => {
+    it('orWhere combines with the accumulated predicate: A OR B OR C (#173)', async () => {
       const mock = createMockExecutor([[]]);
       WhereOperatorEntity.setExecutor(mock.executor);
 
@@ -257,9 +257,60 @@ describe('WHERE operators', () => {
         .getMany();
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`is_banned` = $is_banned');
+      // Полный предикат: условия объединены через OR, на корне НЕ AND.
       expect(q.sql).toContain(
-        '(`is_admin` = $is_admin_0_eq OR `balance` >= $balance_1_gte)',
+        'WHERE (`is_banned` = $is_banned_0_eq OR `is_admin` = $is_admin_1_eq ' +
+          'OR `balance` >= $balance_2_gte)',
+      );
+    });
+
+    it('where(A).orWhere(B) evaluates as A OR B (#173)', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.query()
+        .where({ is_banned: false })
+        .orWhere({ is_admin: true })
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (`is_banned` = $is_banned_0_eq OR `is_admin` = $is_admin_1_eq)',
+      );
+    });
+
+    it('andWhere after orWhere links through AND: (A OR B) AND C (#173)', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.query()
+        .where({ is_banned: false })
+        .orWhere({ is_admin: true })
+        .andWhere({ balance: { $gte: 100n } })
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (`is_banned` = $is_banned_0_eq OR `is_admin` = $is_admin_1_eq) ' +
+          'AND `balance` >= $balance_2_gte',
+      );
+    });
+
+    it('where(A).orWhere(B).orWhere(C).andWhere(D) = (A OR B OR C) AND D (#173)', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.query()
+        .where({ is_banned: false })
+        .orWhere({ is_admin: true })
+        .orWhere({ balance: { $gte: 100n } })
+        .andWhere({ name: 'admin' })
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (`is_banned` = $is_banned_0_eq OR `is_admin` = $is_admin_1_eq ' +
+          'OR `balance` >= $balance_2_gte) AND `name` = $name',
       );
     });
 
@@ -273,8 +324,9 @@ describe('WHERE operators', () => {
         .getMany();
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`status` = $status_0_eq');
-      expect(q.sql).toContain('`is_admin` = $is_admin_1_eq');
+      expect(q.sql).toContain(
+        'WHERE (`status` = $status_0_eq OR `is_admin` = $is_admin_1_eq)',
+      );
     });
   });
 });
