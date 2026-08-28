@@ -13,14 +13,14 @@ Runtime — Node.js ≥ 22.18 (нативный импорт `.ts` через ty
 ## Установка
 
 ```bash
-# ядро:
+# единственный устанавливаемый пакет (ядро + подпакет @ycforge/ydb-orm/nest):
 yarn add @ycforge/ydb-orm
 
-# опционально, NestJS-интеграция:
-yarn add @ycforge/ydb-orm/nest @nestjs/common @nestjs/core reflect-metadata rxjs
+# опционально, для NestJS-интеграции — peer-зависимости:
+yarn add @nestjs/common @nestjs/core reflect-metadata rxjs
 ```
 
-`@nestjs/*`, `rxjs` и `reflect-metadata` — optional peerDependencies; без них основной пакет работает в полном объёме (standalone, CLI, скрипты).
+Подпакет `@ycforge/ydb-orm/nest` — это **субпуть импорта** того же пакета (`import { ... } from '@ycforge/ydb-orm/nest'`), отдельно его устанавливать не нужно. `@nestjs/*`, `rxjs` и `reflect-metadata` — optional peerDependencies; без них основной пакет работает в полном объёме (standalone, CLI, скрипты).
 
 ---
 
@@ -50,14 +50,15 @@ class UserEntity extends YdbBaseEntity {
 ### 2. Настройка executor'а
 
 ```ts
-const driver = createDriver({
+const opts = {
   endpoint: 'grpcs://ydb.serverless.yandexcloud.net:2135/?database=/ru-central1/...',
   auth: createAuth(authKeyFromFile('./authorized_key.json')),
-});
+};
 
-const executor = createExecutor(driver);
+const driver = await createDriver(opts);
+const executor = createExecutor(driver, opts);
 
-configureEntities(executor, [UserEntity]);
+configureEntities([UserEntity], { executor });
 // с этого момента Active Record-методы сущности работают
 ```
 
