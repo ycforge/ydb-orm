@@ -159,13 +159,22 @@ export async function loadMigrationsFromDir(
     const migration = candidates[0].create();
     migration.name ??= file.replace(MIGRATION_FILE_RE, '');
     // Стабильная идентичность (#101): hash всегда берётся из содержимого
-    // файла. Явный hash в коде миграции — попытка обойти контроль
-    // целостности (#169): изменённый исходник сохранил бы записанный hash
-    // и ушёл бы от drift-детекции.
-    if (migration.hash !== undefined) {
+    // файла. Явный hash в коде миграции не может ни перекрыть её (он никогда
+    // не используется как идентичность — всегда стирается на contentHash),
+    // ни «поручиться» за содержимое: у настоящего файла объявленный hash
+    // входит в его же содержимое, поэтому совпасть с contentHash не может
+    // в принципе, а расхождение = признак подделки/устаревшего шаблона (#169).
+    // Совпадение (теоретически возможное, если хешируемый контент когда-нибудь
+    // перестанет включать литерал объявления) принимается без вреда для
+    // безопасности — идентичность всё равно контентная.
+    if (migration.hash !== undefined && migration.hash !== contentHash) {
       throw new Error(
-        `File ${file} declares its own migration hash ("${migration.hash}"). ` +
-          `Migration identity is derived from the file content — remove the "hash" property.`,
+        `File ${file} declares its own migration hash ("${migration.hash}") ` +
+          `which differs from the file content hash. Migration identity is ` +
+          `derived from the file content (#169) — remove the "hash" property. ` +
+          `If this migration was already applied under the declared hash, resolve ` +
+          `the bookkeeping row explicitly via removeMigrationRecord()/markMigrationApplied() ` +
+          `(see README "Обновление с версий до content-based identity").`,
       );
     }
     migration.hash = contentHash;
