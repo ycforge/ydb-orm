@@ -294,7 +294,7 @@ export function computeRetryDelayMs(
  * попадают и в сообщение; произвольные объекты не строковятся
  * (небезопасно) — они видны только через cause.
  */
-function abortReasonToError(reason: unknown): Error {
+export function abortReasonToError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
   const detail =
     typeof reason === 'string'
