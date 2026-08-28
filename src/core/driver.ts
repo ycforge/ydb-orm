@@ -184,7 +184,9 @@ export function createExecutor(
       typeof opts.logQueries === 'object' && opts.logQueries !== null
         ? opts.logQueries
         : new ConsoleQueryLogger();
-    executor = wrapExecutorWithLogging(executor, logger);
+    executor = wrapExecutorWithLogging(executor, logger, {
+      values: opts.logParamValues,
+    });
   }
 
   return executor;

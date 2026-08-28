@@ -6,7 +6,7 @@ import {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
-import type { QueryLogger } from './query-logger.js';
+import type { QueryLogger, YdbLogParamValues } from './query-logger.js';
 import type { YdbRetryPolicyInput } from './retry.js';
 
 export type { QueryOptions } from './query-options.js';
@@ -76,9 +76,19 @@ export interface YdbModuleOptions {
   sync?: boolean;
   /**
    * Логирование запросов: true (консоль по умолчанию) или экземпляр QueryLogger.
-   * Логирует SQL, замаскированные параметры и длительность.
+   * Логирует SQL, имена параметров, безопасную метаинформацию значений
+   * (тип и длину) и длительность.
    */
   logQueries?: boolean | QueryLogger;
+  /**
+   * Раскрытие raw-значений параметров в логах (#168). По умолчанию
+   * (undefined/false) значения не логируются вовсе — только безопасная
+   * метаинформация (`<string:8>`, `<bytes:24>`), поэтому чувствительные
+   * данные с произвольными именами не попадают в журналы. Раскрытие —
+   * явный opt-in: true (все значения), string[] / RegExp / предикат
+   * (только подходящие имена параметров).
+   */
+  logParamValues?: YdbLogParamValues;
   /**
    * Настройки транзакций (#98):
    * - ambient — включить ambient-контекст транзакций (AsyncLocalStorage):
