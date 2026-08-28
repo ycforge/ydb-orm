@@ -158,8 +158,17 @@ export async function loadMigrationsFromDir(
 
     const migration = candidates[0].create();
     migration.name ??= file.replace(MIGRATION_FILE_RE, '');
-    // Стабильная идентичность (#101); явно заданный hash не перезаписываем.
-    migration.hash ??= contentHash;
+    // Стабильная идентичность (#101): hash всегда берётся из содержимого
+    // файла. Явный hash в коде миграции — попытка обойти контроль
+    // целостности (#169): изменённый исходник сохранил бы записанный hash
+    // и ушёл бы от drift-детекции.
+    if (migration.hash !== undefined) {
+      throw new Error(
+        `File ${file} declares its own migration hash ("${migration.hash}"). ` +
+          `Migration identity is derived from the file content — remove the "hash" property.`,
+      );
+    }
+    migration.hash = contentHash;
 
     // Дубли имени (в т.ч. `.ts` + скомпилированный `.js` рядом) —
     // раньше второй файл молча skip-ался или дважды применялся в раннере (#100).
