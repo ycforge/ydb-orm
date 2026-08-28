@@ -818,9 +818,16 @@ YdbCoreModule.forRootAsync({
 ```
 
 - `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams` (все значения маскируются), `durationMs` и опциональную `error`.
-- Утилита `wrapExecutorWithLogging(executor, logger)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
-- Маскирование параметров: секреты/PII по имени параметра (`password`, `token`, `secret`, `authorization`, `email`, credential, phone, card, blind index `{field}_bi` и т.п.) заменяются на `<redacted>` для значений любой длины; бинарные/зашифрованные данные логируются только длиной (`<bytes:N>`); остальные длинные строки обрезаются до 64 символов.
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams`, `durationMs` и опциональную `error`.
+- Утилита `wrapExecutorWithLogging(executor, logger, options?)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
+- **Значения параметров по умолчанию скрыты (#168)**: raw-значения не попадают в журналы вообще, только тип и укрупнённый класс размера (`<string:1-31>`, `<json:512-2047>`, `<bytes:128-511>`). Точная длина скрыта (чтобы по журналам нельзя было различать значения). Это intentional behavior change: раньше маскировался лишь конечный денylist имён (`password`, `token`, `email`, ...), и значения с произвольными именами (`salary`, `medical_record`, blind-index хеши не из денylist) утекали в лог.
+- **Бинарные значения маскируются всегда**, даже при явном opt-in: ciphertext шифрованных колонок логируется только как `<bytes:<класс размера>>`.
+- **Опциональное raw-раскрытие** — `logParamValues` в `YdbModuleOptions` (standalone и NestJS) или `options.values` у `wrapExecutorWithLogging`:
+  - `true` — все значения (кроме бинарных);
+  - `string[]` — только перечисленные имена параметров;
+  - `RegExp` — только имена по маске;
+  - `(name) => boolean` — предикат приложения.
+  При opt-in длинные строки обрезаются до 64 символов. Blind-index хеши — обычные строки: по умолчанию маскируются, раскрываются только при явном opt-in на их имя.
 
 ## Аутентификация
 

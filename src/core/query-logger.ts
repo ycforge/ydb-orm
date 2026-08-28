@@ -8,7 +8,7 @@ export interface QueryLogEntry {
   sql: string;
   /** Имена параметров (без значений). */
   paramNames: string[];
-  /** Замаскированные значения параметров (секреты скрыты). */
+  /** Замаскированные значения параметров: raw скрыт, только тип+класс размера. */
   maskedParams: Record<string, unknown>;
   /** Длительность выполнения в миллисекундах. */
   durationMs: number;
@@ -39,16 +39,23 @@ const MAX_PARAM_LENGTH = 64;
  * Разрешение на раскрытие raw-значений параметров в логах (#168).
  *
  * По умолчанию (undefined/false) логгер выводит для каждого параметра только
- * безопасную метаинформацию — тип и длину (`<string:8>`), никогда не раскрывая
- * сами значения (байты и blind index маскируются всегда). Историческая
- * денylist-маскировка по токенам имени непокрыто утекала чувствительные
- * значения с произвольными именами (`salary`, `medical_record` и т.п.).
+ * безопасную метаинформацию — тип и укрупнённый класс размера
+ * (`<string:1-31>`, `<json:512-2047>`), никогда не раскрывая сами значения;
+ * бинарные данные (в т.ч. ciphertext колонок) маскируются всегда. Точная
+ * длина не раскрывается: exact-length канал позволил бы различать значения
+ * по размеру (fingerprinting). Историческая денylist-маскировка по токенам
+ * имени непокрыто утекала чувствительные значения с произвольными именами
+ * (`salary`, `medical_record` и т.п.), поэтому убрана (#168).
  *
  * Раскрытие raw-значений — явный opt-in приложения:
- * - `true` — раскрывать все значения (заведомо unsafe-логгер);
+ * - `true` — раскрывать все значения (кроме бинарных; заведомо unsafe-логгер);
  * - `string[]` — раскрывать только перечисленные имена параметров;
  * - `RegExp` — раскрывать по маске имени параметра;
  * - `(name: string) => boolean` — произвольный предикат приложения.
+ *
+ * Blind-index хеши (`{field}_bi`) — обычные строковые параметры: по умолчанию
+ * маскируются, при явном opt-in раскрываются приложением осознанно (единский
+ * hard-boundary — бинарные значения).
  */
 export type YdbLogParamValues =
   boolean | string[] | RegExp | ((name: string) => boolean);
@@ -68,15 +75,19 @@ function allowRawValue(
 
 /**
  * Безопасная метаинформация о значении параметра (#168): raw не логируется,
- * только тип и длина. Строки/числа/JSON/булевы не раскрываются, чтобы по
- * журналам нельзя было восстановить sensitive-значения с именами, которых
- * нет ни в каком денylist'е.
+ * только тип и укрупнённый класс размера. Точная длина значения НЕ
+ * раскрывается — точные `<string:N>`/`<json:N>` позволяли бы различать
+ * low-cardinality значения по длине (fingerprinting). Классы размера оставляют
+ * диагностическую ценность («пустой?», «массивный BLOB?») без однозначного
+ * канала различения значений.
  */
 function safeMetaValue(value: unknown): unknown {
-  if (value instanceof Uint8Array) return `<bytes:${value.length}>`;
+  if (value instanceof Uint8Array) {
+    return `<bytes:${lengthBucket(value.length)}>`;
+  }
   switch (typeof value) {
     case 'string':
-      return `<string:${value.length}>`;
+      return `<string:${lengthBucket(value.length)}>`;
     case 'number':
       return '<number>';
     case 'bigint':
@@ -86,7 +97,15 @@ function safeMetaValue(value: unknown): unknown {
     case 'object': {
       if (value === null) return null;
       if (value instanceof Date) return '<date>';
-      return `<json:${JSON.stringify(value).length}>`;
+      let len: number;
+      try {
+        len = JSON.stringify(value).length;
+      } catch {
+        // Циклическая/несериализуемая структура: маскируем без размера,
+        // логирование не должно падать и ронять запрос (см. #190).
+        return '<json>';
+      }
+      return `<json:${lengthBucket(len)}>`;
     }
     default:
       return `<${typeof value}>`;
@@ -94,8 +113,24 @@ function safeMetaValue(value: unknown): unknown {
 }
 
 /**
+ * Укрупнённый класс длины для метаинформации (#190): точная длина не
+ * раскрывается, чтобы по журналам нельзя было различать значения.
+ */
+function lengthBucket(length: number): string {
+  const buckets = [
+    { max: 0, label: '0' },
+    { max: 31, label: '1-31' },
+    { max: 127, label: '32-127' },
+    { max: 511, label: '128-511' },
+    { max: 2047, label: '512-2047' },
+    { max: Infinity, label: '2048+' },
+  ] as const;
+  return buckets.find((b) => length <= b.max)!.label;
+}
+
+/**
  * Маскирование скалярного значения. Байты никогда не раскрываются (только
- * длина). Raw-значение допустимо только для имён из явного allowlist'а
+ * класс размера). Raw-значение допустимо только для имён из явного allowlist'а
  * приложения (#168); длинные строки в таком случае обрезаются.
  */
 function maskScalarValue(
@@ -104,7 +139,9 @@ function maskScalarValue(
   allowRaw: boolean,
 ): unknown {
   if (value instanceof Uint8Array) {
-    return `<bytes:${value.length}>`;
+    // Жёсткая граница: бинарные данные никогда не раскрываются, только
+    // класс размера (точная длина скрыта, #190).
+    return `<bytes:${lengthBucket(value.length)}>`;
   }
   if (allowRaw) {
     if (typeof value === 'string' && value.length > MAX_PARAM_LENGTH) {
@@ -135,6 +172,25 @@ function maskValue(
   return maskScalarValue(name, value, allowRawValue(values, name));
 }
 
+/** Сериализация значения параметра для консольного вывода (#190). */
+function formatParamValue(value: unknown): string {
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (value !== null && typeof value === 'object') {
+    try {
+      const json = JSON.stringify(value);
+      if (json !== undefined) return json;
+    } catch {
+      // Циклическая структура (raw opt-in раскрытие): плейсхолдер вместо
+      // падения логгера.
+    }
+    return '<circular>';
+  }
+  const json = JSON.stringify(value);
+  return json === undefined ? '<unserializable>' : json;
+}
+
 /**
  * Консольный логгер запросов по умолчанию.
  * Формат: [YDB] QUERY <durationMs>ms — sql с параметрами
@@ -142,7 +198,7 @@ function maskValue(
 export class ConsoleQueryLogger implements QueryLogger {
   log(entry: QueryLogEntry): void {
     const params = Object.entries(entry.maskedParams)
-      .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+      .map(([k, v]) => `${k}=${formatParamValue(v)}`)
       .join(', ');
 
     const base = `[YDB] QUERY ${entry.durationMs}ms`;
@@ -164,7 +220,8 @@ export class ConsoleQueryLogger implements QueryLogger {
  * маскирует параметры, логирует SQL + ошибки.
  *
  * @param options Настройки раскрытия raw-значений параметров (#168):
- *   по умолчанию в лог попадают только имена и метаинформация (тип+длина).
+ *   по умолчанию в лог попадают только имена и метаинформация (тип + класс
+ *   размера, без точной длины).
  */
 export function wrapExecutorWithLogging(
   executor: YdbExecutor,

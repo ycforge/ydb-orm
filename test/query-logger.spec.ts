@@ -97,7 +97,8 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].sql).toBe('SELECT * FROM users');
     expect(logEntries[0].paramNames).toEqual(['id']);
     // #168: по умолчанию значения не раскрываются — только метаинформация
-    expect(logEntries[0].maskedParams).toEqual({ id: '<string:4>' });
+    // (тип + класс размера; точная длина скрыта, #190)
+    expect(logEntries[0].maskedParams).toEqual({ id: '<string:1-31>' });
     expect(logEntries[0].durationMs).toBeGreaterThanOrEqual(0);
     expect(logEntries[0].error).toBeUndefined();
   });
@@ -125,7 +126,130 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('description', 'a'.repeat(200));
     await q;
 
-    expect(logEntries[0].maskedParams.description).toBe('<string:200>');
+    expect(logEntries[0].maskedParams.description).toBe('<string:128-511>');
+  });
+
+  it('does not reveal exact lengths (#190): bucket boundaries', async () => {
+    // Точная длина скрыта (fingerprinting-канал). Проверяем границы
+    // классов размера: 0, 1, 31, 32, 127, 128, 511, 512, 2047, 2048, 5000.
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('a0', '');
+    q.parameter('a1', 'x');
+    q.parameter('a31', 'x'.repeat(31));
+    q.parameter('a32', 'x'.repeat(32));
+    q.parameter('a127', 'x'.repeat(127));
+    q.parameter('a128', 'x'.repeat(128));
+    q.parameter('a511', 'x'.repeat(511));
+    q.parameter('a512', 'x'.repeat(512));
+    q.parameter('a2047', 'x'.repeat(2047));
+    q.parameter('a2048', 'x'.repeat(2048));
+    q.parameter('a5000', 'x'.repeat(5000));
+    await q;
+
+    const m = logEntries[0].maskedParams as Record<string, string>;
+    expect([
+      m.a0,
+      m.a1,
+      m.a31,
+      m.a32,
+      m.a127,
+      m.a128,
+      m.a511,
+      m.a512,
+      m.a2047,
+      m.a2048,
+      m.a5000,
+    ]).toEqual([
+      '<string:0>',
+      '<string:1-31>',
+      '<string:1-31>',
+      '<string:32-127>',
+      '<string:32-127>',
+      '<string:128-511>',
+      '<string:128-511>',
+      '<string:512-2047>',
+      '<string:512-2047>',
+      '<string:2048+>',
+      '<string:2048+>',
+    ]);
+  });
+
+  it('does not reveal exact lengths: bytes and json (#190)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('blob', new Uint8Array(1024));
+    q.parameter('payload', { a: 1, b: 'two' });
+    await q;
+
+    expect(logEntries[0].maskedParams.blob).toBe('<bytes:512-2047>');
+    expect(logEntries[0].maskedParams.payload).toBe('<json:1-31>');
+  });
+
+  it('masks circular object params without breaking the query (#190)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const circular: Record<string, unknown> = { self: null };
+    circular.self = circular;
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('meta', circular);
+    q.parameter('ok', 'fine');
+    await q;
+
+    // Маскирование не должно падать на JSON.stringify циклической структуры
+    // (иначе параметр не дойдёт до executor'а и запрос сломается).
+    expect(logEntries[0].maskedParams.meta).toBe('<json>');
+    expect(logEntries[0].maskedParams.ok).toBe('<string:1-31>');
+    expect(logEntries[0].error).toBeUndefined();
+  });
+
+  it('logs raw BigInt under opt-in without breaking ConsoleQueryLogger (#190)', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const mock = createMockExecutor([[]]);
+      const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+        values: true,
+      });
+
+      const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+      q.parameter('counter', 10n);
+      await q;
+
+      // raw bigint не сериализуется через JSON.stringify — дефолтный логгер
+      // не должен из-за этого падать и ронять результат запроса.
+      const logger = new ConsoleQueryLogger();
+      logger.log(logEntries[0]);
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(logSpy.mock.calls[0][0] as string).toContain('counter=10n');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('allowlist regex with global flag is stateless across params (#190)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      // g-флаг делает RegExp.test() stateful через lastIndex; allowRawValue
+      // сбрасывает его на каждый вызов, иначе раскрытие зависело бы от
+      // порядка/количества параметров (обход маскировки).
+      values: /^debug_/g,
+    });
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('debug_a', 'aa');
+    q.parameter('debug_b', 'bb');
+    q.parameter('secret', 'ss');
+    await q;
+
+    expect(logEntries[0].maskedParams.debug_a).toBe('aa');
+    expect(logEntries[0].maskedParams.debug_b).toBe('bb');
+    expect(logEntries[0].maskedParams.secret).toBe('<string:1-31>');
   });
 
   it('masks every scalar by default, including non-denylisted names (#168)', async () => {
@@ -143,12 +267,12 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('birth_date', '1990-01-02');
     await q;
 
-    expect(logEntries[0].maskedParams.password).toBe('<string:7>');
-    expect(logEntries[0].maskedParams.api_token).toBe('<string:6>');
+    expect(logEntries[0].maskedParams.password).toBe('<string:1-31>');
+    expect(logEntries[0].maskedParams.api_token).toBe('<string:1-31>');
     expect(logEntries[0].maskedParams.salary).toBe('<number>');
-    expect(logEntries[0].maskedParams.medical_record).toBe('<string:9>');
-    expect(logEntries[0].maskedParams.home_address).toBe('<string:8>');
-    expect(logEntries[0].maskedParams.birth_date).toBe('<string:10>');
+    expect(logEntries[0].maskedParams.medical_record).toBe('<string:1-31>');
+    expect(logEntries[0].maskedParams.home_address).toBe('<string:1-31>');
+    expect(logEntries[0].maskedParams.birth_date).toBe('<string:1-31>');
   });
 
   it('masks blind index columns to metadata without revealing hashes', async () => {
@@ -163,9 +287,9 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('email_bi_0', 'numbered-hash');
     await q;
 
-    expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<string:17>');
-    expect(logEntries[0].maskedParams.author_email_bi).toBe('<string:12>');
-    expect(logEntries[0].maskedParams.email_bi_0).toBe('<string:13>');
+    expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<string:1-31>');
+    expect(logEntries[0].maskedParams.author_email_bi).toBe('<string:1-31>');
+    expect(logEntries[0].maskedParams.email_bi_0).toBe('<string:1-31>');
   });
 
   it('passes idempotent() through to the wrapped query (#27)', async () => {
@@ -240,7 +364,7 @@ describe('wrapExecutorWithLogging', () => {
     await q;
 
     expect(logEntries[0].maskedParams.email).toBe('ivan@example.com');
-    expect(logEntries[0].maskedParams.name).toBe('<string:4>');
+    expect(logEntries[0].maskedParams.name).toBe('<string:1-31>');
   });
 
   it('allowlist predicate decides per parameter name (#168)', async () => {
@@ -255,10 +379,10 @@ describe('wrapExecutorWithLogging', () => {
     await q;
 
     expect(logEntries[0].maskedParams.debug_trace_id).toBe('abc-123');
-    expect(logEntries[0].maskedParams.user_id).toBe('<string:4>');
+    expect(logEntries[0].maskedParams.user_id).toBe('<string:1-31>');
   });
 
-  it('bytes and blind index stay masked even when values are revealed (#168)', async () => {
+  it('bytes stay masked even when values are revealed (#168)', async () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
       values: true,
@@ -269,7 +393,10 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('email_bi', 'hash');
     await q;
 
-    expect(logEntries[0].maskedParams.data).toBe('<bytes:3>');
+    // Бинарные данные имеют жёсткую границу: никогда не раскрываются.
+    // Blind-index хеш — обычная строка: при value: true раскрывается
+    // осознанным opt-in'ом приложения (см. доку ниже).
+    expect(logEntries[0].maskedParams.data).toBe('<bytes:1-31>');
     expect(logEntries[0].maskedParams.email_bi).toBe('hash');
   });
 
@@ -281,7 +408,7 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('data', new Uint8Array([1, 2, 3]));
     await q;
 
-    expect(logEntries[0].maskedParams.data).toBe('<bytes:3>');
+    expect(logEntries[0].maskedParams.data).toBe('<bytes:1-31>');
   });
 
   it('masks YDB typed-parameter inner values by default (#168)', async () => {
@@ -292,7 +419,7 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('typed', { type: 'Utf8', value: 'raw-secret' });
     await q;
 
-    expect(logEntries[0].maskedParams.typed).toBe('<string:10>');
+    expect(logEntries[0].maskedParams.typed).toBe('<string:1-31>');
   });
 
   it('keeps logging through parameter() chaining', async () => {
