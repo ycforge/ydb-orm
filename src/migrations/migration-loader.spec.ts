@@ -246,6 +246,90 @@ describe('loadMigrationsFromDir', () => {
     });
   });
 
+  describe('#169 regression: file-backed identity only', () => {
+    it('assigns content hash to object exports, not just classes', async () => {
+      const body = `export default {
+        up: async () => {},
+        down: async () => {},
+      };`;
+      writeMigration('1000-Obj.mjs', body);
+
+      const migrations = await loadMigrationsFromDir(dir);
+
+      expect(migrations[0].hash).toBe(
+        createHash('sha256').update(body).digest('hex'),
+      );
+    });
+
+    it('rejects a hash declared on a class export', async () => {
+      writeMigration(
+        '1000-ClassHash.mjs',
+        `export default class ClassHash {
+          hash = 'forged-hash';
+          async up() {}
+          async down() {}
+        }`,
+      );
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /1000-ClassHash\.mjs declares its own migration hash \("forged-hash"\)/,
+      );
+    });
+
+    it('rejects a hash declared on an object export', async () => {
+      writeMigration(
+        '1000-ObjHash.mjs',
+        `export default {
+          hash: 'forged-hash',
+          up: async () => {},
+          down: async () => {},
+        };`,
+      );
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /1000-ObjHash\.mjs declares its own migration hash/,
+      );
+    });
+
+    it('rejects a declared hash even when it equals the file content hash', async () => {
+      // Ключевой кейс: «идеальный» поддельный hash (совпадающий с текущим
+      // содержимым) нельзя просто стереть — он запрещён в принципе, чтобы
+      // изменение исходника не могло сохранить записанный hash.
+      const declared = 'b'.repeat(64);
+      const body = `export default class EqualHash {
+        hash = '${declared}';
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('1000-Equal.mjs', body);
+
+      await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
+        /declares its own migration hash/,
+      );
+    });
+
+    it('always reassigns the content hash on modified file content', async () => {
+      const body = `export default class Mutable {
+        async up() {}
+        async down() {}
+      }`;
+      writeMigration('1000-Mutable.mjs', body);
+      const before = await loadMigrationsFromDir(dir);
+
+      // Повторная загрузка уже выдала бы файл из кеша Node import;
+      // переименование + изменение содержимого имитируют модификацию.
+      fs.writeFileSync(
+        path.join(dir, '2000-Mutable.mjs'),
+        body.concat('\n// touched\n'),
+        'utf-8',
+      );
+      const after = await loadMigrationsFromDir(dir);
+      const changed = after.find((m) => m.name === '2000-Mutable')!;
+
+      expect(changed.hash).not.toBe(before[0].hash);
+    });
+  });
+
   describe('missing directory (#103)', () => {
     it('fails clearly instead of returning []', async () => {
       // Раньше несуществующая директория выглядела как «No pending

@@ -6,17 +6,15 @@ on:
       - "v*"
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
+  contents: read
 
 jobs:
   ci:
     name: CI gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: yarn
@@ -29,9 +27,17 @@ jobs:
     name: Publish to npm
     needs: ci
     runs-on: ubuntu-latest
+    # Публикация изолирована в отдельный job (#167): write-права (GitHub
+    # Release) и id-token (npm provenance) действуют только здесь, а не на
+    # CI-gate. Секреты публикации привязываются к окружению 'release'
+    # (автоматически создаётся при первом запуске).
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
           cache: yarn

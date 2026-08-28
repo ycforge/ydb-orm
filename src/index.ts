@@ -23,6 +23,10 @@ export {
   ConsoleQueryLogger,
   wrapExecutorWithLogging,
 } from './core/query-logger.js';
+export type {
+  YdbLogParamValues,
+  YdbLoggingOptions,
+} from './core/query-logger.js';
 
 // Декораторы
 export { YdbEntity } from './decorators/entity.decorator.js';
