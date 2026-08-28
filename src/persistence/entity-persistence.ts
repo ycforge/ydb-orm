@@ -535,6 +535,67 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
+   * Извлекает однозначный скаляр для AAD-поля из where-предиката (#166).
+   * Разрешено только прямое скалярное равенство или { $eq: scalar }.
+   * Всё, что не задаёт ровно один экземпляр ($in, $between, диапазоны,
+   * $ne, $like, логические группы, массивы, null) — отклоняется до запроса:
+   * запись шифруется с одним AAD, а при чтении контекст AAD у строк разный —
+   * дешифровка вернёт мусор или упадёт.
+   */
+  private extractUniqueAadValue(
+    field: string,
+    raw: unknown,
+  ): { value: string } | null {
+    if (raw === null || raw === undefined) return null;
+    let operand = raw;
+    if (this.isOperatorObject(raw)) {
+      const opKeys = Object.keys(raw).filter((k) => k.startsWith('$'));
+      if (opKeys.length === 1 && '$eq' in raw) {
+        operand = raw.$eq;
+      } else {
+        throw new Error(
+          `updateBy() on ${this.entityClass.name} cannot resolve a unique AAD predicate ` +
+            `for field "${field}": expected a direct scalar equality or { $eq: value }, ` +
+            `got ${this.formatWhereValue(raw)}`,
+        );
+      }
+    }
+    if (Array.isArray(operand) || operand === null || operand === undefined) {
+      throw new Error(
+        `updateBy() on ${this.entityClass.name} cannot resolve a unique AAD predicate ` +
+          `for field "${field}": expected a direct scalar equality or { $eq: value }, ` +
+          `got ${this.formatWhereValue(raw)}`,
+      );
+    }
+    return { value: this.scalarToAadString(operand) };
+  }
+
+  /**
+   * Детерминированное строковое представление скаляра для AAD-контекста.
+   * Примитивы — как в String(); объектные скаляры (напр. JSON-значения) —
+   * через JSON.stringify.
+   */
+  private scalarToAadString(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (
+      typeof value === 'number' ||
+      typeof value === 'bigint' ||
+      typeof value === 'boolean'
+    ) {
+      return String(value);
+    }
+    return this.formatWhereValue(value);
+  }
+
+  private formatWhereValue(value: unknown): string {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  /**
    * Возвращает хеш blind index для зашифрованного поля.
    */
   private async hashBlindIndexForWhere(field: string, value: string) {
@@ -1713,9 +1774,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
                 `are not fixed by the where predicate; set them in where or use aadOverride`,
             );
           }
-          aadFields = Object.fromEntries(
-            meta.aadFields.map((f) => [f, String(where[f])]),
-          );
+          const resolved: Record<string, string> = {};
+          for (const f of meta.aadFields) {
+            const unique = this.extractUniqueAadValue(f, where[f]);
+            if (!unique) {
+              throw new Error(
+                `updateBy() on ${this.entityClass.name} cannot resolve a unique AAD predicate ` +
+                  `for field "${f}"`,
+              );
+            }
+            resolved[f] = unique.value;
+          }
+          aadFields = resolved;
         }
         const aad = ef.aadOverride ?? this.buildAAD(aadFields, meta.aadFields);
         const context: YdbEncryptionContext = {
