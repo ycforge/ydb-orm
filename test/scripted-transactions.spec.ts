@@ -149,7 +149,7 @@ describe('#109: транзакции через DI: точная семанти�
   it('откат не мешает следующей транзакции: вторая транзакция коммитится со своими шагами', async () => {
     const failure = unavailableError();
     db.expect('UPSERT INTO `fixture_orders`').inTransaction().throws(failure);
-    db.expect('SELECT * FROM `fixture_orders`')
+    db.expect('SELECT `uuid`, `title`, `status` FROM `fixture_orders`')
       .inTransaction()
       .returnsRows({ uuid: UUID_B, title: 'b', status: 1 });
     db.expect(/UPDATE `fixture_orders`/)
@@ -214,7 +214,9 @@ describe('#109: транзакции через DI: точная семанти�
     const controller = new AbortController();
     controller.abort();
 
-    db.expect('SELECT * FROM `fixture_orders`').returnsRows({
+    db.expect(
+      'SELECT `uuid`, `title`, `status` FROM `fixture_orders`',
+    ).returnsRows({
       uuid: UUID_A,
       title: 'x',
       status: 0,

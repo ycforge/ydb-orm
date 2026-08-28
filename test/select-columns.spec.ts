@@ -22,22 +22,28 @@ describe('select columns (issue #10)', () => {
       expect(mock.queries[0].sql).not.toContain('SELECT *');
     });
 
-    it('без select — SELECT * (обратная совместимость)', async () => {
+    it('без select — проекция всех объявленных колонок (#164), не SELECT *', async () => {
       const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Alice' }]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.find({ uuid: uuid1 });
 
-      expect(mock.queries[0].sql).toContain('SELECT *');
+      expect(mock.queries[0].sql).toContain(
+        'SELECT `uuid`, `email_encrypted`, `full_name`',
+      );
+      expect(mock.queries[0].sql).not.toContain('SELECT *');
     });
 
-    it('с пустым select — SELECT *', async () => {
+    it('с пустым select — проекция всех объявленных колонок (#164), не SELECT *', async () => {
       const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Alice' }]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.find({ uuid: uuid1 }, { select: [] });
 
-      expect(mock.queries[0].sql).toContain('SELECT *');
+      expect(mock.queries[0].sql).toContain(
+        'SELECT `uuid`, `email_encrypted`, `full_name`',
+      );
+      expect(mock.queries[0].sql).not.toContain('SELECT *');
     });
 
     it('возвращает только запрошенные колонки (остальные undefined)', async () => {
@@ -76,13 +82,16 @@ describe('select columns (issue #10)', () => {
       expect(result).toHaveLength(2);
     });
 
-    it('без select — SELECT * (обратная совместимость)', async () => {
+    it('без select — проекция всех объявленных колонок (#164), не SELECT *', async () => {
       const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Alice' }]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.findAll({});
 
-      expect(mock.queries[0].sql).toContain('SELECT *');
+      expect(mock.queries[0].sql).toContain(
+        'SELECT `uuid`, `email_encrypted`, `full_name`',
+      );
+      expect(mock.queries[0].sql).not.toContain('SELECT *');
     });
   });
 
@@ -101,13 +110,16 @@ describe('select columns (issue #10)', () => {
       expect(result).toHaveLength(1);
     });
 
-    it('без select — SELECT * (обратная совместимость)', async () => {
+    it('без select — проекция всех объявленных колонок (#164), не SELECT *', async () => {
       const mock = createMockExecutor([[{ uuid: uuid1, full_name: 'Alice' }]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.query().where({ uuid: uuid1 }).getMany();
 
-      expect(mock.queries[0].sql).toContain('SELECT *');
+      expect(mock.queries[0].sql).toContain(
+        'SELECT `uuid`, `email_encrypted`, `full_name`',
+      );
+      expect(mock.queries[0].sql).not.toContain('SELECT *');
     });
 
     it('цепочка select + orderBy + limit', async () => {

@@ -78,7 +78,9 @@ describe('NestJS integration: module wiring', () => {
     expect(user?.uuid).toBe(userRow.uuid);
 
     const [findQuery] = mock.queries;
-    expect(findQuery.sql).toContain('SELECT * FROM `users`');
+    expect(findQuery.sql).toContain(
+      'SELECT `uuid`, `email_encrypted`, `full_name` FROM `users`',
+    );
     expect(findQuery.sql).toContain('WHERE `uuid` = $uuid');
     expect(findQuery.params.uuid).toBeInstanceOf(Uuid);
     expect(String(findQuery.params.uuid)).toBe(userRow.uuid);

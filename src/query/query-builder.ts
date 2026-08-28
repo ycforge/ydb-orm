@@ -266,7 +266,9 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
     const selectClause = this.selectColumns?.length
       ? this.selectColumns.map(quoteIdentifier).join(', ')
-      : '*';
+      : // Дефолтная проекция — только объявленные колонки (#164):
+        // SELECT * утянул бы и столбцы, выпиленные из метаданных.
+        Object.keys(meta.schema).map(quoteIdentifier).join(', ');
 
     const sql =
       `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)}` +

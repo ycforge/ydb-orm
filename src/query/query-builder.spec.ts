@@ -39,7 +39,7 @@ describe('YdbQueryBuilder', () => {
       .toYql();
 
     expect(sql).toBe(
-      'SELECT * FROM `qb_photos` ' +
+      'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos` ' +
         'WHERE `is_public` = $is_public AND `title` = $title ' +
         'ORDER BY `rating` DESC, `title` ASC LIMIT 20 OFFSET 10',
     );
@@ -49,7 +49,9 @@ describe('YdbQueryBuilder', () => {
   it('builds SELECT without WHERE', async () => {
     mockRuntime();
     const { sql } = await QbPhotoEntity.query().toYql();
-    expect(sql).toBe('SELECT * FROM `qb_photos` LIMIT 100 OFFSET 0');
+    expect(sql).toBe(
+      'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos` LIMIT 100 OFFSET 0',
+    );
   });
 
   it('throws on unknown ORDER BY field', async () => {
