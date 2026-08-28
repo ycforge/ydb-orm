@@ -43,6 +43,12 @@ export function configureEntities(
      * 'legacy' — только для переходного периода (дешифровка старого ciphertext).
      */
     aadFormat?: AadFormat;
+    /**
+     * Автоматическое определение формата AAD при чтении (#165): true (по
+     * умолчанию) — при сбое основного формата пробуется второй, legacy-строки
+     * читаемы после апгрейда на v2; false — строгий режим после перешифровки.
+     */
+    aadReadFallback?: boolean;
   },
 ): void {
   if (!options?.executor) {
@@ -83,6 +89,7 @@ export function configureEntities(
     entityClass.setBlindIndexProvider(options.blindIndexProvider);
     entityClass.setValidationProvider(options.validationProvider);
     entityClass.setAadFormat(options.aadFormat);
+    entityClass.setAadReadFallback(options.aadReadFallback);
 
     getOrCreateRepository(entityClass);
   }

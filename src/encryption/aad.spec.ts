@@ -49,6 +49,35 @@ describe('serializeAadV2 (#165)', () => {
     expect(empty).not.toBe(missing);
   });
 
+  it('Bytes-значения (Uint8Array) нормализуются через base64 детерминированно', () => {
+    const bytes = new TextEncoder().encode('abc');
+    const same = new TextEncoder().encode('abc');
+    const other = new TextEncoder().encode('abd');
+
+    const aad1 = serializeAadV2(['blob'], fromRecord({ blob: bytes }));
+    const aad2 = serializeAadV2(['blob'], fromRecord({ blob: same }));
+    const aad3 = serializeAadV2(['blob'], fromRecord({ blob: other }));
+
+    // Один и тот же набор байт — одна и та же AAD-строка (в любом инстансе).
+    expect(aad1).toBe(aad2);
+    // Разные байты — разные строки.
+    expect(aad1).not.toBe(aad3);
+    // Значение кодируется base64 ('abc' → 'YWJj').
+    expect(aad1).toContain('4:YWJj');
+  });
+
+  it('Bytes AAD различает разные значения первой же строкой', () => {
+    const a = serializeAadV2(
+      ['a', 'b'],
+      fromRecord({ a: 'x', b: new TextEncoder().encode('v') }),
+    );
+    const b = serializeAadV2(
+      ['a', 'b'],
+      fromRecord({ a: 'x', b: new TextEncoder().encode('w') }),
+    );
+    expect(a).not.toBe(b);
+  });
+
   it('значения, похожие на length-prefix компонента, не ломают кодировку', () => {
     const t1 = serializeAadV2(['a'], fromRecord({ a: '1:a0' }));
     const t2 = serializeAadV2(['a'], fromRecord({ a: '1:a1' }));

@@ -19,6 +19,7 @@ export interface RepositoryDepsSnapshot {
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
   aadFormat?: AadFormat;
+  aadReadFallback?: boolean;
 }
 
 export interface EntityRuntime {
@@ -30,6 +31,11 @@ export interface EntityRuntime {
   uuidGenerator?: () => string;
   /** Формат Security AAD (#165); undefined = 'v2' по умолчанию. */
   aadFormat?: AadFormat;
+  /**
+   * Автоматическое определение формата AAD при чтении (#165);
+   * undefined = true (безопасный переход legacy → v2).
+   */
+  aadReadFallback?: boolean;
   /** Готовый репозиторий сущности (создаётся лениво из deps). */
   repository?: YdbRepository<YdbBaseEntity>;
   /** Снапшот deps, использованных для создания repository. */

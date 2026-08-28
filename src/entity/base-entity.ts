@@ -85,6 +85,21 @@ export class YdbBaseEntity {
     this.clearRepository();
   }
 
+  /**
+   * Управляет автоматическим определением формата AAD при дешифровке (#165).
+   * По умолчанию (undefined → true) при сбое основного формата делается
+   * повтор вторым: записи, написанные legacy-форматом, читаемы сразу после
+   * апгрейда на v2-дефолт. После полной перешифровки данных передайте
+   * `false` — строгий режим, ошибка формата не маскируется.
+   */
+  static setAadReadFallback(
+    this: typeof YdbBaseEntity,
+    fallback?: boolean,
+  ): void {
+    getEntityRuntime(this).aadReadFallback = fallback;
+    this.clearRepository();
+  }
+
   private static clearRepository(this: typeof YdbBaseEntity): void {
     getEntityRuntime(this).repository = undefined;
   }

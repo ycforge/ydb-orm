@@ -5,6 +5,13 @@ import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import type { YdbEncryptionContext } from '../src/index.js';
 import { serializeAadV2 } from '../src/index.js';
+import {
+  YdbEntity,
+  YdbPrimaryColumn,
+  YdbSecurityAAD,
+  YdbEncrypted,
+} from '../src/index.js';
+import { YdbBaseEntity } from '../src/index.js';
 
 /**
  * Провайдер, записывающий aad-строки поверх TestOnlyEncryptionProvider.
@@ -35,6 +42,53 @@ class AadRecordingProvider extends TestOnlyEncryptionProvider {
 const ct = (s: string) => new TextEncoder().encode(s);
 const biHash = (s: string) => Buffer.from(`bi:${s}`, 'utf8').toString('base64');
 
+/**
+ * Провайдер-симулятор реального AEAD для тестов миграции форматов (#165):
+ * decrypt падает на AAD, которого нет в accepted — как реальная
+ * authenticate-then-decrypt схема падает при несовпадении AAD.
+ */
+class StrictAadProvider extends TestOnlyEncryptionProvider {
+  encryptAads: string[] = [];
+  decryptAttempts: string[] = [];
+  accepted = new Set<string>();
+
+  override async encrypt(
+    plaintext: string,
+    aad: string,
+    context: YdbEncryptionContext,
+  ): Promise<Uint8Array> {
+    this.encryptAads.push(aad);
+    this.accepted.add(aad);
+    return super.encrypt(plaintext, aad, context);
+  }
+
+  override async decrypt(
+    ciphertext: Uint8Array,
+    aad: string,
+    context: YdbEncryptionContext,
+  ): Promise<string> {
+    this.decryptAttempts.push(aad);
+    if (!this.accepted.has(aad)) {
+      throw new Error('AAD mismatch');
+    }
+    return super.decrypt(ciphertext, aad, context);
+  }
+}
+
+@YdbEntity('aad_fallback_override')
+class OverrideEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Uuid')
+  uuid: string;
+
+  @YdbEncrypted({ aadOverride: 'pin' })
+  secret: string;
+}
+
+const legacyAad = (row: Record<string, any>): string => `uuid=${row.uuid}`;
+const v2Aad = (row: Record<string, any>): string =>
+  serializeAadV2(['uuid'], (n) => row[n]);
+
 function makeRow() {
   return {
     uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
@@ -64,10 +118,14 @@ describe('Security AAD format (#165)', () => {
   });
 
   afterEach(() => {
-    LazySecretEntity.setExecutor(undefined as any);
+    LazySecretEntity.setExecutor(undefined);
     LazySecretEntity.setEncryptionProvider(undefined);
     LazySecretEntity.setBlindIndexProvider(undefined);
     LazySecretEntity.setAadFormat(undefined);
+    LazySecretEntity.setAadReadFallback(undefined);
+    OverrideEntity.setExecutor(undefined);
+    OverrideEntity.setEncryptionProvider(undefined);
+    OverrideEntity.setBlindIndexProvider(undefined);
   });
 
   it('по умолчанию шифрование использует v2-сериализацию AAD', async () => {
@@ -153,5 +211,114 @@ describe('Security AAD format (#165)', () => {
 
     await LazySecretEntity.find({ uuid: row2.uuid });
     expect(provider.decryptAads[1]).toBe(`uuid=${row2.uuid}`);
+  });
+
+  it('legacy-строка читается по умолчанию: v2 падает, fallback пробует legacy', async () => {
+    const row = makeRow();
+    const strict = new StrictAadProvider();
+    strict.accepted.add(legacyAad(row)); // ciphertext написан legacy-форматом
+    LazySecretEntity.setEncryptionProvider(strict);
+    LazySecretEntity.setBlindIndexProvider(strict);
+    LazySecretEntity.setExecutor(createMockExecutor([[row]]).executor);
+
+    const found = await LazySecretEntity.find({ uuid: row.uuid });
+
+    expect(found?.secret_eager).toBe('eager-secret-value');
+    // ровно две попытки: первичный v2 (упал) + fallback legacy (успех)
+    expect(strict.decryptAttempts).toEqual([v2Aad(row), legacyAad(row)]);
+  });
+
+  it('переходный режим: legacy читается, перешифровка пишет v2, после строгого переключения — один формат', async () => {
+    const row = makeRow();
+    const provider = new StrictAadProvider();
+    provider.accepted.add(legacyAad(row));
+    LazySecretEntity.setEncryptionProvider(provider);
+    LazySecretEntity.setBlindIndexProvider(provider);
+    LazySecretEntity.setExecutor(createMockExecutor([[row]]).executor);
+
+    const found = await LazySecretEntity.find({ uuid: row.uuid });
+    expect(found).not.toBeNull();
+
+    // Сохранение найденного инстанса переносит запись в v2-формат.
+    // (decryptResult мутирует строку в plaintext — для RETURNING нужна
+    // свежая строка с ciphertext.)
+    const saveRow = makeRow();
+    LazySecretEntity.setExecutor(createMockExecutor([[saveRow]]).executor);
+    await LazySecretEntity.save(found!);
+    expect(provider.encryptAads).toEqual([v2Aad(row)]);
+
+    // Строгая фаза (fallback выключен): только v2, без повторов.
+    const strict = new StrictAadProvider();
+    strict.accepted.add(v2Aad(row));
+    LazySecretEntity.setEncryptionProvider(strict);
+    LazySecretEntity.setBlindIndexProvider(strict);
+    LazySecretEntity.setAadReadFallback(false);
+    const strictRow = makeRow();
+    LazySecretEntity.setExecutor(createMockExecutor([[strictRow]]).executor);
+
+    const migrated = await LazySecretEntity.find({ uuid: row.uuid });
+    expect(migrated?.secret_eager).toBe('eager-secret-value');
+    expect(strict.decryptAttempts).toEqual([v2Aad(row)]);
+  });
+
+  it('смешанный набор: legacy и v2-строки читаются в одном запросе', async () => {
+    const legacyRow = makeRow();
+    const v2Row = makeRow();
+    v2Row.uuid = '11111111-2222-3333-4444-555555555555';
+
+    const strict = new StrictAadProvider();
+    strict.accepted.add(legacyAad(legacyRow));
+    strict.accepted.add(v2Aad(v2Row));
+    LazySecretEntity.setEncryptionProvider(strict);
+    LazySecretEntity.setBlindIndexProvider(strict);
+    LazySecretEntity.setExecutor(
+      createMockExecutor([[legacyRow, v2Row]]).executor,
+    );
+
+    const rows = await LazySecretEntity.findAll({});
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r.secret_eager).sort()).toEqual([
+      'eager-secret-value',
+      'eager-secret-value',
+    ]);
+    // legacy-строка: v2 (упал) + legacy (успех); v2-строка: одна попытка
+    expect(strict.decryptAttempts).toEqual([
+      v2Aad(legacyRow),
+      legacyAad(legacyRow),
+      v2Aad(v2Row),
+    ]);
+  });
+
+  it('строгий режим (aadReadFallback=false) падает на legacy-строке без повторов', async () => {
+    const row = makeRow();
+    const strict = new StrictAadProvider();
+    strict.accepted.add(legacyAad(row));
+    LazySecretEntity.setEncryptionProvider(strict);
+    LazySecretEntity.setBlindIndexProvider(strict);
+    LazySecretEntity.setAadReadFallback(false);
+    LazySecretEntity.setExecutor(createMockExecutor([[row]]).executor);
+
+    await expect(LazySecretEntity.find({ uuid: row.uuid })).rejects.toThrow(
+      'AAD mismatch',
+    );
+    // одна попытка: primary v2, fallback не включался
+    expect(strict.decryptAttempts).toEqual([v2Aad(row)]);
+  });
+
+  it('aadOverride не делает fallback-повторов (формат AAD не при чём)', async () => {
+    const row = {
+      uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      secret: ct('pin-secret'),
+    };
+    const strict = new StrictAadProvider();
+    OverrideEntity.setEncryptionProvider(strict);
+    OverrideEntity.setBlindIndexProvider(strict);
+    OverrideEntity.setExecutor(createMockExecutor([[row]]).executor);
+
+    await expect(OverrideEntity.find({ uuid: row.uuid })).rejects.toThrow(
+      'AAD mismatch',
+    );
+    // единственная попытка с override-AAD, ни legacy, ни v2 не пробуются
+    expect(strict.decryptAttempts).toEqual(['pin']);
   });
 });

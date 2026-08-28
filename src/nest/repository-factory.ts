@@ -75,6 +75,7 @@ export function createActiveRecordEntityProvider(
       entityClass.setBlindIndexProvider(blindIndexProvider);
       entityClass.setValidationProvider(validationProvider);
       entityClass.setAadFormat(opts.aadFormat);
+      entityClass.setAadReadFallback(opts.aadReadFallback);
 
       getOrCreateRepository(entityClass as any);
 

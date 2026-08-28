@@ -60,10 +60,13 @@ export function serializeAadLegacy(
 }
 
 /**
- * Значения AAD нормализуются в строку детерминированно (Uuid/Date и т.п.
- * конвертируются одинаково при шифровании и дешифровании). Объекты и массивы
- * недопустимы: в PK-колонках их быть не может, а молчаливый
- * `[object Object]` стёр бы различие между записями.
+ * Значения AAD нормализуются в строку детерминированно (Uuid/Date/Bytes и т.п.
+ * конвертируются одинаково при шифровании и дешифровании:
+ * - Date/Datetime/Timestamp — ISO-строка;
+ * - Bytes — base64 (канонический, обратимый, ASCII-safe);
+ * - остальные примитивы — String().
+ * Объекты и массивы недопустимы: в PK/AAD-колонках их быть не может, а
+ * молчаливый `[object Object]` стёр бы различие между записями.
  */
 function toAadString(value: unknown): string {
   switch (typeof value) {
@@ -74,6 +77,9 @@ function toAadString(value: unknown): string {
       return String(value);
     case 'object':
       if (value instanceof Date) return value.toISOString();
+      if (value instanceof Uint8Array) {
+        return Buffer.from(value).toString('base64');
+      }
       break;
     default:
       break;
