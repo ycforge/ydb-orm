@@ -1163,7 +1163,7 @@
   resolved "https://registry.yarnpkg.com/@unrs/resolver-binding-win32-x64-msvc/-/resolver-binding-win32-x64-msvc-1.12.2.tgz#72da0da48d72b1e87831b9c0308931d3f4669027"
   integrity sha512-nAB74NfSNKknqQ1RrYj6uz8FcXEomu/MATJZxh/x+BArzN2U3JbOYC0APYzUIGhVY3m5hRxA8VPNdPBoG8txlA==
 
-"@ycforge/auth@^0.3.0":
+"@ycforge/auth@0.3.0":
   version "0.3.0"
   resolved "https://registry.yarnpkg.com/@ycforge/auth/-/auth-0.3.0.tgz#0c3a54cfb4c1738c241dba66dee699b5773a70e8"
   integrity sha512-SUOeiQm8XOpsftKH8ajZLgmVvkxxpibP6EazQSXGumn03e7cMaRLvJ6dMoQqCgJotZQHDfVHm/WvXqLCAjZPYA==
@@ -1178,7 +1178,7 @@
   resolved "https://registry.yarnpkg.com/@ydbjs/abortable/-/abortable-6.1.0.tgz#46e47082d270c2dfc9a48348cdbeb96f867b3c1d"
   integrity sha512-oe/lewGfseMVW64AHIWSA6pFOQy3v+s3atJdhhYay0jnGhhZtfYDyDykD6rWQLJaTrYe+SRBinq3lq9+mUB5jQ==
 
-"@ydbjs/api@^6.0.0", "@ydbjs/api@^6.0.7":
+"@ydbjs/api@6.0.7", "@ydbjs/api@^6.0.0", "@ydbjs/api@^6.0.7":
   version "6.0.7"
   resolved "https://registry.yarnpkg.com/@ydbjs/api/-/api-6.0.7.tgz#05b023b61914907a76eaf63d7cccc12fd42ed0f7"
   integrity sha512-T9HaIEYtl6H0caQmRk0doEV/WTuAotazzBho8ky4nr6R1c+yptAtgFCj/u8QwPh8R0ThgH1o+cli+qCJ1jQnPw==
@@ -1187,7 +1187,7 @@
     "@grpc/grpc-js" "^1.14.0"
     nice-grpc "^2.1.13"
 
-"@ydbjs/auth@^6.3.1":
+"@ydbjs/auth@6.3.1", "@ydbjs/auth@^6.3.1":
   version "6.3.1"
   resolved "https://registry.yarnpkg.com/@ydbjs/auth/-/auth-6.3.1.tgz#d92470b416f06299b3e4ebc24b3a164222ea7baa"
   integrity sha512-M1vKkWgsFIOxu42bj66ow8t8xVj2af3H/S74Sd3aD2mH1sGo9Ou/D/+U7pzMuyTxmYYILjs3Q6NCQl2bx/fmpA==
@@ -1201,7 +1201,7 @@
     "@ydbjs/retry" "^6.3.0"
     nice-grpc "^2.1.13"
 
-"@ydbjs/core@^6.3.0", "@ydbjs/core@^6.3.1":
+"@ydbjs/core@6.3.1", "@ydbjs/core@^6.3.1":
   version "6.3.1"
   resolved "https://registry.yarnpkg.com/@ydbjs/core/-/core-6.3.1.tgz#271d0b64df179af615d777f6e6d2e96fa37cb3c8"
   integrity sha512-fjhv2IN3ZWB4DNXj67VA5lSReoDKJb8nMrrHg2NvJsdEYaqdwDaFkQhw3ozZ5AIvJihCAWAddMb5qB+bKF3R8A==
@@ -1224,7 +1224,7 @@
     debug "^4.4.0"
     supports-color "^10.2.2"
 
-"@ydbjs/error@^6.0.0", "@ydbjs/error@^6.0.6":
+"@ydbjs/error@6.0.6", "@ydbjs/error@^6.0.0", "@ydbjs/error@^6.0.6":
   version "6.0.6"
   resolved "https://registry.yarnpkg.com/@ydbjs/error/-/error-6.0.6.tgz#b154724b98beb954e103cd91e6cc22a037d5a3cd"
   integrity sha512-kYS0f130SyPyOnkieG8LOzslIBqzU9hDFfP/QSetdWTUpBRTEsKtL5U0SzIHgQ3IsNJSOuG5IOxNoDgKvcpYEA==
@@ -1232,7 +1232,7 @@
     "@bufbuild/protobuf" "2.12.0"
     "@ydbjs/api" "^6.0.7"
 
-"@ydbjs/query@^6.3.0":
+"@ydbjs/query@6.3.0":
   version "6.3.0"
   resolved "https://registry.yarnpkg.com/@ydbjs/query/-/query-6.3.0.tgz#8c20d6934f002b2f1520439765cf04bd184fdaf2"
   integrity sha512-c1BPG1FSpzktultJ1QN+ce8y1yK0hWqsPeO5uSI3QvZehEcJgwtljK9ARbxagRwuMLKGLI4T9R3J1+Amy0AUPw==
@@ -1248,7 +1248,7 @@
     debug "^4.4.0"
     nice-grpc "^2.1.13"
 
-"@ydbjs/retry@^6.3.0":
+"@ydbjs/retry@6.3.0", "@ydbjs/retry@^6.3.0":
   version "6.3.0"
   resolved "https://registry.yarnpkg.com/@ydbjs/retry/-/retry-6.3.0.tgz#7c076ccb59f23f470f67fd338ee8bec18fdbd78e"
   integrity sha512-4NyensaFV6E8fyeWrsCv/Q3bkJSifsfJgLY+eU28uQ4P0oS1x4ngO7lFXgCng+bPG+wjsEf2/oiDL8eL24kONQ==
@@ -1259,7 +1259,7 @@
     "@ydbjs/error" "^6.0.0"
     nice-grpc "^2.1.13"
 
-"@ydbjs/value@^6.0.8":
+"@ydbjs/value@6.0.8", "@ydbjs/value@^6.0.8":
   version "6.0.8"
   resolved "https://registry.yarnpkg.com/@ydbjs/value/-/value-6.0.8.tgz#d85857883bdfccaed653d82d88cf22d5a1902e15"
   integrity sha512-JGaSpMkc472jEnPQhajD3jnHA/1lUcfFgTNvRBdq0HuRKhAD7IHdjj+tIGEEIvvzXNIrSjkfYg9blKw3uIOsWw==
@@ -3305,7 +3305,7 @@ uri-js@^4.2.2:
   dependencies:
     punycode "^2.1.0"
 
-uuid@^13.0.0:
+uuid@13.0.2:
   version "13.0.2"
   resolved "https://registry.yarnpkg.com/uuid/-/uuid-13.0.2.tgz#41bc9c07b12f665089c205f6507976adbdf84ff8"
   integrity sha512-vzi9uRZ926x4XV73S/4qQaTwPXM2JBj6/6lI/byHH1jOpCzb0zDbfytgA9LcN/hzb2l7WQSQnxITOVx5un/wGw==
