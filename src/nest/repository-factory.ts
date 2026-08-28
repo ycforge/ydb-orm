@@ -74,6 +74,7 @@ export function createActiveRecordEntityProvider(
       entityClass.setEncryptionProvider(encryptionProvider);
       entityClass.setBlindIndexProvider(blindIndexProvider);
       entityClass.setValidationProvider(validationProvider);
+      entityClass.setAadFormat(opts.aadFormat);
 
       getOrCreateRepository(entityClass as any);
 

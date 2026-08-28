@@ -29,6 +29,21 @@ export function validateYdbModuleOptions(
   }
   assertNoCredentialsProviderConflict(opts);
   assertAuthPresent(opts, injected);
+  assertAadFormat(opts);
+}
+
+/**
+ * Валидация формата Security AAD (#165): допускаются только 'legacy' и 'v2'
+ * (по умолчанию). Неизвестное значение — ошибка конфигурации, а не
+ * молчаливый переход на дефолт.
+ */
+function assertAadFormat(opts: YdbModuleOptions): void {
+  const format = opts.aadFormat;
+  if (format !== undefined && format !== 'legacy' && format !== 'v2') {
+    throw new Error(
+      `YDB module options: "aadFormat" must be "legacy" or "v2" (got "${String(format)}").`,
+    );
+  }
 }
 
 function assertAuthPresent(

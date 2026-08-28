@@ -19,6 +19,7 @@ function buildSnapshot(
     blindIndexProvider: runtime.blindIndexProvider,
     validationProvider: runtime.validationProvider,
     uuidGenerator: runtime.uuidGenerator,
+    aadFormat: runtime.aadFormat,
   };
 }
 
@@ -32,7 +33,8 @@ function sameDeps(
     a.encryptionProvider === b.encryptionProvider &&
     a.blindIndexProvider === b.blindIndexProvider &&
     a.validationProvider === b.validationProvider &&
-    a.uuidGenerator === b.uuidGenerator
+    a.uuidGenerator === b.uuidGenerator &&
+    a.aadFormat === b.aadFormat
   );
 }
 
@@ -55,6 +57,7 @@ export function getOrCreateRepository<T extends YdbBaseEntity>(
     blindIndexProvider: runtime.blindIndexProvider,
     validationProvider: runtime.validationProvider,
     uuidGenerator: runtime.uuidGenerator,
+    aadFormat: runtime.aadFormat,
   });
 
   const relations = new YdbEntityRelations(entityClass, runtime.executor, {

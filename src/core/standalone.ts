@@ -4,6 +4,7 @@ import type {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
+import type { AadFormat } from '../encryption/aad.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
@@ -37,6 +38,11 @@ export function configureEntities(
     validationProvider?: YdbValidationProvider;
     /** Версия генерируемых UUID для PK: v7 (по умолчанию) или v4. */
     uuidVersion?: 'v4' | 'v7';
+    /**
+     * Формат сериализации Security AAD (#165): 'v2' (по умолчанию) или
+     * 'legacy' — только для переходного периода (дешифровка старого ciphertext).
+     */
+    aadFormat?: AadFormat;
   },
 ): void {
   if (!options?.executor) {
@@ -76,6 +82,7 @@ export function configureEntities(
     entityClass.setEncryptionProvider(options.encryptionProvider);
     entityClass.setBlindIndexProvider(options.blindIndexProvider);
     entityClass.setValidationProvider(options.validationProvider);
+    entityClass.setAadFormat(options.aadFormat);
 
     getOrCreateRepository(entityClass);
   }

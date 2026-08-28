@@ -1,3 +1,5 @@
+import type { AadFormat } from '../encryption/aad.js';
+import { buildAad, DEFAULT_AAD_FORMAT } from '../encryption/aad.js';
 import type { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import { valueIdentityKey } from '../core/value-identity.js';
 import {
@@ -70,6 +72,11 @@ export interface PersistenceDeps {
   blindIndexProvider?: YdbBlindIndexProvider;
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
+  /**
+   * Формат сериализации Security AAD (#165). По умолчанию безопасный `v2`;
+   * `legacy` — только для переходного периода (дешифровка старого ciphertext).
+   */
+  aadFormat?: AadFormat;
   /**
    * @internal Общий контекст гидратации одной операции чтения.
    * Прокидывается в persistence связанных сущностей при догрузке связей.
@@ -384,10 +391,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     entity: Record<string, any>,
     aadFieldNames: string[],
   ): string {
-    return aadFieldNames
-      .filter((name) => entity[name] !== undefined && entity[name] !== null)
-      .map((name) => `${name}=${entity[name]}`)
-      .join(';');
+    return buildAad(
+      aadFieldNames,
+      (name) => entity[name],
+      this.options.aadFormat ?? DEFAULT_AAD_FORMAT,
+    );
   }
 
   /**

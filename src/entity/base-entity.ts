@@ -9,6 +9,7 @@ import type {
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
+import type { AadFormat } from '../encryption/aad.js';
 import { YdbQueryBuilder } from '../query/query-builder.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 import {
@@ -70,6 +71,17 @@ export class YdbBaseEntity {
     provider?: YdbValidationProvider,
   ): void {
     getEntityRuntime(this).validationProvider = provider;
+    this.clearRepository();
+  }
+
+  /**
+   * Устанавливает формат сериализации Security AAD (#165): 'v2' (по
+   * умолчанию, безопасный) или 'legacy' — только для переходного периода,
+   * когда в БД ещё есть ciphertext, написанный старым форматом. Передача
+   * undefined возвращает формат по умолчанию.
+   */
+  static setAadFormat(this: typeof YdbBaseEntity, format?: AadFormat): void {
+    getEntityRuntime(this).aadFormat = format;
     this.clearRepository();
   }
 

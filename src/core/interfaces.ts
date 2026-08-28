@@ -5,6 +5,7 @@ import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { AadFormat } from '../encryption/aad.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { QueryLogger, YdbLogParamValues } from './query-logger.js';
 import type { YdbRetryPolicyInput } from './retry.js';
@@ -58,6 +59,16 @@ export interface YdbModuleOptions {
   };
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  /**
+   * Формат сериализации Security AAD (#165): 'v2' (по умолчанию) — каноническая
+   * self-delimiting сериализация без коллизий от вложенных разделителей, или
+   * 'legacy' — исторический `name=value;...` ТОЛЬКО для переходного периода:
+   * смена формата меняет аутентифицированные байты, поэтому старый ciphertext
+   * под v2 не расшифруется. Миграция: пока в БД есть записи, написанные в
+   * legacy, читайте/шифруйте в 'legacy' и перешифруйте их (save/скрипт),
+   * затем переключитесь на 'v2'.
+   */
+  aadFormat?: AadFormat;
   /**
    * Провайдер валидации сущностей перед записью (save/insert/insertMany/update).
    * Например, ClassValidatorProvider. Без него валидация не выполняется.
