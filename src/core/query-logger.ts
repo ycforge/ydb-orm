@@ -24,93 +24,103 @@ export interface QueryLogger {
   log(entry: QueryLogEntry): void;
 }
 
-/** Максимальная длина замаскированного значения параметра. */
+/**
+ * Опции обёртки логирования (#168): управление раскрытием raw-значений
+ * параметров. По умолчанию значения не логируются вовсе.
+ */
+export interface YdbLoggingOptions {
+  values?: YdbLogParamValues;
+}
+
+/** Максимальная длина raw-значения параметра в логах (opt-in раскрытие). */
 const MAX_PARAM_LENGTH = 64;
 
-/** Плейсхолдер вместо значения секретного/PII параметра в логах. */
-const REDACTED = '<redacted>';
-
 /**
- * Токены, по которым имя параметра признаётся чувствительным (секреты/PII).
- * Матчинг по токенам имени (password, token, secret, email, authorization и
- * т.п.) — короткие значения не должны попадать в лог открыто только потому,
- * что не длиннее MAX_PARAM_LENGTH.
- */
-const SENSITIVE_TOKENS = new Set([
-  'password',
-  'passwd',
-  'passphrase',
-  'pwd',
-  'token',
-  'tokens',
-  'secret',
-  'secrets',
-  'authorization',
-  'credential',
-  'credentials',
-  'apikey',
-  'accesskey',
-  'secretkey',
-  'privatekey',
-  'clientsecret',
-  'email',
-  'emails',
-  'phone',
-  'phone_number',
-  'telephone',
-  'mobile',
-  'cellphone',
-  'ssn',
-  'passport',
-  'cvv',
-  'cvc',
-  'card',
-  'cardnumber',
-  'pin',
-  'first_name',
-  'last_name',
-  'full_name',
-  'username',
-  'login',
-  'cookie',
-  'session',
-  'bearer',
-]);
-
-/**
- * Чувствителен ли параметр по имени.
+ * Разрешение на раскрытие raw-значений параметров в логах (#168).
  *
- * Кроме явных токенов секретов/PII маскируются synthetic-колонки blind index
- * (`{field}_bi`): их хеш детерминирован по plaintext, и по логам можно
- * коррелировать значения/подбирать их частотным анализом.
+ * По умолчанию (undefined/false) логгер выводит для каждого параметра только
+ * безопасную метаинформацию — тип и длину (`<string:8>`), никогда не раскрывая
+ * сами значения (байты и blind index маскируются всегда). Историческая
+ * денylist-маскировка по токенам имени непокрыто утекала чувствительные
+ * значения с произвольными именами (`salary`, `medical_record` и т.п.).
+ *
+ * Раскрытие raw-значений — явный opt-in приложения:
+ * - `true` — раскрывать все значения (заведомо unsafe-логгер);
+ * - `string[]` — раскрывать только перечисленные имена параметров;
+ * - `RegExp` — раскрывать по маске имени параметра;
+ * - `(name: string) => boolean` — произвольный предикат приложения.
  */
-function isSensitiveParam(name: string): boolean {
-  const lower = name.toLowerCase();
-  // {field}_bi — корневой параметр, {field}_bi_N — нумерованный
-  // (non-root WHERE, см. buildFieldCondition в entity-persistence).
-  if (/[-_]bi(_\d+)?$/.test(lower)) return true;
-  const tokens = lower.split(/[^a-z0-9]+/).filter((t) => t.length > 0);
-  return tokens.some((t) => SENSITIVE_TOKENS.has(t));
+export type YdbLogParamValues =
+  boolean | string[] | RegExp | ((name: string) => boolean);
+
+/** Допущенное приложением имя — выбор источника raw-значений (#168). */
+function allowRawValue(
+  values: YdbLogParamValues | undefined,
+  name: string,
+): boolean {
+  if (values === undefined || values === false) return false;
+  if (values === true) return true;
+  if (typeof values === 'function') return values(name);
+  if (Array.isArray(values)) return values.includes(name);
+  values.lastIndex = 0;
+  return values.test(name);
 }
 
 /**
- * Маскирование скалярного значения: ciphertext/бинарные данные — только длиной,
- * чувствительные параметры — целиком, длинные строки обрезаются.
+ * Безопасная метаинформация о значении параметра (#168): raw не логируется,
+ * только тип и длина. Строки/числа/JSON/булевы не раскрываются, чтобы по
+ * журналам нельзя было восстановить sensitive-значения с именами, которых
+ * нет ни в каком денylist'е.
  */
-function maskScalarValue(name: string, value: unknown): unknown {
+function safeMetaValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) return `<bytes:${value.length}>`;
+  switch (typeof value) {
+    case 'string':
+      return `<string:${value.length}>`;
+    case 'number':
+      return '<number>';
+    case 'bigint':
+      return '<bigint>';
+    case 'boolean':
+      return '<boolean>';
+    case 'object': {
+      if (value === null) return null;
+      if (value instanceof Date) return '<date>';
+      return `<json:${JSON.stringify(value).length}>`;
+    }
+    default:
+      return `<${typeof value}>`;
+  }
+}
+
+/**
+ * Маскирование скалярного значения. Байты никогда не раскрываются (только
+ * длина). Raw-значение допустимо только для имён из явного allowlist'а
+ * приложения (#168); длинные строки в таком случае обрезаются.
+ */
+function maskScalarValue(
+  name: string,
+  value: unknown,
+  allowRaw: boolean,
+): unknown {
   if (value instanceof Uint8Array) {
-    // Бинарные/зашифрованные данные никогда не логируем дословно.
     return `<bytes:${value.length}>`;
   }
-  if (isSensitiveParam(name)) return REDACTED;
-  if (typeof value === 'string' && value.length > MAX_PARAM_LENGTH) {
-    return value.slice(0, MAX_PARAM_LENGTH) + '...';
+  if (allowRaw) {
+    if (typeof value === 'string' && value.length > MAX_PARAM_LENGTH) {
+      return value.slice(0, MAX_PARAM_LENGTH) + '...';
+    }
+    return value;
   }
-  return value;
+  return safeMetaValue(value);
 }
 
 /** Маскирование значения параметра по имени параметра. */
-function maskValue(name: string, value: unknown): unknown {
+function maskValue(
+  name: string,
+  value: unknown,
+  values?: YdbLogParamValues,
+): unknown {
   if (value === null || value === undefined) return value;
   if (
     typeof value === 'object' &&
@@ -120,9 +130,9 @@ function maskValue(name: string, value: unknown): unknown {
     // YDB typed value { type: ..., value: ... }
     const inner = (value as any).value;
     if (inner === null || inner === undefined) return inner;
-    return maskScalarValue(name, inner);
+    return maskScalarValue(name, inner, allowRawValue(values, name));
   }
-  return maskScalarValue(name, value);
+  return maskScalarValue(name, value, allowRawValue(values, name));
 }
 
 /**
@@ -152,11 +162,16 @@ export class ConsoleQueryLogger implements QueryLogger {
 /**
  * Оборачивает executor логированием: замеряет длительность,
  * маскирует параметры, логирует SQL + ошибки.
+ *
+ * @param options Настройки раскрытия raw-значений параметров (#168):
+ *   по умолчанию в лог попадают только имена и метаинформация (тип+длина).
  */
 export function wrapExecutorWithLogging(
   executor: YdbExecutor,
   logger: QueryLogger,
+  options?: YdbLoggingOptions,
 ): YdbExecutor {
+  const values = options?.values;
   const wrapped: any = (strings: TemplateStringsArray, ...args: any[]) => {
     const sql = strings[0];
     const startTime = performance.now();
@@ -169,7 +184,7 @@ export function wrapExecutorWithLogging(
     const proxied: any = {
       parameter(name: string, value: unknown) {
         paramNames.push(name);
-        maskedParams[name] = maskValue(name, value);
+        maskedParams[name] = maskValue(name, value, values);
         originalParameter(name, value);
         // Возвращаем прокси, иначе цепочка parameter().parameter() сбегает
         // из прокси и последующие вызовы теряют логирование
@@ -220,11 +235,11 @@ export function wrapExecutorWithLogging(
   };
 
   wrapped.transaction = (
-    options?: Parameters<YdbExecutor['transaction']>[0],
+    txOptions?: Parameters<YdbExecutor['transaction']>[0],
   ) => {
     // Опции транзакции (#98) пробрасываются как есть — логируется только
     // executor, семантика исполнения не меняется.
-    const tx = executor.transaction(options);
+    const tx = executor.transaction(txOptions);
     return {
       execute: (
         fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<unknown>,
@@ -233,7 +248,7 @@ export function wrapExecutorWithLogging(
           // Транзакционный executor оборачивается тем же логгером: каждый
           // запрос внутри runInTransaction (и вложенных транзакций) логируется
           // с той же семантикой, что и обычные запросы.
-          return fn(wrapExecutorWithLogging(trx, logger), signal);
+          return fn(wrapExecutorWithLogging(trx, logger, options), signal);
         }),
     };
   };

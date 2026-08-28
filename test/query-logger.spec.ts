@@ -96,7 +96,8 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries).toHaveLength(1);
     expect(logEntries[0].sql).toBe('SELECT * FROM users');
     expect(logEntries[0].paramNames).toEqual(['id']);
-    expect(logEntries[0].maskedParams).toEqual({ id: 'test' });
+    // #168: по умолчанию значения не раскрываются — только метаинформация
+    expect(logEntries[0].maskedParams).toEqual({ id: '<string:4>' });
     expect(logEntries[0].durationMs).toBeGreaterThanOrEqual(0);
     expect(logEntries[0].error).toBeUndefined();
   });
@@ -116,7 +117,7 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].error?.message).toBe('connection refused');
   });
 
-  it('masks long string parameters', async () => {
+  it('masks long string parameters to metadata', async () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
@@ -124,40 +125,33 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('description', 'a'.repeat(200));
     await q;
 
-    expect(logEntries[0].maskedParams.description).toBe('a'.repeat(64) + '...');
+    expect(logEntries[0].maskedParams.description).toBe('<string:200>');
   });
 
-  it('redacts short sensitive parameter values', async () => {
+  it('masks every scalar by default, including non-denylisted names (#168)', async () => {
+    // Раньше значения с произвольными именами (salary, medical_record и т.п.)
+    // утекали в лог открыто — денylist не мог их покрыть.
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
     const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
     q.parameter('password', 'hunter2');
     q.parameter('api_token', 'abc123');
-    q.parameter('authorization', 'Bearer x');
-    q.parameter('email_encrypted', 'ivan@example.com');
+    q.parameter('salary', 150000);
+    q.parameter('medical_record', 'MI-3712-X');
+    q.parameter('home_address', 'Baker St');
+    q.parameter('birth_date', '1990-01-02');
     await q;
 
-    expect(logEntries[0].maskedParams.password).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.api_token).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.authorization).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.email_encrypted).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.password).toBe('<string:7>');
+    expect(logEntries[0].maskedParams.api_token).toBe('<string:6>');
+    expect(logEntries[0].maskedParams.salary).toBe('<number>');
+    expect(logEntries[0].maskedParams.medical_record).toBe('<string:9>');
+    expect(logEntries[0].maskedParams.home_address).toBe('<string:8>');
+    expect(logEntries[0].maskedParams.birth_date).toBe('<string:10>');
   });
 
-  it('redacts long sensitive parameter values', async () => {
-    const mock = createMockExecutor([[]]);
-    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
-
-    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
-    q.parameter('secret', 'k'.repeat(500));
-    q.parameter('access_token', 't'.repeat(500));
-    await q;
-
-    expect(logEntries[0].maskedParams.secret).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.access_token).toBe('<redacted>');
-  });
-
-  it('redacts blind index columns by suffix', async () => {
+  it('masks blind index columns to metadata without revealing hashes', async () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
@@ -169,9 +163,9 @@ describe('wrapExecutorWithLogging', () => {
     q.parameter('email_bi_0', 'numbered-hash');
     await q;
 
-    expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.author_email_bi).toBe('<redacted>');
-    expect(logEntries[0].maskedParams.email_bi_0).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.email_encrypted_bi).toBe('<string:17>');
+    expect(logEntries[0].maskedParams.author_email_bi).toBe('<string:12>');
+    expect(logEntries[0].maskedParams.email_bi_0).toBe('<string:13>');
   });
 
   it('passes idempotent() through to the wrapped query (#27)', async () => {
@@ -189,20 +183,24 @@ describe('wrapExecutorWithLogging', () => {
     db.assertComplete();
   });
 
-  it('redacts non-string sensitive values', async () => {
+  it('masks non-string sensitive values by default', async () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
 
     const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
     q.parameter('pin', 1234);
+    q.parameter('is_admin', true);
     await q;
 
-    expect(logEntries[0].maskedParams.pin).toBe('<redacted>');
+    expect(logEntries[0].maskedParams.pin).toBe('<number>');
+    expect(logEntries[0].maskedParams.is_admin).toBe('<boolean>');
   });
 
-  it('keeps non-sensitive short and long values unmasked/truncated', async () => {
+  it('option true reveals all raw values (#168)', async () => {
     const mock = createMockExecutor([[]]);
-    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: true,
+    });
 
     const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
     q.parameter('title', 'Hello');
@@ -213,6 +211,66 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].maskedParams.title).toBe('Hello');
     expect(logEntries[0].maskedParams.table_name).toBe('t'.repeat(64) + '...');
     expect(logEntries[0].maskedParams.hash).toBe('sha256hash');
+  });
+
+  it('allowlist by name reveals only listed parameters (#168)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: ['title'],
+    });
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('title', 'Hello');
+    q.parameter('salary', 150000);
+    await q;
+
+    expect(logEntries[0].maskedParams.title).toBe('Hello');
+    expect(logEntries[0].maskedParams.salary).toBe('<number>');
+  });
+
+  it('allowlist by regex matches parameter names (#168)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: /^email/,
+    });
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('email', 'ivan@example.com');
+    q.parameter('name', 'Ivan');
+    await q;
+
+    expect(logEntries[0].maskedParams.email).toBe('ivan@example.com');
+    expect(logEntries[0].maskedParams.name).toBe('<string:4>');
+  });
+
+  it('allowlist predicate decides per parameter name (#168)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: (name) => name.startsWith('debug_'),
+    });
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('debug_trace_id', 'abc-123');
+    q.parameter('user_id', 'u-42');
+    await q;
+
+    expect(logEntries[0].maskedParams.debug_trace_id).toBe('abc-123');
+    expect(logEntries[0].maskedParams.user_id).toBe('<string:4>');
+  });
+
+  it('bytes and blind index stay masked even when values are revealed (#168)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: true,
+    });
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('data', new Uint8Array([1, 2, 3]));
+    q.parameter('email_bi', 'hash');
+    await q;
+
+    expect(logEntries[0].maskedParams.data).toBe('<bytes:3>');
+    expect(logEntries[0].maskedParams.email_bi).toBe('hash');
   });
 
   it('masks Uint8Array parameters', async () => {
@@ -226,6 +284,17 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].maskedParams.data).toBe('<bytes:3>');
   });
 
+  it('masks YDB typed-parameter inner values by default (#168)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
+
+    const q = logging(['INSERT INTO t'] as unknown as TemplateStringsArray);
+    q.parameter('typed', { type: 'Utf8', value: 'raw-secret' });
+    await q;
+
+    expect(logEntries[0].maskedParams.typed).toBe('<string:10>');
+  });
+
   it('keeps logging through parameter() chaining', async () => {
     const mock = createMockExecutor([[]]);
     const logging = wrapExecutorWithLogging(mock.executor, mockLogger);
@@ -237,7 +306,10 @@ describe('wrapExecutorWithLogging', () => {
 
     expect(logEntries).toHaveLength(1);
     expect(logEntries[0].paramNames).toEqual(['a', 'b']);
-    expect(logEntries[0].maskedParams).toEqual({ a: 1, b: 2 });
+    expect(logEntries[0].maskedParams).toEqual({
+      a: '<number>',
+      b: '<number>',
+    });
   });
 
   it('passes through transaction method', () => {
@@ -260,7 +332,7 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries).toHaveLength(1);
     expect(logEntries[0].sql).toBe('SELECT COUNT(*) FROM t');
     expect(logEntries[0].paramNames).toEqual(['flag']);
-    expect(logEntries[0].maskedParams).toEqual({ flag: 1 });
+    expect(logEntries[0].maskedParams).toEqual({ flag: '<number>' });
     expect(logEntries[0].error).toBeUndefined();
   });
 
@@ -318,7 +390,7 @@ describe('wrapExecutorWithLogging', () => {
     // последующий откат транзакции.
     expect(logEntries).toHaveLength(1);
     expect(logEntries[0].sql).toBe('UPDATE t SET x = 1');
-    expect(logEntries[0].maskedParams).toEqual({ v: 2 });
+    expect(logEntries[0].maskedParams).toEqual({ v: '<number>' });
     expect(logEntries[0].error).toBeUndefined();
   });
 });
