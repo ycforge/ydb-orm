@@ -153,3 +153,60 @@ export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
   >;
   return withId[TRANSACTION_ID_KEY] ?? trx;
 }
+
+/**
+ * Валидирует инварианты ActiveTransactionContext и создаёт контекст.
+ *
+ * Инварианты:
+ * - transactionId должен быть символом
+ * - trx должен быть валидным executor'ом (объект или функция)
+ * - db должен быть валидным executor'ом (объект или функция)
+ * - signal, если задан, должен быть AbortSignal
+ * - ambient должен быть boolean
+ *
+ * @throws Error если любой инвариант нарушен
+ */
+export function createTransactionContext(params: {
+  transactionId: symbol;
+  trx: YdbExecutor;
+  db: YdbExecutor;
+  signal?: AbortSignal;
+  ambient: boolean;
+}): ActiveTransactionContext {
+  if (typeof params.transactionId !== 'symbol') {
+    throw new Error(
+      'ActiveTransactionContext: transactionId must be a symbol.',
+    );
+  }
+  if (
+    !params.trx ||
+    (typeof params.trx !== 'object' && typeof params.trx !== 'function')
+  ) {
+    throw new Error(
+      'ActiveTransactionContext: trx must be a valid executor (object or function).',
+    );
+  }
+  if (
+    !params.db ||
+    (typeof params.db !== 'object' && typeof params.db !== 'function')
+  ) {
+    throw new Error(
+      'ActiveTransactionContext: db must be a valid executor (object or function).',
+    );
+  }
+  if (params.signal !== undefined && !(params.signal instanceof AbortSignal)) {
+    throw new Error(
+      'ActiveTransactionContext: signal must be an AbortSignal if provided.',
+    );
+  }
+  if (typeof params.ambient !== 'boolean') {
+    throw new Error('ActiveTransactionContext: ambient must be a boolean.');
+  }
+  return {
+    transactionId: params.transactionId,
+    trx: params.trx,
+    db: params.db,
+    signal: params.signal,
+    ambient: params.ambient,
+  };
+}
