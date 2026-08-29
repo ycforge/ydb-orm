@@ -89,6 +89,9 @@ export function createActiveRecordEntityProvider(
         ]);
       }
 
+      // Снимок runtime-конфигурации для атомарного отката при ошибке.
+      const runtimeSnapshot = { ...getEntityRuntime(entityClass) };
+
       try {
         const runtime = getEntityRuntime(entityClass);
         runtime.uuidGenerator = opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
@@ -110,6 +113,8 @@ export function createActiveRecordEntityProvider(
 
         getOrCreateRepository(entityClass as any);
       } catch (e) {
+        // Откат runtime-конфигурации сущности к снимку перед изменением.
+        Object.assign(getEntityRuntime(entityClass), runtimeSnapshot);
         if (ormScope && newlyClaimed.length > 0) {
           releaseEntitiesFromScope(ormScope, newlyClaimed);
         }

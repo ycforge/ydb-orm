@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { describe, it, expect, afterEach } from '@jest/globals';
+import { describe, it, expect, afterEach, jest } from '@jest/globals';
 import {
   YdbEntity,
   YdbColumn,
@@ -420,5 +420,83 @@ describe('configureEntities', () => {
     expect(saved).toBeInstanceOf(TestSimple);
     expect(mock.queries).toHaveLength(1);
     expect(mock.queries[0].sql).toContain('UPDATE `test_simple`');
+  });
+});
+
+describe('configureEntities: атомарность runtime-конфигурации (#200)', () => {
+  afterEach(() => {
+    for (const e of [
+      TestUser,
+      TestPost,
+      TestSimple,
+      TestEncrypted,
+      UndecoratedStandalone,
+      NoPkStandalone,
+    ]) {
+      const scope = getEntityOrmScope(e);
+      if (scope) {
+        releaseEntitiesFromScope(scope, [e]);
+      }
+      e.setExecutor(undefined);
+      e.setEncryptionProvider(undefined);
+      e.setBlindIndexProvider(undefined);
+      e.setValidationProvider(undefined);
+    }
+  });
+
+  it('откатывает runtime-конфигурацию предыдущих сущностей при ошибке в середине списка', () => {
+    const firstExecutor = createMockExecutor();
+    const secondExecutor = createMockExecutor();
+
+    // 1. Конфигурируем TestSimple с первым executor'ом (дефолтный скоуп)
+    configureEntities([TestSimple], { executor: firstExecutor.executor });
+    const simpleRuntimeBefore = getEntityRuntime(TestSimple);
+    expect(simpleRuntimeBefore.executor).toBe(firstExecutor.executor);
+    const simpleScopeBefore = getEntityOrmScope(TestSimple);
+    expect(simpleScopeBefore).toBeDefined(); // привязан к дефолтному скоупу
+
+    // 2. Пытаемся сконфигурировать [TestSimple, TestPost] со вторым executor'ом,
+    //    где TestPost.setExecutor выбрасывает ошибку.
+    const setExecutorSpy = jest.spyOn(TestPost, 'setExecutor');
+    setExecutorSpy.mockImplementationOnce(() => {
+      throw new Error('simulated configuration failure');
+    });
+
+    expect(() =>
+      configureEntities([TestSimple, TestPost], {
+        executor: secondExecutor.executor,
+      }),
+    ).toThrow('simulated configuration failure');
+
+    // 3. Проверяем, что TestSimple откатился к первому executor'у
+    const simpleRuntimeAfter = getEntityRuntime(TestSimple);
+    expect(simpleRuntimeAfter.executor).toBe(firstExecutor.executor);
+    // Провайдеры тоже должны быть восстановлены
+    expect(simpleRuntimeAfter.encryptionProvider).toBeUndefined();
+    expect(simpleRuntimeAfter.blindIndexProvider).toBeUndefined();
+    expect(simpleRuntimeAfter.validationProvider).toBeUndefined();
+    // Владение скоупом НЕ должно измениться (уже было до вызова)
+    expect(getEntityOrmScope(TestSimple)).toBe(simpleScopeBefore);
+
+    // 4. TestPost — это новая сущность в этом вызове, её владение скоупом откатывается
+    expect(getEntityOrmScope(TestPost)).toBeUndefined();
+
+    setExecutorSpy.mockRestore();
+  });
+
+  it('сохраняет конфигурацию при успешном вызове', () => {
+    const firstExecutor = createMockExecutor();
+    const secondExecutor = createMockExecutor();
+
+    configureEntities([TestSimple], { executor: firstExecutor.executor });
+
+    configureEntities([TestSimple, TestPost], {
+      executor: secondExecutor.executor,
+    });
+
+    const simpleRuntime = getEntityRuntime(TestSimple);
+    const postRuntime = getEntityRuntime(TestPost);
+    expect(simpleRuntime.executor).toBe(secondExecutor.executor);
+    expect(postRuntime.executor).toBe(secondExecutor.executor);
   });
 });

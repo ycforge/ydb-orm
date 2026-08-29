@@ -97,16 +97,25 @@ export function configureEntities(
   // какие из них были ново заявлены — для отката при ошибке конфигурации.
   const newlyClaimed = claimEntitiesForScopeWithTracking(scope, entities);
 
-  // 3. Применяем runtime-конфигурацию. Провайдеры перезаписываются
-  // безусловно: undefined сбрасывает провайдеры прошлой конфигурации
-  // при re-bootstrap. При ошибке откатываем владение ново заявленных
-  // сущностей, чтобы не оставлять "зомби"-владение.
+  // 3. Применяем runtime-конфигурацию. Снимаем снимок состояния
+  // каждого класса сущности перед применением, чтобы при ошибке
+  // в середине цикла откатить все мутации (executor, providers, uuidGenerator,
+  // aadFormat, scope, transactions, repository) и оставить сущности
+  // в точно таком же состоянии, как до вызова configureEntities.
+  const runtimeSnapshots = new Map<
+    typeof YdbBaseEntity,
+    ReturnType<typeof getEntityRuntime>
+  >();
+  for (const entity of entities) {
+    const entityClass = entity as unknown as typeof YdbBaseEntity;
+    runtimeSnapshots.set(entityClass, { ...getEntityRuntime(entityClass) });
+  }
+
   try {
     for (const entity of entities) {
       const entityClass = entity as unknown as typeof YdbBaseEntity;
       const runtime = getEntityRuntime(entityClass);
       runtime.uuidGenerator = options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
-      // Привязка к конфигурации (#199): per-scope настройки транзакций.
       runtime.scope = scope;
       runtime.transactions = scope.transactions;
 
@@ -120,6 +129,13 @@ export function configureEntities(
       getOrCreateRepository(entityClass);
     }
   } catch (e) {
+    for (const entity of entities) {
+      const entityClass = entity as unknown as typeof YdbBaseEntity;
+      const snapshot = runtimeSnapshots.get(entityClass);
+      if (snapshot) {
+        Object.assign(getEntityRuntime(entityClass), snapshot);
+      }
+    }
     releaseEntitiesFromScope(scope, newlyClaimed);
     throw e;
   }
