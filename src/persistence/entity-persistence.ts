@@ -1,5 +1,9 @@
 import type { AadFormat } from '../encryption/aad.js';
-import { buildAad, DEFAULT_AAD_FORMAT } from '../encryption/aad.js';
+import {
+  buildAad,
+  DEFAULT_AAD_FORMAT,
+  toAadString,
+} from '../encryption/aad.js';
 import type { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import { valueIdentityKey } from '../core/value-identity.js';
 import {
@@ -643,24 +647,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           `got ${this.formatWhereValue(raw)}`,
       );
     }
-    return { value: this.scalarToAadString(operand) };
-  }
-
-  /**
-   * Детерминированное строковое представление скаляра для AAD-контекста.
-   * Примитивы — как в String(); объектные скаляры (напр. JSON-значения) —
-   * через JSON.stringify.
-   */
-  private scalarToAadString(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (
-      typeof value === 'number' ||
-      typeof value === 'bigint' ||
-      typeof value === 'boolean'
-    ) {
-      return String(value);
-    }
-    return this.formatWhereValue(value);
+    return { value: toAadString(operand) };
   }
 
   private formatWhereValue(value: unknown): string {

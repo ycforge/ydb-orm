@@ -68,7 +68,7 @@ export function serializeAadLegacy(
  * Объекты и массивы недопустимы: в PK/AAD-колонках их быть не может, а
  * молчаливый `[object Object]` стёр бы различие между записями.
  */
-function toAadString(value: unknown): string {
+export function toAadString(value: unknown): string {
   switch (typeof value) {
     case 'string':
     case 'number':

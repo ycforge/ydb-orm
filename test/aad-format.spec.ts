@@ -85,6 +85,26 @@ class OverrideEntity extends YdbBaseEntity {
   secret: string;
 }
 
+@YdbEntity('aad_date_pk')
+class AadDateEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Datetime')
+  declare dt: Date;
+
+  @YdbEncrypted()
+  declare secret: string;
+}
+
+@YdbEntity('aad_bytes_pk')
+class AadBytesEntity extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Bytes')
+  declare key: Uint8Array;
+
+  @YdbEncrypted()
+  declare secret: string;
+}
+
 const legacyAad = (row: Record<string, any>): string => `uuid=${row.uuid}`;
 const v2Aad = (row: Record<string, any>): string =>
   serializeAadV2(['uuid'], (n) => row[n]);
@@ -126,6 +146,12 @@ describe('Security AAD format (#165)', () => {
     OverrideEntity.setExecutor(undefined);
     OverrideEntity.setEncryptionProvider(undefined);
     OverrideEntity.setBlindIndexProvider(undefined);
+    AadDateEntity.setExecutor(undefined);
+    AadDateEntity.setEncryptionProvider(undefined);
+    AadDateEntity.setBlindIndexProvider(undefined);
+    AadBytesEntity.setExecutor(undefined);
+    AadBytesEntity.setEncryptionProvider(undefined);
+    AadBytesEntity.setBlindIndexProvider(undefined);
   });
 
   it('по умолчанию шифрование использует v2-сериализацию AAD', async () => {
@@ -320,5 +346,55 @@ describe('Security AAD format (#165)', () => {
     );
     // единственная попытка с override-AAD, ни legacy, ни v2 не пробуются
     expect(strict.decryptAttempts).toEqual(['pin']);
+  });
+
+  it('updateBy() шифрует Date-AAD тем же каноническим AAD, что и save()', async () => {
+    const provider = new AadRecordingProvider();
+    AadDateEntity.setEncryptionProvider(provider);
+    AadDateEntity.setBlindIndexProvider(provider);
+    const dt = new Date('2026-05-01T10:20:30.000Z');
+
+    // save() с заданным PK идёт update-путём; AAD из buildAAD(entity) →
+    // toAadString(Date) = ISO без JSON-кавычек.
+    const entity = new AadDateEntity();
+    entity.dt = dt;
+    entity.secret = 'date-secret';
+    AadDateEntity.setExecutor(
+      createMockExecutor([[{ dt, secret: ct('date-secret') }]]).executor,
+    );
+    await AadDateEntity.save(entity);
+    const saveAad = provider.encryptAads[0];
+
+    provider.encryptAads.length = 0;
+    AadDateEntity.setExecutor(createMockExecutor([[{ dt }]]).executor);
+    await AadDateEntity.updateBy({ dt }, { secret: 'updated' });
+    const updateAad = provider.encryptAads[0];
+
+    expect(saveAad).toBe(updateAad);
+    expect(updateAad).toBe(serializeAadV2(['dt'], () => dt));
+  });
+
+  it('updateBy() шифрует Bytes-AAD каноническим base64, а не JSON-сериализацией', async () => {
+    const provider = new AadRecordingProvider();
+    AadBytesEntity.setEncryptionProvider(provider);
+    AadBytesEntity.setBlindIndexProvider(provider);
+    const key = new TextEncoder().encode('binary-key');
+
+    const entity = new AadBytesEntity();
+    entity.key = key;
+    entity.secret = 'bytes-secret';
+    AadBytesEntity.setExecutor(
+      createMockExecutor([[{ key, secret: ct('bytes-secret') }]]).executor,
+    );
+    await AadBytesEntity.save(entity);
+    const saveAad = provider.encryptAads[0];
+
+    provider.encryptAads.length = 0;
+    AadBytesEntity.setExecutor(createMockExecutor([[{ key }]]).executor);
+    await AadBytesEntity.updateBy({ key }, { secret: 'updated' });
+    const updateAad = provider.encryptAads[0];
+
+    expect(saveAad).toBe(updateAad);
+    expect(updateAad).toBe(serializeAadV2(['key'], () => key));
   });
 });
