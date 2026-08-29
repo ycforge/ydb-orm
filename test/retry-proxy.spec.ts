@@ -178,3 +178,79 @@ describe('retry-прокси: отмена на backoff (#172)', () => {
     expect(db.calls).toHaveLength(1);
   });
 });
+
+describe('retry-прокси: защита от мутаций после старта исполнения (#205)', () => {
+  it('parameter() после await бросает ошибку', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`.idempotent(true);
+
+    await query;
+    expect(() => query.parameter('x', 1)).toThrow(
+      /Cannot call \.parameter\(\) after query execution has started/,
+    );
+  });
+
+  it('timeout() после await бросает ошибку', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`.idempotent(true);
+
+    await query;
+    expect(() => query.timeout(1000)).toThrow(
+      /Cannot call \.timeout\(\) after query execution has started/,
+    );
+  });
+
+  it('signal() после await бросает ошибку', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`.idempotent(true);
+
+    await query;
+    expect(() => query.signal(AbortSignal.timeout(1000))).toThrow(
+      /Cannot call \.signal\(\) after query execution has started/,
+    );
+  });
+
+  it('idempotent() после await бросает ошибку', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`.idempotent(true);
+
+    await query;
+    expect(() => query.idempotent(false)).toThrow(
+      /Cannot call \.idempotent\(\) after query execution has started/,
+    );
+  });
+
+  it('cancel() после await продолжает работать', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`.idempotent(true);
+
+    await query;
+    // cancel() должен не бросать, а просто возвращать proxy
+    expect(query.cancel()).toBe(query);
+  });
+
+  it('mutation до await разрешена', async () => {
+    const db = createScriptedExecutor({ label: 'mutate' });
+    db.expect('SELECT 1').returnsRows({ id: 1 });
+    const wrapped = withRetryPolicy(db.executor, {});
+    const query = wrapped`SELECT 1`;
+
+    query.parameter('x', 1);
+    query.timeout(1000);
+    query.signal(AbortSignal.timeout(1000));
+    query.idempotent(true);
+
+    await query;
+    db.assertComplete();
+  });
+});
