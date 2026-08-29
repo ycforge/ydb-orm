@@ -291,10 +291,12 @@ describe('loadMigrationsFromDir', () => {
       );
     });
 
-    it('rejects a declared hash even when it equals the file content hash', async () => {
-      // Ключевой кейс: «идеальный» поддельный hash (совпадающий с текущим
-      // содержимым) нельзя просто стереть — он запрещён в принципе, чтобы
-      // изменение исходника не могло сохранить записанный hash.
+    it('rejects a declared hash diverging from the file content (tamper/legacy path)', async () => {
+      // #189 upgrade path: у настоящего файла объявленный hash входит в его же
+      // содержимое, поэтому не может совпасть с contentHash — любое объявление
+      // означает подделку либо устаревший шаблон с «записанным» hash. Отказ —
+      // намеренный breaking change: идентичность всегда контентная, середина
+      // «записанный hash = файл» недостижима.
       const declared = 'b'.repeat(64);
       const body = `export default class EqualHash {
         hash = '${declared}';
@@ -304,7 +306,7 @@ describe('loadMigrationsFromDir', () => {
       writeMigration('1000-Equal.mjs', body);
 
       await expect(loadMigrationsFromDir(dir)).rejects.toThrow(
-        /declares its own migration hash/,
+        /1000-Equal\.mjs declares its own migration hash \("b{64}"\) which differs/,
       );
     });
 
