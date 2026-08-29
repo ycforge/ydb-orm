@@ -31,5 +31,10 @@ export {
   YDB_SCHEMA_SYNC,
   YDB_CORE_SCOPE,
   YDB_CORE_LIFECYCLE,
+  YDB_ORM_SCOPE,
+  YDB_CONNECTION_NAME,
+  DEFAULT_CONNECTION_NAME,
+  getScopedToken,
+  getTransactionManagerToken,
 } from './constants.js';
 export type { YdbOptionsFactory, YdbModuleAsyncOptions } from './interfaces.js';

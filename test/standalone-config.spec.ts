@@ -6,6 +6,9 @@ import {
   YdbPrimaryColumn,
   YdbBaseEntity,
   YdbEncrypted,
+  createOrmScope,
+  releaseEntitiesFromScope,
+  getEntityOrmScope,
 } from '../src/index.js';
 import type { YdbValidationProvider } from '../src/index.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
@@ -87,6 +90,10 @@ describe('configureEntities', () => {
       UndecoratedStandalone,
       NoPkStandalone,
     ]) {
+      const scope = getEntityOrmScope(e);
+      if (scope) {
+        releaseEntitiesFromScope(scope, [e]);
+      }
       e.setExecutor(undefined);
       e.setEncryptionProvider(undefined);
       e.setBlindIndexProvider(undefined);
@@ -260,6 +267,47 @@ describe('configureEntities', () => {
 
     // Валидная соседняя сущность тоже не сконфигурирована
     await expect(AtomicValid.findAll()).rejects.toThrow(/YDB executor not set/);
+    // И не claim-нута ни в одном скоупе
+    expect(getEntityOrmScope(AtomicValid)).toBeUndefined();
+  });
+
+  // ---- атомарность владения сущностями (#199) ----
+
+  it('failed configureEntities не claim-ит сущности и не блокирует их для другого скоупа', () => {
+    const first = createOrmScope('atomic-standalone-first');
+    const second = createOrmScope('atomic-standalone-second');
+    const { executor } = createMockExecutor();
+
+    // Попытка сконфигурировать невалидную сущность падает
+    expect(() =>
+      configureEntities([NoPkStandalone], { executor, scope: first }),
+    ).toThrow(/must declare at least one primary key/);
+
+    // Сущность не привязана к первому скоупу
+    expect(getEntityOrmScope(NoPkStandalone)).toBeUndefined();
+
+    // Делаем из неё копию-сущность и успешно конфигурируем во втором скоупе
+    @YdbEntity('test_atomic_reuse')
+    class AtomicReuse extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid!: string;
+    }
+
+    expect(() =>
+      configureEntities([AtomicReuse], { executor, scope: second }),
+    ).not.toThrow();
+    expect(getEntityOrmScope(AtomicReuse)).toBe(second);
+  });
+
+  it('successful configureEntities claim-ит все сущности в скоупе', () => {
+    const scope = createOrmScope('atomic-standalone-success');
+    const { executor } = createMockExecutor();
+
+    configureEntities([TestUser, TestPost], { executor, scope });
+
+    expect(getEntityOrmScope(TestUser)).toBe(scope);
+    expect(getEntityOrmScope(TestPost)).toBe(scope);
+    expect(scope.entities.size).toBe(2);
   });
 
   // ---- validationProvider (#95) ----

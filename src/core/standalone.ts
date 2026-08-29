@@ -9,6 +9,12 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import {
+  claimEntitiesForScopeWithTracking,
+  getDefaultOrmScope,
+  releaseEntitiesFromScope,
+  type YdbOrmScope,
+} from './orm-scope.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 
 /**
@@ -49,6 +55,14 @@ export function configureEntities(
      * читаемы после апгрейда на v2; false — строгий режим после перешифровки.
      */
     aadReadFallback?: boolean;
+    /**
+     * Скоуп независимой ORM-конфигурации (#199), создаётся через
+     * createOrmScope(). По умолчанию — процессный скоуп 'default'
+     * (прежнее поведение одиночной конфигурации). Один класс сущности
+     * может принадлежать только одному активному скоупу: регистрация
+     * в чужом скоупе — ошибка.
+     */
+    scope?: YdbOrmScope;
   },
 ): void {
   if (!options?.executor) {
@@ -58,8 +72,10 @@ export function configureEntities(
     );
   }
 
-  // Сначала валидируем все сущности: невалидная сущность не должна
-  // получить executor/провайдеры и падать позже с малопонятной ошибкой.
+  const scope = options.scope ?? getDefaultOrmScope();
+
+  // 1. Валидируем все сущности ДО привязки к скоупу: невалидная
+  // сущность не получает executor/провайдеры и не оставляет владения.
   for (const entity of entities) {
     assertEntityClass(entity);
     const issues = validateEntityMetadata(
@@ -77,21 +93,35 @@ export function configureEntities(
     }
   }
 
-  // Затем применяем конфигурацию. Провайдеры перезаписываются безусловно:
-  // undefined сбрасывает провайдеры прошлой конфигурации при re-bootstrap.
-  for (const entity of entities) {
-    const entityClass = entity as unknown as typeof YdbBaseEntity;
-    getEntityRuntime(entityClass).uuidGenerator =
-      options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+  // 2. Привязываем сущности к скоупу (идемпотентно) и запоминаем,
+  // какие из них были ново заявлены — для отката при ошибке конфигурации.
+  const newlyClaimed = claimEntitiesForScopeWithTracking(scope, entities);
 
-    entityClass.setExecutor(options.executor);
-    entityClass.setEncryptionProvider(options.encryptionProvider);
-    entityClass.setBlindIndexProvider(options.blindIndexProvider);
-    entityClass.setValidationProvider(options.validationProvider);
-    entityClass.setAadFormat(options.aadFormat);
-    entityClass.setAadReadFallback(options.aadReadFallback);
+  // 3. Применяем runtime-конфигурацию. Провайдеры перезаписываются
+  // безусловно: undefined сбрасывает провайдеры прошлой конфигурации
+  // при re-bootstrap. При ошибке откатываем владение ново заявленных
+  // сущностей, чтобы не оставлять "зомби"-владение.
+  try {
+    for (const entity of entities) {
+      const entityClass = entity as unknown as typeof YdbBaseEntity;
+      const runtime = getEntityRuntime(entityClass);
+      runtime.uuidGenerator = options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+      // Привязка к конфигурации (#199): per-scope настройки транзакций.
+      runtime.scope = scope;
+      runtime.transactions = scope.transactions;
 
-    getOrCreateRepository(entityClass);
+      entityClass.setExecutor(options.executor);
+      entityClass.setEncryptionProvider(options.encryptionProvider);
+      entityClass.setBlindIndexProvider(options.blindIndexProvider);
+      entityClass.setValidationProvider(options.validationProvider);
+      entityClass.setAadFormat(options.aadFormat);
+      entityClass.setAadReadFallback(options.aadReadFallback);
+
+      getOrCreateRepository(entityClass);
+    }
+  } catch (e) {
+    releaseEntitiesFromScope(scope, newlyClaimed);
+    throw e;
   }
 }
 

@@ -4,10 +4,11 @@ import type {
   YdbExecutor,
   YdbIsolationLevel,
   YdbTransactionOptions,
+  YdbTransactionsSettings,
 } from '../core/interfaces.js';
 import {
   getActiveTransaction,
-  getTransactionContextSettings,
+  resolveTransactionSettings,
   runWithTransactionContext,
 } from './transaction-context.js';
 
@@ -208,7 +209,16 @@ export function validateRunInTransactionOptions(
  * Смешивания слоёв нет: попытки не перемножаются ни в одной из конфигураций.
  */
 export class YdbTransactionManager {
-  constructor(private readonly db: YdbExecutor) {}
+  /**
+   * @param db executor БД.
+   * @param settings настройки транзакций конфигурации-владельца (#199);
+   *   если не заданы, используются процессно-глобальные настройки
+   *   (configureTransactionContext) — прежнее поведение.
+   */
+  constructor(
+    private readonly db: YdbExecutor,
+    private readonly settings?: YdbTransactionsSettings,
+  ) {}
 
   /**
    * Выполняет fn внутри транзакции YDB.
@@ -265,8 +275,17 @@ export class YdbTransactionManager {
     }
 
     // Ambient auto-join для операций БЕЗ явного { trx }: opt-in per-call,
-    // либо глобально через настройки модуля (YdbModuleOptions.transactions).
-    const settings = getTransactionContextSettings();
+    // настройки конфигурации-владельца (#199), либо глобальные настройки
+    // процесса (configureTransactionContext) — в порядке приоритета.
+    const settings = resolveTransactionSettings(
+      this.settings
+        ? {
+            ambient: this.settings.ambient ?? false,
+            warnOutsideTransaction:
+              this.settings.warnOutsideTransaction ?? false,
+          }
+        : undefined,
+    );
     const ambient = options?.ambient ?? settings.ambient;
 
     // Семантика таймаута (#98): timeout действует НА КАЖДУЮ попытку.

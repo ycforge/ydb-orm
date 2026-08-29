@@ -225,6 +225,141 @@ export class UserService {
 
 ---
 
+## Несколько независимых конфигураций в одном процессе (#199)
+
+Один процесс может обслуживать несколько независимых YDB-конфигураций (разные endpoint/аутентификация/провайдеры/транзакции) — например, основная БД и аналитический DW. Конфигурация идентифицируется именем (`'default'` по умолчанию).
+
+### Контракт владения сущностями
+
+- **Одна сущность — одна активная конфигурация.** Класс сущности физически не может принадлежать двум конфигурациям: executor и провайдеры хранятся per-class.
+- Попытка зарегистрировать сущность в иной активной конфигурации — **детерминированная ошибка** при bootstrap.
+- Повторная регистрация **в той же** конфигурации (re-bootstrap) **идемпотентна**.
+- После закрытия конфигурации (`app.close()` в NestJS, либо пересоздание скоупа в standalone) сущности освобождаются и могут быть переиспользованы в другой конфигурации.
+- Если `configureEntities()` / `forFeature` падает во время инициализации (валидация, executor, runtime-ошибка), владение **откатывается** — сущность не остаётся «зомби» в чужой конфигурации.
+
+### Standalone
+
+```ts
+import { createOrmScope, configureEntities, createDriver, createExecutor } from '@ycforge/ydb-orm';
+import { createAuth } from '@ycforge/auth';
+
+// Конфигурация 'default' (как обычно)
+const defaultExecutor = createExecutor(
+  createDriver({ endpoint: 'grpcs://default...', auth: createAuth({ type: 'metadata' }) }),
+);
+configureEntities([UserEntity], { executor: defaultExecutor });
+
+// Именованная конфигурация 'reporting' с собственными executor и настройками
+const reportingScope = createOrmScope('reporting', {
+  transactions: { ambient: true, warnOutsideTransaction: true },
+});
+const reportingExecutor = createExecutor(
+  createDriver({ endpoint: 'grpcs://reporting...', auth: createAuth({ type: 'metadata' }) }),
+);
+configureEntities([ReportEntity], { executor: reportingExecutor, scope: reportingScope });
+```
+
+Без `scope` сущности привязываются к процессному скоупу `'default'` — прежнее поведение.
+
+### NestJS
+
+```ts
+import { Module, Inject } from '@nestjs/common';
+import {
+  YdbCoreModule,
+  YdbOrmModule,
+  getRepositoryToken,
+  InjectRepository,
+  getTransactionManagerToken,
+  YdbTransactionManager,
+  YdbRepository,
+} from '@ycforge/ydb-orm/nest';
+import { UserEntity } from './user.entity.js';
+import { ReportEntity } from './report.entity.js';
+
+@Module({
+  imports: [
+    // 'default' конфигурация
+    YdbCoreModule.forRootAsync({
+      useFactory: () => ({
+        endpoint: 'grpcs://default...',
+        auth: createAuth({ type: 'metadata' }),
+      }),
+    }),
+
+    // 'reporting' конфигурация — отдельный executor, отдельные транзакции
+    YdbCoreModule.forRootAsync({
+      name: 'reporting',
+      useFactory: () => ({
+        endpoint: 'grpcs://reporting...',
+        auth: createAuth({ type: 'metadata' }),
+        transactions: { ambient: true, warnOutsideTransaction: true },
+      }),
+    }),
+
+    // Сущности привязываются к своей конфигурации:
+    // forFeature без имени → 'default'; forFeature([...], 'reporting') → 'reporting'
+    YdbOrmModule.forFeature([UserEntity]),
+    YdbOrmModule.forFeature([ReportEntity], 'reporting'),
+  ],
+})
+export class AppModule {}
+```
+
+Инъекция репозитория и менеджера транзакций по имени конфигурации:
+
+```ts
+@Injectable()
+export class ReportService {
+  constructor(
+    // репозиторий из конфигурации 'reporting'
+    @InjectRepository(ReportEntity, 'reporting')
+    private readonly reportRepo: YdbRepository<ReportEntity>,
+    // менеджер транзакций из конфигурации 'reporting' (отдельный инстанс)
+    @Inject(getTransactionManagerToken('reporting'))
+    private readonly txManager: YdbTransactionManager,
+  ) {}
+}
+```
+
+Для конфигурации `'default'` токены и имена совпадают с историческими:
+
+```ts
+// эквивалентно: InjectRepository(UserEntity) и module.get(YdbTransactionManager)
+@InjectRepository(UserEntity)           // → getRepositoryToken(UserEntity)
+@Inject(YdbTransactionManager)          // → getTransactionManagerToken('default')
+```
+
+### Публичные API для именованных конфигураций
+
+| API | Описание |
+|---|---|
+| `YdbModuleAsyncOptions.name` | Имя конфигурации в `YdbCoreModule.forRootAsync()`. `'default'` (по умолчанию) — единственная конфигурация; именованные создают изолированный набор DI-токенов. |
+| `YdbOrmModule.forFeature(entities, connectionName?)` | Регистрирует сущности в конфигурацию. `connectionName` по умолчанию `'default'`. |
+| `getRepositoryToken(Entity, connectionName?)` | DI-токен репозитория. Для `'default'` — исторический формат; для именованных — токен суффицируется `@<name>`. |
+| `@InjectRepository(Entity, connectionName?)` | Декоратор для инъекции репозитория. |
+| `getTransactionManagerToken(name)` | DI-токен `YdbTransactionManager`. Для `'default'` — класс-токен; для именованных — символ. |
+| `createOrmScope(name, { transactions })` | Standalone: создаёт скоуп конфигурации. Передаётся в `configureEntities(..., { scope })`. |
+| `releaseOrmScope(scope)` | Освобождает все сущности скоупа (вызывается автоматически `app.close()` в NestJS). |
+
+### Изоляция настроек транзакций
+
+Настройки `ambient` и `warnOutsideTransaction` привязаны к конкретной конфигурации через её скоуп. Изолированность гарантирована: `ambient: true` в конфигурации `'reporting'` не влияет на `'default'`, и наоборот.
+
+### Миграция с одиночной конфигурации
+
+Существующие приложения **не требуют изменений**. Если вы используете одну конфигурацию (`YdbCoreModule.forRootAsync()` без `name`, `YdbOrmModule.forFeature([...])` без `connectionName`), всё работает как прежде — это и есть конфигурация `'default'`.
+
+Чтобы добавить вторую конфигурацию:
+
+1. Добавьте второй `YdbCoreModule.forRootAsync({ name: 'имя', ... })` с собственным `endpoint`/`auth`.
+2. Подключите сущности второй конфигурации через `YdbOrmModule.forFeature([...], 'имя')`.
+3. Инъекции репозиториев и менеджера транзакций для второй конфигурации используйте с именем: `@InjectRepository(Entity, 'имя')`, `getTransactionManagerToken('имя')`.
+
+Сущности не могут быть разделены между конфигурациями: если `UserEntity` нужна и в `'default'`, и в `'reporting'`, объявите отдельный класс-сущность для каждой конфигурации.
+
+---
+
 ## Active Record
 
 ```ts

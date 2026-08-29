@@ -21,6 +21,7 @@ import {
   runWithTransactionContext,
 } from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
+import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { executeYdbQuery } from '../core/execute-query.js';
 import { mapToYdb } from '../core/mapper.js';
 import {
@@ -67,7 +68,13 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor | undefined {
     // Ambient-контекст транзакций (#98): auto-join / запрет смешивания.
-    return resolveOperationExecutor(trx, this.executor, this.entityClass.name);
+    // Настройки — из конфигурации-владельца сущности (#199).
+    return resolveOperationExecutor(
+      trx,
+      this.executor,
+      this.entityClass.name,
+      getEntityRuntime(this.entityClass).transactions,
+    );
   }
 
   private createTargetPersistence(
@@ -76,7 +83,12 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   ): YdbEntityPersistence<YdbBaseEntity> {
     return new YdbEntityPersistence(
       Target,
-      resolveOperationExecutor(trx, this.executor, this.entityClass.name),
+      resolveOperationExecutor(
+        trx,
+        this.executor,
+        this.entityClass.name,
+        getEntityRuntime(this.entityClass).transactions,
+      ),
       this.options,
     );
   }

@@ -1,6 +1,7 @@
 import { Inject } from '@nestjs/common';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 import type { YdbEntityConstructor } from '../persistence/entity-persistence.js';
+import { DEFAULT_CONNECTION_NAME } from './constants.js';
 
 const REPOSITORY_TOKEN_PREFIX = 'YDB_REPOSITORY_' as const;
 const AR_INIT_TOKEN_SUFFIX = '_AR_INIT' as const;
@@ -58,11 +59,17 @@ function resolveEntityTokens(
 
 /**
  * Возвращает DI-токен для репозитория указанной сущности.
+ * connectionName (#199): конфигурация, которой принадлежит репозиторий;
+ * дефолтная конфигурация сохраняет исторический формат токена.
  */
 export function getRepositoryToken<T extends YdbBaseEntity>(
   entityClass: YdbEntityConstructor<T>,
+  connectionName: string = DEFAULT_CONNECTION_NAME,
 ): string {
-  return resolveEntityTokens(entityClass).repository;
+  const base = resolveEntityTokens(entityClass).repository;
+  return connectionName === DEFAULT_CONNECTION_NAME
+    ? base
+    : `${base}@${connectionName}`;
 }
 
 /**
@@ -70,11 +77,16 @@ export function getRepositoryToken<T extends YdbBaseEntity>(
  * подключает executor/провайдеры к Active Record сущности
  * (см. createActiveRecordEntityProvider). Используется и при объявлении
  * провайдера, и в `inject` репозитория — рассинхрон строк невозможен.
+ * connectionName (#199): конфигурация, которой принадлежит провайдер.
  */
 export function getActiveRecordInitToken<T extends YdbBaseEntity>(
   entityClass: YdbEntityConstructor<T>,
+  connectionName: string = DEFAULT_CONNECTION_NAME,
 ): string {
-  return resolveEntityTokens(entityClass).arInit;
+  const base = resolveEntityTokens(entityClass).arInit;
+  return connectionName === DEFAULT_CONNECTION_NAME
+    ? base
+    : `${base}@${connectionName}`;
 }
 
 /**
@@ -86,9 +98,12 @@ export function getActiveRecordInitToken<T extends YdbBaseEntity>(
  *   constructor(@InjectRepository(User) private repo: YdbRepository<User>) {}
  * }
  * ```
+ *
+ * Для именованной конфигурации (#199): `@InjectRepository(User, 'reporting')`.
  */
 export function InjectRepository<T extends YdbBaseEntity>(
   entityClass: YdbEntityConstructor<T>,
+  connectionName: string = DEFAULT_CONNECTION_NAME,
 ): ReturnType<typeof Inject> {
-  return Inject(getRepositoryToken(entityClass));
+  return Inject(getRepositoryToken(entityClass, connectionName));
 }

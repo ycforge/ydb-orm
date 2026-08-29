@@ -25,6 +25,11 @@ import {
   YDB_SCHEMA_SYNC,
   YDB_CORE_LIFECYCLE,
   YDB_CORE_SCOPE,
+  YDB_ORM_SCOPE,
+  YDB_CONNECTION_NAME,
+  DEFAULT_CONNECTION_NAME,
+  getScopedToken,
+  getTransactionManagerToken,
 } from './constants.js';
 import { YdbModuleAsyncOptions, YdbOptionsFactory } from './interfaces.js';
 import type { YdbModuleOptions, YdbExecutor } from '../core/interfaces.js';
@@ -41,6 +46,11 @@ import {
   createEntityScope,
   getRegisteredYdbEntities,
 } from '../metadata/entity-registry.js';
+import {
+  createOrmScope,
+  getDefaultOrmScope,
+  releaseOrmScope,
+} from '../core/orm-scope.js';
 import {
   claimCoreModuleInit,
   releaseCoreModuleInit,
@@ -95,13 +105,17 @@ class YdbCoreModuleLifecycle
     await this.dispose();
   }
 
-  /** Идемпотентно: снятие с учёта + закрытие созданного модулем драйвера. */
+  /** Идемпотентно: снятие с учёта + освобождение скоупа сущностей (#199)
+   * + закрытие созданного модулем драйвера. */
   private async dispose(
     opts: { ignoreCloseErrors?: boolean } = {},
   ): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     releaseCoreModuleInit(this.state);
+    // Сущности конфигурации освобождаются: после shutdown их можно
+    // привязать к другой конфигурации (#199).
+    releaseOrmScope(this.state.ormScope);
 
     const driver = this.state.ownedDriver;
     if (!driver) return;
@@ -133,8 +147,46 @@ export class YdbCoreModule {
     // Скоуп сущностей создаётся здесь же — один на экземпляр DynamicModule:
     // провайдеры forFeature привязывают сущности к нему через DI-токен
     // YDB_CORE_SCOPE и не зависят от порядка резолва (#142).
-    const state: CoreModuleState = { entityScope: createEntityScope() };
-    const asyncProviders = this.createAsyncProviders(options, state);
+    // Имя конфигурации (#199): конфигурации с разными именами сосуществуют
+    // в одном процессе, их DI-токены разнесены через getScopedToken.
+    const name = options.name ?? DEFAULT_CONNECTION_NAME;
+    if (!name) {
+      throw new Error(
+        'YdbCoreModule.forRootAsync(): "name" must be a non-empty string.',
+      );
+    }
+    const tokens = {
+      options: getScopedToken(YDB_OPTIONS, name),
+      driver: getScopedToken(YDB_DRIVER, name),
+      query: getScopedToken(YDB_QUERY, name),
+      credentials: getScopedToken(YDB_CREDENTIALS_PROVIDER, name),
+      encryption: getScopedToken(YDB_ENCRYPTION_PROVIDER, name),
+      blindIndex: getScopedToken(YDB_BLIND_INDEX_PROVIDER, name),
+      validation: getScopedToken(YDB_VALIDATION_PROVIDER, name),
+      schemaSync: getScopedToken(YDB_SCHEMA_SYNC, name),
+      coreScope: getScopedToken(YDB_CORE_SCOPE, name),
+      ormScope: getScopedToken(YDB_ORM_SCOPE, name),
+      lifecycle: getScopedToken(YDB_CORE_LIFECYCLE, name),
+      transactionManager: getTransactionManagerToken(name),
+    };
+    const state: CoreModuleState = {
+      entityScope: createEntityScope(),
+      name,
+      // Дефолтная конфигурация использует процессный синглтон-скоуп:
+      // повторный бутстрап (тесты, hot-restart) с теми же сущностями —
+      // идемпотентный claim, как раньше. Одновременно живых экземпляров
+      // с именем 'default' быть не может (claimCoreModuleInit), поэтому
+      // общий скоуп безопасен. Именованные конфигурации — изолированы.
+      ormScope:
+        name === DEFAULT_CONNECTION_NAME
+          ? getDefaultOrmScope()
+          : createOrmScope(name),
+    };
+    const asyncProviders = this.createAsyncProviders(
+      options,
+      state,
+      tokens.options,
+    );
 
     return {
       module: YdbCoreModule,
@@ -143,15 +195,28 @@ export class YdbCoreModule {
         ...asyncProviders,
 
         {
-          provide: YDB_CORE_SCOPE,
+          // Имя конфигурации (#199): useValue-строка делает module token
+          // этого DynamicModule уникальным для каждого имени — иначе NestJS
+          // дедуплицирует два forRootAsync одного класса в один модуль.
+          provide: YDB_CONNECTION_NAME,
+          useValue: name,
+        },
+
+        {
+          provide: tokens.coreScope,
           useValue: state.entityScope,
+        },
+
+        {
+          provide: tokens.ormScope,
+          useValue: state.ormScope,
         },
 
         {
           // Провайдер учётных данных (#96): явный opts.credentialsProvider
           // используется как есть; иначе auth (AuthManager из @ycforge/auth);
           // иначе driverOptions.credentialsProvider.
-          provide: YDB_CREDENTIALS_PROVIDER,
+          provide: tokens.credentials,
           useFactory: (opts: YdbModuleOptions) => {
             try {
               return resolveCredentialsProvider(opts);
@@ -162,11 +227,11 @@ export class YdbCoreModule {
               throw error;
             }
           },
-          inject: [YDB_OPTIONS],
+          inject: [tokens.options],
         },
 
         {
-          provide: YDB_DRIVER,
+          provide: tokens.driver,
           useFactory: async (
             opts: YdbModuleOptions,
             credentialsProvider: CredentialsProvider,
@@ -186,38 +251,38 @@ export class YdbCoreModule {
               throw error;
             }
           },
-          inject: [YDB_OPTIONS, YDB_CREDENTIALS_PROVIDER],
+          inject: [tokens.options, tokens.credentials],
         },
 
         {
-          provide: YDB_QUERY,
+          provide: tokens.query,
           useFactory: (driver: Driver, opts: YdbModuleOptions): YdbExecutor =>
             createExecutor(driver, opts),
-          inject: [YDB_DRIVER, YDB_OPTIONS],
+          inject: [tokens.driver, tokens.options],
         },
 
         {
-          provide: YDB_ENCRYPTION_PROVIDER,
+          provide: tokens.encryption,
           useFactory: (
             opts: YdbModuleOptions,
           ): YdbEncryptionProvider | undefined => opts.encryptionProvider,
-          inject: [YDB_OPTIONS],
+          inject: [tokens.options],
         },
 
         {
-          provide: YDB_BLIND_INDEX_PROVIDER,
+          provide: tokens.blindIndex,
           useFactory: (
             opts: YdbModuleOptions,
           ): YdbBlindIndexProvider | undefined => opts.blindIndexProvider,
-          inject: [YDB_OPTIONS],
+          inject: [tokens.options],
         },
 
         {
-          provide: YDB_VALIDATION_PROVIDER,
+          provide: tokens.validation,
           useFactory: (
             opts: YdbModuleOptions,
           ): YdbValidationProvider | undefined => opts.validationProvider,
-          inject: [YDB_OPTIONS],
+          inject: [tokens.options],
         },
 
         /**
@@ -227,38 +292,42 @@ export class YdbCoreModule {
          * Провайдер экспортируется: syncer.verify() можно вызвать вручную.
          */
         {
-          provide: YDB_SCHEMA_SYNC,
+          provide: tokens.schemaSync,
           useFactory: (
             driver: Driver,
             executor: YdbExecutor,
           ): YdbSchemaSyncer => new YdbSchemaSyncer(driver, executor),
-          inject: [YDB_DRIVER, YDB_QUERY],
+          inject: [tokens.driver, tokens.query],
         },
 
         {
-          provide: YDB_CORE_LIFECYCLE,
+          provide: tokens.lifecycle,
           useFactory: (syncer: YdbSchemaSyncer) =>
             new YdbCoreModuleLifecycle(state, syncer),
-          inject: [YDB_SCHEMA_SYNC],
+          inject: [tokens.schemaSync],
         },
 
         {
-          provide: YdbTransactionManager,
-          useFactory: (db: YdbExecutor) => new YdbTransactionManager(db),
-          inject: [YDB_QUERY],
+          // Менеджер транзакций конфигурации (#199): настройки — из её
+          // скоупа, а не процессно-глобальные.
+          provide: tokens.transactionManager,
+          useFactory: (db: YdbExecutor) =>
+            new YdbTransactionManager(db, state.ormScope.transactions),
+          inject: [tokens.query],
         },
       ],
       exports: [
-        YDB_OPTIONS,
-        YDB_DRIVER,
-        YDB_QUERY,
-        YdbTransactionManager,
-        YDB_CREDENTIALS_PROVIDER,
-        YDB_ENCRYPTION_PROVIDER,
-        YDB_BLIND_INDEX_PROVIDER,
-        YDB_VALIDATION_PROVIDER,
-        YDB_SCHEMA_SYNC,
-        YDB_CORE_SCOPE,
+        tokens.options,
+        tokens.driver,
+        tokens.query,
+        tokens.transactionManager,
+        tokens.credentials,
+        tokens.encryption,
+        tokens.blindIndex,
+        tokens.validation,
+        tokens.schemaSync,
+        tokens.coreScope,
+        tokens.ormScope,
       ],
     };
   }
@@ -266,20 +335,33 @@ export class YdbCoreModule {
   private static createAsyncProviders(
     options: YdbModuleAsyncOptions,
     state: CoreModuleState,
+    optionsToken: symbol,
   ): Provider[] {
+    // Настройки транзакций (#98/#199): для дефолтной конфигурации — как
+    // раньше, процессно-глобально (даже если YDB_QUERY переопределён извне,
+    // конфигурация ambient/warn не теряется); для любой конфигурации — в её
+    // скоуп, откуда их заберут AR-провайдеры forFeature и менеджер транзакций.
+    const applyTransactions = (opts: YdbModuleOptions): void => {
+      if (state.name === DEFAULT_CONNECTION_NAME) {
+        configureTransactionContext(opts.transactions);
+      }
+      state.ormScope.transactions = {
+        ambient: opts.transactions?.ambient ?? false,
+        warnOutsideTransaction:
+          opts.transactions?.warnOutsideTransaction ?? false,
+      };
+    };
+
     if (options.useFactory) {
       return [
         {
-          provide: YDB_OPTIONS,
+          provide: optionsToken,
           useFactory: async (...args: any[]) => {
             const opts = await options.useFactory!(...args);
             validateYdbModuleOptions(opts);
             claimCoreModuleInit(state);
             state.options = opts;
-            // Настройки транзакций (#98): глобальные для процесса, применяются
-            // при инициализации модуля — даже если YDB_QUERY переопределён
-            // извне (тесты), конфигурация ambient/warn не теряется.
-            configureTransactionContext(opts.transactions);
+            applyTransactions(opts);
             return opts;
           },
           inject: options.inject || [],
@@ -299,14 +381,13 @@ export class YdbCoreModule {
 
     return [
       {
-        provide: YDB_OPTIONS,
+        provide: optionsToken,
         useFactory: async (optionsFactory: YdbOptionsFactory) => {
           const opts = await optionsFactory.createYdbOptions();
           validateYdbModuleOptions(opts);
           claimCoreModuleInit(state);
           state.options = opts;
-          // См. комментарий выше (#98).
-          configureTransactionContext(opts.transactions);
+          applyTransactions(opts);
           return opts;
         },
         inject,

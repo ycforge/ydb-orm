@@ -1,4 +1,6 @@
 import type { YdbExecutor } from '../core/interfaces.js';
+import type { YdbTransactionsSettings } from '../core/interfaces.js';
+import type { YdbOrmScope } from '../core/orm-scope.js';
 import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -40,6 +42,16 @@ export interface EntityRuntime {
   repository?: YdbRepository<YdbBaseEntity>;
   /** Снапшот deps, использованных для создания repository. */
   repositoryDeps?: RepositoryDepsSnapshot;
+  /**
+   * Скоуп ORM-конфигурации, которой принадлежит сущность (#199);
+   * undefined — сущность ещё не сконфигурирована.
+   */
+  scope?: YdbOrmScope;
+  /**
+   * Настройки транзакций конфигурации-владельца (#199); undefined —
+   * используются процессно-глобальные настройки (прежнее поведение).
+   */
+  transactions?: Required<YdbTransactionsSettings>;
 }
 
 /**

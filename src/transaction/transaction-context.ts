@@ -51,6 +51,17 @@ export function getTransactionContextSettings(): Required<YdbTransactionsSetting
   return { ...settings };
 }
 
+/**
+ * Эффективные настройки транзакций для одной операции (#199):
+ * настройки конфигурации-владельца сущности, если заданы, иначе
+ * процессно-глобальные (прежнее поведение одиночной конфигурации).
+ */
+export function resolveTransactionSettings(
+  scopeSettings?: Required<YdbTransactionsSettings>,
+): Required<YdbTransactionsSettings> {
+  return scopeSettings ?? settings;
+}
+
 /** Активная транзакция в текущей async-цепочке, если есть. */
 export function getActiveTransaction(): ActiveTransactionContext | undefined {
   return storage.getStore();
@@ -81,8 +92,10 @@ export function resolveOperationExecutor(
   explicitTrx: YdbExecutor | undefined,
   fallback: YdbExecutor | undefined,
   entityName: string,
+  scopeSettings?: Required<YdbTransactionsSettings>,
 ): YdbExecutor | undefined {
   const active = storage.getStore();
+  const effectiveSettings = resolveTransactionSettings(scopeSettings);
 
   if (explicitTrx) {
     if (active?.ambient && active.trx !== explicitTrx) {
@@ -106,7 +119,7 @@ export function resolveOperationExecutor(
     return fallback;
   }
 
-  if (settings.warnOutsideTransaction && !active) {
+  if (effectiveSettings.warnOutsideTransaction && !active) {
     console.warn(
       `[ydb-orm] ${entityName}: query executed outside any transaction ` +
         '(warnOutsideTransaction is enabled).',

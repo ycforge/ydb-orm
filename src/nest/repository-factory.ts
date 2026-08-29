@@ -6,6 +6,9 @@ import {
   YDB_BLIND_INDEX_PROVIDER,
   YDB_VALIDATION_PROVIDER,
   YDB_CORE_SCOPE,
+  YDB_ORM_SCOPE,
+  DEFAULT_CONNECTION_NAME,
+  getScopedToken,
 } from './constants.js';
 import type { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import {
@@ -22,20 +25,29 @@ import {
   requestEntitiesForApp,
   type YdbEntityAppScope,
 } from '../metadata/entity-registry.js';
+import {
+  claimEntitiesForScopeWithTracking,
+  releaseEntitiesFromScope,
+  type YdbOrmScope,
+} from '../core/orm-scope.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
- * Провайдер, который при инициализации модуля подключает глобальный
- * executor и опциональные encryption/blind-index провайдеры к Active Record
- * сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
+ * Провайдер, который при инициализации модуля подключает executor и
+ * опциональные encryption/blind-index провайдеры СВОЕЙ конфигурации (#199)
+ * к Active Record сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
  * Перед подключением валидирует метаданные сущности (validateEntityMetadata).
  * Также создаёт `YdbRepository` для сущности и сохраняет его в entity-runtime.
+ *
+ * connectionName выбирает конфигурацию (#199): 'default' — прежние
+ * глобальные DI-токены, именованная конфигурация — собственные токены.
  */
 export function createActiveRecordEntityProvider(
   entityClass: typeof YdbBaseEntity,
+  connectionName: string = DEFAULT_CONNECTION_NAME,
 ): Provider {
   return {
-    provide: getActiveRecordInitToken(entityClass),
+    provide: getActiveRecordInitToken(entityClass, connectionName),
     useFactory: (
       db: YdbExecutor,
       opts: YdbModuleOptions,
@@ -43,16 +55,19 @@ export function createActiveRecordEntityProvider(
       blindIndexProvider?: YdbBlindIndexProvider,
       validationProvider?: YdbValidationProvider,
       entityScope?: YdbEntityAppScope,
+      ormScope?: YdbOrmScope,
     ) => {
       // forFeature явно объявляет сущности ЭТОГО приложения (#142): декоратор
-      // @YdbEntity уже отработал при первом импорте класса и больше не
-      // выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
+      // @YdbEntity уже отработал при первом импорте класса и больше
+      // не выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
       // из контейнера своего приложения, поэтому привязка корректна при любом
       // порядке резолва провайдеров и не затрагивает чужие приложения.
       if (entityScope) {
         requestEntitiesForApp(entityScope, [entityClass]);
       }
 
+      // Валидируем ДО привязки к скоупу: невалидная сущность не получает
+      // executor/провайдеры и не оставляет владения (#199 + атомарность).
       const issues = validateEntityMetadata(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
         blindIndexProviderConfigured: Boolean(blindIndexProvider),
@@ -64,32 +79,64 @@ export function createActiveRecordEntityProvider(
         );
       }
 
-      getEntityRuntime(entityClass).uuidGenerator =
-        opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+      // Владение сущностью (#199): один класс — одна активная конфигурация.
+      // Регистрация в чужой конфигурации — детерминированная ошибка.
+      // Запоминаем ново заявленные сущности для отката при ошибке конфигурации.
+      let newlyClaimed: (new (...args: any[]) => any)[] = [];
+      if (ormScope) {
+        newlyClaimed = claimEntitiesForScopeWithTracking(ormScope, [
+          entityClass,
+        ]);
+      }
 
-      entityClass.setExecutor(db);
-      // Провайдеры перезаписываются безусловно: повторный бутстрап без них
-      // (тесты, hot-restart) не должен оставлять провайдеры прошлой
-      // конфигурации — undefined сбрасывает предыдущее значение.
-      entityClass.setEncryptionProvider(encryptionProvider);
-      entityClass.setBlindIndexProvider(blindIndexProvider);
-      entityClass.setValidationProvider(validationProvider);
-      entityClass.setAadFormat(opts.aadFormat);
-      entityClass.setAadReadFallback(opts.aadReadFallback);
+      try {
+        const runtime = getEntityRuntime(entityClass);
+        runtime.uuidGenerator = opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+        // Привязка к конфигурации (#199): per-scope настройки транзакций.
+        if (ormScope) {
+          runtime.scope = ormScope;
+          runtime.transactions = ormScope.transactions;
+        }
 
-      getOrCreateRepository(entityClass as any);
+        entityClass.setExecutor(db);
+        // Провайдеры перезаписываются безусловно: повторный бутстрап без них
+        // (тесты, hot-restart) не должен оставлять провайдеры прошлой
+        // конфигурации — undefined сбрасывает предыдущее значение.
+        entityClass.setEncryptionProvider(encryptionProvider);
+        entityClass.setBlindIndexProvider(blindIndexProvider);
+        entityClass.setValidationProvider(validationProvider);
+        entityClass.setAadFormat(opts.aadFormat);
+        entityClass.setAadReadFallback(opts.aadReadFallback);
+
+        getOrCreateRepository(entityClass as any);
+      } catch (e) {
+        if (ormScope && newlyClaimed.length > 0) {
+          releaseEntitiesFromScope(ormScope, newlyClaimed);
+        }
+        throw e;
+      }
 
       return entityClass;
     },
     inject: [
-      YDB_QUERY,
-      YDB_OPTIONS,
-      { token: YDB_ENCRYPTION_PROVIDER, optional: true },
-      { token: YDB_BLIND_INDEX_PROVIDER, optional: true },
-      { token: YDB_VALIDATION_PROVIDER, optional: true },
+      getScopedToken(YDB_QUERY, connectionName),
+      getScopedToken(YDB_OPTIONS, connectionName),
+      {
+        token: getScopedToken(YDB_ENCRYPTION_PROVIDER, connectionName),
+        optional: true,
+      },
+      {
+        token: getScopedToken(YDB_BLIND_INDEX_PROVIDER, connectionName),
+        optional: true,
+      },
+      {
+        token: getScopedToken(YDB_VALIDATION_PROVIDER, connectionName),
+        optional: true,
+      },
       // Скоуп опционален для устойчивости к экзотическим контейнерам без
       // ядра: без него привязка невозможна, но executor всё равно отсутствует
-      { token: YDB_CORE_SCOPE, optional: true },
+      { token: getScopedToken(YDB_CORE_SCOPE, connectionName), optional: true },
+      { token: getScopedToken(YDB_ORM_SCOPE, connectionName), optional: true },
     ],
   };
 }
