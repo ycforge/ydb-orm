@@ -327,33 +327,57 @@ export class YdbMigrationRunner {
         (column) => !description.columns.has(column),
       );
       for (const column of missing) {
-        await executeSql(
-          this.executor,
-          `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ` +
-            `ADD COLUMN \`${column}\` Utf8`,
-        );
+        await this.addColumnIfMissing(column);
       }
       return;
     }
 
     // Легаси-путь для раннеров, созданных без driver (программный вызов):
-    // DescribeTable недоступен — SELECT-проба с безусловным ремонтом. В CLI
-    // и NestJS-путях всегда передаётся driver, поэтому сюда попадают только
-    // явно сконструированные без драйвера раннеры.
+    // DescribeTable недоступен, поэтому SELECT-проба не отличает «колонки
+    // нет» от транзиентной/авторизационной ошибки. Делать ALTER после
+    // произвольного падения пробы небезопасно (#186): без надёжно
+    // подтверждённого отсутствия колонки ошибка пробрасывается без DDL.
+    // В CLI и NestJS-путях всегда передаётся driver — там апгрейд
+    // выполняется по реальным метаданным DescribeTable.
     try {
       await executeSql(
         this.executor,
         `SELECT \`hash\`, \`state\` FROM ${quoteIdentifier(MIGRATIONS_TABLE)} LIMIT 1`,
       );
-    } catch {
+    } catch (error) {
+      throw new Error(
+        `Legacy bookkeeping upgrade of ${quoteIdentifier(MIGRATIONS_TABLE)} ` +
+          `cannot run without a driver: SELECT probe failed ` +
+          `(${(error as Error)?.message ?? error}), so the absence of the ` +
+          `hash/state columns is not reliably confirmed. No ALTER was ` +
+          `attempted. Rerun through a driver-backed runner (CLI or NestJS) ` +
+          `which decides DDL from DescribeTable metadata.`,
+        { cause: error },
+      );
+    }
+  }
+
+  /**
+   * Добавляет отсутствующую колонку с идемпотентным исходом при гонке (#186):
+   * если ALTER упал, но колонка по факту уже есть (её добавил конкурентный
+   * процесс или предыдущий заход), результат читается из реальных метаданных
+   * DescribeTable, а не из текста ошибки. Любая иная ошибка (нет прав,
+   * транзиентная) пробрасывается без изменений — таблица остаётся в исходном
+   * состоянии, повторный запуск восстановит апгрейд.
+   */
+  private async addColumnIfMissing(column: string): Promise<void> {
+    try {
       await executeSql(
         this.executor,
-        `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ADD COLUMN \`hash\` Utf8`,
+        `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ` +
+          `ADD COLUMN \`${column}\` Utf8`,
       );
-      await executeSql(
-        this.executor,
-        `ALTER TABLE ${quoteIdentifier(MIGRATIONS_TABLE)} ADD COLUMN \`state\` Utf8`,
-      );
+    } catch (error) {
+      const now = await this.describeMigrationsTable().catch(() => null);
+      if (now && now.columns.has(column)) {
+        return; // конкурент уже привёл таблицу к цели
+      }
+      throw error;
     }
   }
 
