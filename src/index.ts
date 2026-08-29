@@ -152,6 +152,13 @@ export type {
   YdbBlindIndexProvider,
   YdbEncryptionContext,
 } from './encryption/ydb-encryption-provider.interface.js';
+export {
+  buildAad,
+  serializeAadV2,
+  serializeAadLegacy,
+  DEFAULT_AAD_FORMAT,
+} from './encryption/aad.js';
+export type { AadFormat } from './encryption/aad.js';
 // Тестовая заглушка шифрования вынесена в отдельный пакет
 // @ycforge/js-dev-tools (см. README). Готовые KMS/HMAC-провайдеры —
 // в @ycforge/orm-security-providers.

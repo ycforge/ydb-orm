@@ -5,6 +5,7 @@ import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { AadFormat } from '../encryption/aad.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { QueryLogger, YdbLogParamValues } from './query-logger.js';
 import type { YdbRetryPolicyInput } from './retry.js';
@@ -58,6 +59,26 @@ export interface YdbModuleOptions {
   };
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
+  /**
+   * Формат сериализации Security AAD (#165): 'v2' (по умолчанию) — каноническая
+   * self-delimiting сериализация без коллизий от вложенных разделителей, или
+   * 'legacy' — исторический `name=value;...` ТОЛЬКО для переходного периода:
+   * смена формата меняет аутентифицированные байты, поэтому старый ciphertext
+   * под v2 не расшифруется. Миграция: пока в БД есть записи, написанные в
+   * legacy, читайте/шифруйте в 'legacy' и перешифруйте их (save/скрипт),
+   * затем переключитесь на 'v2'.
+   */
+  aadFormat?: AadFormat;
+  /**
+   * Автоматическое определение формата Security AAD при дешифровке (#165):
+   * true (по умолчанию) — при сбое расшифровки основным форматом пробуется
+   * второй. Это единственный безопасный путь апгрейда существующей БД:
+   * строки, написанные до появления `v2`, остаются читаемыми после смены
+   * дефолта. false — строгий режим, пригодный только после того, как все
+   * данные перешифрованы в один формат (сбой формата падает сразу).
+   * Поля с `aadOverride` от падения формата не зависят — повтор не делается.
+   */
+  aadReadFallback?: boolean;
   /**
    * Провайдер валидации сущностей перед записью (save/insert/insertMany/update).
    * Например, ClassValidatorProvider. Без него валидация не выполняется.

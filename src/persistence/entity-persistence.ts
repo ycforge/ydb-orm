@@ -1,3 +1,9 @@
+import type { AadFormat } from '../encryption/aad.js';
+import {
+  buildAad,
+  DEFAULT_AAD_FORMAT,
+  toAadString,
+} from '../encryption/aad.js';
 import type { YdbExecutor, YdbQuery } from '../core/interfaces.js';
 import { valueIdentityKey } from '../core/value-identity.js';
 import {
@@ -70,6 +76,21 @@ export interface PersistenceDeps {
   blindIndexProvider?: YdbBlindIndexProvider;
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
+  /**
+   * Формат сериализации Security AAD (#165). По умолчанию безопасный `v2`;
+   * `legacy` — только для переходного периода (дешифровка старого ciphertext).
+   */
+  aadFormat?: AadFormat;
+  /**
+   * Автоматическое определение формата AAD при дешифровке (#165, по умолчанию
+   * true): если расшифровка основным форматом упала, повторяется вторым.
+   * Без этого смена дефолта на `v2` сделала бы незаписи, написанные старым
+   * `legacy`-форматом, нечитаемыми сразу после апгрейда. После полной
+   * перешифровки данных выключите (`false`) — строгий режим: сбой формата
+   * больше не маскируется, а поверхностно неверный AAD падает первым
+   * исключением.
+   */
+  aadReadFallback?: boolean;
   /**
    * @internal Общий контекст гидратации одной операции чтения.
    * Прокидывается в persistence связанных сущностей при догрузке связей.
@@ -384,10 +405,51 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     entity: Record<string, any>,
     aadFieldNames: string[],
   ): string {
-    return aadFieldNames
-      .filter((name) => entity[name] !== undefined && entity[name] !== null)
-      .map((name) => `${name}=${entity[name]}`)
-      .join(';');
+    return buildAad(
+      aadFieldNames,
+      (name) => entity[name],
+      this.options.aadFormat ?? DEFAULT_AAD_FORMAT,
+    );
+  }
+
+  /**
+   * Дешифрует поле с безопасным переходом форматов AAD (#165).
+   *
+   * Основной формат берётся из `buildAAD` (конфигурация `aadFormat`). Если
+   * расшифровка основным форматом упала и включён `aadReadFallback` (по
+   * умолчанию true), делается повтор второго формата: legacy-строки,
+   * написанные до введения v2, остаются читаемыми сразу после апгрейда
+   * (дефолт сменился на v2, а данные в БД ещё старые). Поля с `aadOverride`
+   * не зависят от формата — повтор бессмыслен, выполняем один вызов.
+   *
+   * Если упали ОБА формата — возвращается ошибка ПЕРВОГО (настроечного)
+   * формата: двойной сбой означает не «несовпадение формата», а
+   * испорченный ciphertext или неверный контекст, и падать нужно
+   * детерминированно.
+   */
+  private async decryptWithAadFallback(
+    provider: YdbEncryptionProvider,
+    ciphertext: Uint8Array,
+    aadOverride: string | undefined,
+    names: readonly string[],
+    valueOf: (name: string) => unknown,
+    context: YdbEncryptionContext,
+  ): Promise<string> {
+    const format = this.options.aadFormat ?? DEFAULT_AAD_FORMAT;
+    const primary = aadOverride ?? buildAad(names, valueOf, format);
+    try {
+      return await provider.decrypt(ciphertext, primary, context);
+    } catch (primaryError) {
+      const fallbackEnabled = this.options.aadReadFallback ?? true;
+      if (aadOverride || !fallbackEnabled) throw primaryError;
+      const secondary = format === 'v2' ? 'legacy' : 'v2';
+      const fallback = buildAad(names, valueOf, secondary);
+      try {
+        return await provider.decrypt(ciphertext, fallback, context);
+      } catch {
+        throw primaryError;
+      }
+    }
   }
 
   /**
@@ -504,10 +566,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const ct = row[ef.propertyKey];
         if (ct === null || ct === undefined) continue;
 
-        const aad = ef.aadOverride ?? this.buildAAD(row, meta.aadFields);
-        row[ef.propertyKey] = await encryptionProvider.decrypt(
+        row[ef.propertyKey] = await this.decryptWithAadFallback(
+          encryptionProvider,
           ct as Uint8Array,
-          aad,
+          ef.aadOverride,
+          meta.aadFields,
+          (name) => row[name],
           {
             entityName: this.entityClass.name,
             tableName: meta.tableName,
@@ -583,24 +647,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           `got ${this.formatWhereValue(raw)}`,
       );
     }
-    return { value: this.scalarToAadString(operand) };
-  }
-
-  /**
-   * Детерминированное строковое представление скаляра для AAD-контекста.
-   * Примитивы — как в String(); объектные скаляры (напр. JSON-значения) —
-   * через JSON.stringify.
-   */
-  private scalarToAadString(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (
-      typeof value === 'number' ||
-      typeof value === 'bigint' ||
-      typeof value === 'boolean'
-    ) {
-      return String(value);
-    }
-    return this.formatWhereValue(value);
+    return { value: toAadString(operand) };
   }
 
   private formatWhereValue(value: unknown): string {
@@ -2036,10 +2083,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const pkField = this.getPkFields(meta)[0];
     const pkValue = (instance as any)[pkField];
 
-    const plaintext = await provider.decrypt(
+    const plaintext = await this.decryptWithAadFallback(
+      provider,
       ciphertext as Uint8Array,
-      ef.aadOverride ??
-        this.buildAAD(instance as Record<string, any>, meta.aadFields),
+      ef.aadOverride,
+      meta.aadFields,
+      (name) => (instance as any)[name],
       {
         entityName: this.entityClass.name,
         tableName: meta.tableName,

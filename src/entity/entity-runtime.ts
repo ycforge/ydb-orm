@@ -3,6 +3,7 @@ import type {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import type { AadFormat } from '../encryption/aad.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { YdbBaseEntity } from './base-entity.js';
 import type { YdbRepository } from '../repository/ydb-repository.js';
@@ -17,6 +18,8 @@ export interface RepositoryDepsSnapshot {
   blindIndexProvider?: YdbBlindIndexProvider;
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
+  aadFormat?: AadFormat;
+  aadReadFallback?: boolean;
 }
 
 export interface EntityRuntime {
@@ -26,6 +29,13 @@ export interface EntityRuntime {
   validationProvider?: YdbValidationProvider;
   /** Генератор UUID для PK (по умолчанию v7 — см. base-entity). */
   uuidGenerator?: () => string;
+  /** Формат Security AAD (#165); undefined = 'v2' по умолчанию. */
+  aadFormat?: AadFormat;
+  /**
+   * Автоматическое определение формата AAD при чтении (#165);
+   * undefined = true (безопасный переход legacy → v2).
+   */
+  aadReadFallback?: boolean;
   /** Готовый репозиторий сущности (создаётся лениво из deps). */
   repository?: YdbRepository<YdbBaseEntity>;
   /** Снапшот deps, использованных для создания repository. */

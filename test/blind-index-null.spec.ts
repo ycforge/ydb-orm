@@ -201,7 +201,7 @@ describe('#175: blind index очищается при null', () => {
       // 2. Поиск прежнего plaintext: запрос по secret_bi, БД не отдаёт
       //    строку (blind index в ней null) → find() возвращает null.
       db.expect(
-        /SELECT \* FROM `bi_test` WHERE `secret_bi` = \$secret_bi LIMIT 1/,
+        /FROM `bi_test` WHERE `secret_bi` = \$secret_bi LIMIT 1/,
       ).returns([]);
       const hits = await BiEntity.find({ secret: 'old-secret' });
       expect(hits).toBeNull();

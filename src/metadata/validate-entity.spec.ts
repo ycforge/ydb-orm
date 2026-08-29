@@ -87,6 +87,22 @@ class EncryptedPk extends YdbBaseEntity {
   uuid: string;
 }
 
+/** AAD-поле Json: объектное значение не имеет детерминированного AAD (#165). */
+@YdbEntity('v_aad_json')
+class AadJsonPk extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Json')
+  attributes: unknown;
+}
+
+/** AAD-поле Bytes: допустимый скаляр (base64-нормализация в AAD, #165). */
+@YdbEntity('v_aad_bytes')
+class AadBytesPk extends YdbBaseEntity {
+  @YdbSecurityAAD()
+  @YdbPrimaryColumn('Bytes')
+  fingerprint: Uint8Array;
+}
+
 @YdbEntity('v_enc')
 class EncryptedNoColumn extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -204,6 +220,20 @@ describe('validateEntityMetadata', () => {
     expect(issues).toEqual([
       expect.stringContaining('primary key "uuid" cannot be encrypted'),
     ]);
+  });
+
+  it('rejects @YdbSecurityAAD on Json column (not serializable to AAD)', () => {
+    const issues = validateEntityMetadata(AadJsonPk, ctx);
+    expect(issues).toEqual([
+      expect.stringContaining(
+        '@YdbSecurityAAD field "attributes" has type Json, which cannot be serialized to AAD',
+      ),
+    ]);
+  });
+
+  it('accepts @YdbSecurityAAD on Bytes column (base64-normalized in AAD)', () => {
+    const issues = validateEntityMetadata(AadBytesPk, ctx);
+    expect(issues).toEqual([]);
   });
 
   it('accepts encrypted field without @YdbColumn (Bytes implied)', () => {

@@ -29,6 +29,35 @@ export function validateYdbModuleOptions(
   }
   assertNoCredentialsProviderConflict(opts);
   assertAuthPresent(opts, injected);
+  assertAadFormat(opts);
+  assertAadReadFallback(opts);
+}
+
+/**
+ * Валидация опции автоматического определения формата AAD (#165): либо не
+ * задана (переходный безопасный режим включён), либо строгий boolean.
+ */
+function assertAadReadFallback(opts: YdbModuleOptions): void {
+  const fallback = opts.aadReadFallback;
+  if (fallback !== undefined && typeof fallback !== 'boolean') {
+    throw new Error(
+      `YDB module options: "aadReadFallback" must be a boolean (got "${String(fallback)}").`,
+    );
+  }
+}
+
+/**
+ * Валидация формата Security AAD (#165): допускаются только 'legacy' и 'v2'
+ * (по умолчанию). Неизвестное значение — ошибка конфигурации, а не
+ * молчаливый переход на дефолт.
+ */
+function assertAadFormat(opts: YdbModuleOptions): void {
+  const format = opts.aadFormat;
+  if (format !== undefined && format !== 'legacy' && format !== 'v2') {
+    throw new Error(
+      `YDB module options: "aadFormat" must be "legacy" or "v2" (got "${String(format)}").`,
+    );
+  }
 }
 
 function assertAuthPresent(

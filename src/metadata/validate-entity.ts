@@ -21,6 +21,13 @@ export interface EntityValidationContext {
 }
 
 /**
+ * Типы YDB-колонок, которые нельзя использовать как Security AAD (#165):
+ * значения этих колонок — объекты (JSON), и toAadString не имеет для них
+ * детерминированного строкового представления.
+ */
+const AAD_UNSAFE_TYPES = new Set(['Json', 'JsonDocument']);
+
+/**
  * Валидация метаданных сущности при инициализации модуля.
  * Возвращает список проблем (пустой, если всё в порядке) — вызывающий код
  * решает, как бросать ошибку. Чистая функция, без сети.
@@ -55,6 +62,19 @@ export function validateEntityMetadata(
     if (!pkFields.includes(aadField)) {
       issues.push(
         `@YdbSecurityAAD field "${aadField}" must be a primary key column`,
+      );
+    }
+
+    // Гарантия сериализуемости в AAD (#165): AAD-значение обязано быть
+    // скаляром, который toAadString переводит в строку детерминированно.
+    // Json/JsonDocument — объекты, для них шифрование упало бы в рантайме
+    // каждый раз; такое определяем на инициализации, а не в первом save().
+    const aadType = meta.schema[aadField];
+    if (aadType && AAD_UNSAFE_TYPES.has(aadType)) {
+      issues.push(
+        `@YdbSecurityAAD field "${aadField}" has type ${aadType}, which cannot be ` +
+          `serialized to AAD; use a scalar type (Uuid, Utf8, Bytes, Int32, Int64, ` +
+          `Bool, Double, Float, Date, Datetime, Timestamp)`,
       );
     }
   }
