@@ -2,6 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { YdbExecutor } from '../core/interfaces.js';
 import type { YdbTransactionsSettings } from '../core/interfaces.js';
 
+/** Уникальный ключ для хранения transactionId на executor'е. */
+export const TRANSACTION_ID_KEY = Symbol.for('ydb.transaction.id');
+
 /**
  * Активная транзакция в цепочке async-вызовов (#98).
  *
@@ -12,11 +15,17 @@ import type { YdbTransactionsSettings } from '../core/interfaces.js';
  * 2. Ambient auto-join: если включён (глобально через настройки модуля или
  *    локально через опцию `ambient` вызова), операции репозиториев без
  *    явного { trx } выполняются в активной транзакции.
+ *
+ * Идентичность транзакции определяется `transactionId`, а не ссылкой на
+ * executor, так как разные обёртки могут представлять одну и ту же
+ * логическую транзакцию (например, при оборачивании executor'а для логирования).
  */
 export interface ActiveTransactionContext {
+  /** Уникальный идентификатор транзакции (символ) — для сравнения по значению. */
+  transactionId: symbol;
   /** Executor транзакции — передаётся в операции вместо executor'а сущности. */
   trx: YdbExecutor;
-  /** Executor БД, открывший транзакцию: детекция вложенности по ссылке. */
+  /** Executor БД, открывший транзакцию: детекция вложенности по transactionId. */
   db: YdbExecutor;
   /** Сигнал отмены конкретной попытки транзакции (при retry — новый). */
   signal?: AbortSignal;
@@ -98,7 +107,10 @@ export function resolveOperationExecutor(
   const effectiveSettings = resolveTransactionSettings(scopeSettings);
 
   if (explicitTrx) {
-    if (active?.ambient && active.trx !== explicitTrx) {
+    if (
+      active?.ambient &&
+      active.transactionId !== getTransactionId(explicitTrx)
+    ) {
       throw new Error(
         `Transaction mixing detected in ${entityName}: an explicit { trx } was passed, ` +
           'but a different transaction is active in the current async context. ' +
@@ -127,4 +139,17 @@ export function resolveOperationExecutor(
   }
 
   return fallback;
+}
+
+/**
+ * Получает transactionId из executor'а транзакции.
+ * Если executor не имеет transactionId (не создан через runInTransaction),
+ * возвращает сам executor для обратной совместимости (сравнение по ссылке).
+ */
+export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
+  const withId = trx as unknown as Record<
+    typeof TRANSACTION_ID_KEY,
+    symbol | undefined
+  >;
+  return withId[TRANSACTION_ID_KEY] ?? trx;
 }
