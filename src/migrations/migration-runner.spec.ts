@@ -31,6 +31,12 @@ interface StatefulExecutor {
   rows: Map<string, StoreRow>;
 }
 
+/** Колоночное состояние таблицы учёта для реалистичной модели ALTER (#186). */
+interface BookkeepingSchema {
+  hash: boolean;
+  state: boolean;
+}
+
 const paramValue = (param: unknown): unknown =>
   (param as { value?: unknown } | undefined)?.value;
 
@@ -65,10 +71,17 @@ function createStatefulExecutor(
     failOn?: (sql: string) => Error | undefined;
     /** Общее хранилище для нескольких раннеров (тест гонок). */
     store?: Map<string, StoreRow>;
+    /**
+     * Общее колоночное состояние таблицы учёта (#186). При заданном schema
+     * мок моделирует реальный ALTER: колонка добавляется ровно один раз,
+     * повторная попытка падает на дубликате (как в YDB).
+     */
+    schema?: BookkeepingSchema;
   } = {},
 ): StatefulExecutor {
   const rows = options.store ?? new Map<string, StoreRow>();
   const queries: RecordedQuery[] = [];
+  const schema = options.schema;
 
   (options.rows ?? []).forEach((row, index) => {
     const id = String(row.id ?? index + 1);
@@ -87,7 +100,30 @@ function createStatefulExecutor(
 
     if (sql.startsWith('CREATE TABLE')) return [];
     if (sql.startsWith('SELECT `hash`')) {
-      if (options.failProbe) throw new Error('column `hash` was not found');
+      if (schema) {
+        // Реалистичная модель: проба читает hash/state и валится, пока
+        // хотя бы одной колонки нет.
+        if (!schema.hash || !schema.state) {
+          throw new Error('column `hash` was not found');
+        }
+      } else if (options.failProbe) {
+        throw new Error('column `hash` was not found');
+      }
+      return [];
+    }
+    if (sql.startsWith('ALTER TABLE')) {
+      const addHash = sql.includes('ADD COLUMN `hash`');
+      const addState = sql.includes('ADD COLUMN `state`');
+      for (const [name, add] of [
+        ['hash', addHash],
+        ['state', addState],
+      ] as const) {
+        if (!add) continue;
+        if (schema?.[name]) {
+          throw new Error(`Duplicate column: \`${name}\` already exists`);
+        }
+        if (schema) schema[name] = true;
+      }
       return [];
     }
     if (sql.startsWith('SELECT')) return [[...rows.values()]];
@@ -174,6 +210,23 @@ const migrationFactory = (
 const insertQueries = (mock: StatefulExecutor) =>
   mock.queries.filter((q) => q.sql.startsWith('INSERT INTO'));
 
+/**
+ * Барьер на N участников (#186): каждый вызвавший arrive() ждёт, пока
+ * не подойдут все — детерминированная точка встречи для теста гонки.
+ */
+const makeBarrier = (count: number): (() => Promise<void>) => {
+  let arrived = 0;
+  const waiters: (() => void)[] = [];
+  return async () => {
+    arrived += 1;
+    if (arrived >= count) {
+      waiters.splice(0).forEach((resolve) => resolve());
+      return;
+    }
+    await new Promise<void>((resolve) => waiters.push(resolve));
+  };
+};
+
 describe('YdbMigrationRunner (#101)', () => {
   describe('bookkeeping table', () => {
     it('creates the migrations table with hash and state columns', async () => {
@@ -190,20 +243,52 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(mock.queries[0].sql).toContain('PRIMARY KEY (`id`)');
     });
 
-    it('upgrades a legacy table by adding missing columns once', async () => {
+    it('#186 no-driver runner propagates probe failure without any ALTER', async () => {
+      // Раннер без driver не может подтвердить «колонки нет» по DescribeTable,
+      // поэтому ALTER после произвольного падения SELECT запрещён (#186).
       const mock = createStatefulExecutor({ failProbe: true });
       const runner = new YdbMigrationRunner(mock.executor);
 
+      await expect(runner.getAppliedMigrations()).rejects.toThrow(
+        'cannot run without a driver',
+      );
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
+    });
+
+    it('#186 no-driver runner preserves the probe error as the cause', async () => {
+      const mock = createStatefulExecutor({
+        failOn: (sql) =>
+          sql.startsWith('SELECT `hash`')
+            ? new Error('UNAVAILABLE: transient failure')
+            : undefined,
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+
+      const error = await runner
+        .getAppliedMigrations()
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('cannot run without a driver');
+      expect((error as Error).cause).toMatchObject({
+        message: 'UNAVAILABLE: transient failure',
+      });
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
+    });
+
+    it('#186 no-driver runner does no ALTER when the probe already succeeds', async () => {
+      const mock = createStatefulExecutor();
+      const runner = new YdbMigrationRunner(mock.executor);
+
       await runner.getAppliedMigrations();
-      // Повторный вызов не должен повторять апгрейд
       await runner.getAppliedMigrations();
 
-      const alters = mock.queries.filter((q) =>
-        q.sql.startsWith('ALTER TABLE'),
-      );
-      expect(alters).toHaveLength(2);
-      expect(alters[0].sql).toContain('ADD COLUMN `hash` Utf8');
-      expect(alters[1].sql).toContain('ADD COLUMN `state` Utf8');
+      expect(
+        mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
+      ).toHaveLength(0);
     });
 
     /** Колонки таблицы учёта для DescribeTable-шва (#176). */
@@ -396,6 +481,39 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(
         mock.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
       ).toHaveLength(0);
+    });
+
+    it('#186 two concurrent DescribeTable upgrades converge (no duplicate error)', async () => {
+      const store = new Map<string, StoreRow>();
+      const schema: BookkeepingSchema = { hash: false, state: false };
+      const describeBarrier = makeBarrier(2);
+      const describeTable = jest.fn(async (_t: string): Promise<any> => {
+        await describeBarrier();
+        return {
+          columns: bookkeepingColumns(schema.hash, schema.state),
+          primaryKey: ['id'],
+          indexes: [],
+        };
+      });
+
+      const first = new YdbMigrationRunner(
+        createStatefulExecutor({ store, schema }).executor,
+        undefined,
+        describeTable,
+      );
+      const second = new YdbMigrationRunner(
+        createStatefulExecutor({ store, schema }).executor,
+        undefined,
+        describeTable,
+      );
+
+      await Promise.all([
+        first.getAppliedMigrations(),
+        second.getAppliedMigrations(),
+      ]);
+
+      expect(schema.hash).toBe(true);
+      expect(schema.state).toBe(true);
     });
 
     it('ensures the table only once per runner instance (#101)', async () => {
