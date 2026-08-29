@@ -30,6 +30,7 @@ import {
 } from '../decorators/timestamp.decorator.js';
 import { getLifecycleHooks } from '../decorators/lifecycle.decorator.js';
 import { resolveOperationExecutor } from '../transaction/transaction-context.js';
+import { getEntityRuntime } from '../entity/entity-runtime.js';
 import {
   chunkInValues,
   dedupeInValues,
@@ -185,10 +186,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   private getExecutor(trx?: YdbExecutor): YdbExecutor {
     // Резолв учитывает ambient-контекст транзакций (#98): auto-join,
     // запрет смешивания с посторонним trx, предупреждения вне транзакции.
+    // Настройки берутся из конфигурации-владельца сущности (#199).
     const db = resolveOperationExecutor(
       trx,
       this.executor,
       this.entityClass.name,
+      getEntityRuntime(this.entityClass).transactions,
     );
     if (!db) {
       throw new Error(

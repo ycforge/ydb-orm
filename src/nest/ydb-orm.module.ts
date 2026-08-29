@@ -8,6 +8,7 @@ import {
   getRepositoryToken,
   getActiveRecordInitToken,
 } from './repository-token.js';
+import { DEFAULT_CONNECTION_NAME } from './constants.js';
 
 @Module({})
 export class YdbOrmModule {
@@ -20,12 +21,20 @@ export class YdbOrmModule {
     };
   }
 
-  static forFeature(entities: (typeof YdbBaseEntity)[]): DynamicModule {
-    const arProviders: Provider[] = entities.map(
-      createActiveRecordEntityProvider,
+  /**
+   * Подключает сущности к конфигурации connectionName (#199, по умолчанию
+   * 'default'). Один класс сущности может принадлежать только одной
+   * активной конфигурации: регистрация в чужой — ошибка при bootstrap.
+   */
+  static forFeature(
+    entities: (typeof YdbBaseEntity)[],
+    connectionName: string = DEFAULT_CONNECTION_NAME,
+  ): DynamicModule {
+    const arProviders: Provider[] = entities.map((entity) =>
+      createActiveRecordEntityProvider(entity, connectionName),
     );
     const repositoryProviders: Provider[] = entities.map((entityClass) => ({
-      provide: getRepositoryToken(entityClass as any),
+      provide: getRepositoryToken(entityClass as any, connectionName),
       useFactory: () => {
         const repo = getEntityRuntime(entityClass).repository;
         if (!repo) {
@@ -36,7 +45,7 @@ export class YdbOrmModule {
         }
         return repo;
       },
-      inject: [getActiveRecordInitToken(entityClass as any)],
+      inject: [getActiveRecordInitToken(entityClass as any, connectionName)],
     }));
 
     return {

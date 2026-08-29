@@ -270,6 +270,15 @@ export {
   validateYdbModuleOptions,
 } from './core/driver.js';
 export { configureEntities } from './core/standalone.js';
+// Независимые ORM-конфигурации в одном процессе (#199).
+export {
+  createOrmScope,
+  getDefaultOrmScope,
+  releaseOrmScope,
+  getEntityOrmScope,
+  DEFAULT_ORM_SCOPE_NAME,
+} from './core/orm-scope.js';
+export type { YdbOrmScope } from './core/orm-scope.js';
 export type { YdbCliConfig } from './cli/config.js';
 // Генерация сущности без CLI (#24): программный вход для скриптов/инструментов.
 export type {

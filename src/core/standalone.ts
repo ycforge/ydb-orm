@@ -9,6 +9,11 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import {
+  claimEntitiesForScope,
+  getDefaultOrmScope,
+  type YdbOrmScope,
+} from './orm-scope.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 
 /**
@@ -49,6 +54,14 @@ export function configureEntities(
      * читаемы после апгрейда на v2; false — строгий режим после перешифровки.
      */
     aadReadFallback?: boolean;
+    /**
+     * Скоуп независимой ORM-конфигурации (#199), создаётся через
+     * createOrmScope(). По умолчанию — процессный скоуп 'default'
+     * (прежнее поведение одиночной конфигурации). Один класс сущности
+     * может принадлежать только одному активному скоупу: регистрация
+     * в чужом скоупе — ошибка.
+     */
+    scope?: YdbOrmScope;
   },
 ): void {
   if (!options?.executor) {
@@ -58,8 +71,13 @@ export function configureEntities(
     );
   }
 
+  const scope = options.scope ?? getDefaultOrmScope();
+
   // Сначала валидируем все сущности: невалидная сущность не должна
   // получить executor/провайдеры и падать позже с малопонятной ошибкой.
+  // Здесь же проверяем владение (#199): сущность другого активного скоупа
+  // не конфигурируется вообще.
+  claimEntitiesForScope(scope, entities);
   for (const entity of entities) {
     assertEntityClass(entity);
     const issues = validateEntityMetadata(
@@ -81,8 +99,11 @@ export function configureEntities(
   // undefined сбрасывает провайдеры прошлой конфигурации при re-bootstrap.
   for (const entity of entities) {
     const entityClass = entity as unknown as typeof YdbBaseEntity;
-    getEntityRuntime(entityClass).uuidGenerator =
-      options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+    const runtime = getEntityRuntime(entityClass);
+    runtime.uuidGenerator = options.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+    // Привязка к конфигурации (#199): per-scope настройки транзакций.
+    runtime.scope = scope;
+    runtime.transactions = scope.transactions;
 
     entityClass.setExecutor(options.executor);
     entityClass.setEncryptionProvider(options.encryptionProvider);
