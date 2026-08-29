@@ -134,9 +134,62 @@ export function releaseOrmScope(scope: YdbOrmScope): void {
   scope.entities.clear();
 }
 
+/**
+ * Снимает владение конкретных сущностей скоупа (rollback при ошибке
+ * конфигурации). Только сущности, действительно принадлежащие scope,
+ * освобождаются: ранее привязанные к нему же сущности не затрагиваются.
+ */
+export function releaseEntitiesFromScope(
+  scope: YdbOrmScope,
+  entities: readonly YdbEntityClass[],
+): void {
+  for (const entity of entities) {
+    if (entityOwners.get(entity) === scope) {
+      entityOwners.delete(entity);
+      scope.entities.delete(entity);
+    }
+  }
+}
+
 /** Текущий владелец сущности (для тестов и диагностики). */
 export function getEntityOrmScope(
   entity: YdbEntityClass,
 ): YdbOrmScope | undefined {
   return entityOwners.get(entity);
+}
+
+/**
+ * Заявляет сущности в скоупе и возвращает список сущностей, которые были
+ * ново привязаны (не принадлежали этому скоупу ранее). Используется для
+ * отката владения при ошибке конфигурации.
+ */
+export function claimEntitiesForScopeWithTracking(
+  scope: YdbOrmScope,
+  entities: readonly YdbEntityClass[],
+): YdbEntityClass[] {
+  for (const entity of entities) {
+    const owner = entityOwners.get(entity);
+    if (owner && owner !== scope) {
+      throw new Error(
+        `Entity ${entity.name ?? String(entity)} is already registered in ` +
+          `another YDB configuration ("${owner.name}"). ` +
+          `The same entity class cannot belong to more than one ORM configuration: ` +
+          `its executor/providers are stored per class. ` +
+          `Declare a separate entity class for configuration "${scope.name}", ` +
+          `or shut down the configuration "${owner.name}" first.`,
+      );
+    }
+  }
+
+  const newlyClaimed: YdbEntityClass[] = [];
+  for (const entity of entities) {
+    const wasOwned = entityOwners.has(entity);
+    if (!wasOwned) {
+      newlyClaimed.push(entity);
+    }
+    entityOwners.set(entity, scope);
+    scope.entities.add(entity);
+  }
+
+  return newlyClaimed;
 }

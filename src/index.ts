@@ -275,6 +275,7 @@ export {
   createOrmScope,
   getDefaultOrmScope,
   releaseOrmScope,
+  releaseEntitiesFromScope,
   getEntityOrmScope,
   DEFAULT_ORM_SCOPE_NAME,
 } from './core/orm-scope.js';

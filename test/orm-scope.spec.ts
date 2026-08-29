@@ -12,6 +12,7 @@ import {
   YdbTransactionManager,
   configureTransactionContext,
 } from '../src/index.js';
+import { YdbEncrypted } from '../src/decorators/encryption.decorator.js';
 import { getEntityRuntime } from '../src/entity/entity-runtime.js';
 import {
   resolveOperationExecutor,
@@ -44,12 +45,35 @@ class ScopeShared extends YdbBaseEntity {
   uuid!: string;
 }
 
+/** Сущность без PK — невалидна для конфигурации. */
+@YdbEntity('scope_no_pk')
+class ScopeNoPk extends YdbBaseEntity {
+  @YdbColumn('Utf8')
+  name!: string;
+}
+
+/** Сущность с @YdbEncrypted без провайдера шифрования — невалидна. */
+@YdbEntity('scope_encrypted')
+class ScopeEncrypted extends YdbBaseEntity {
+  @YdbPrimaryColumn('Uuid')
+  uuid!: string;
+
+  @YdbEncrypted({ blindIndex: true })
+  secret?: string;
+}
+
 describe('ORM scopes: независимые конфигурации в одном процессе (#199)', () => {
   afterEach(() => {
     configureTransactionContext(undefined);
     // Освобождаем сущности этого файла от любых скоупов (включая дефолтный
-    // синглтон): каждый тест начинает с чистого владения.
-    for (const entity of [ScopeUserA, ScopeUserB, ScopeShared]) {
+    // синглон): каждый тест начинает с чистого владения.
+    for (const entity of [
+      ScopeUserA,
+      ScopeUserB,
+      ScopeShared,
+      ScopeNoPk,
+      ScopeEncrypted,
+    ]) {
       const scope = getEntityOrmScope(entity);
       if (scope) {
         releaseOrmScope(scope);
@@ -185,5 +209,121 @@ describe('ORM scopes: независимые конфигурации в одн�
 
   it('createOrmScope требует непустое имя', () => {
     expect(() => createOrmScope('')).toThrow(/non-empty/);
+  });
+
+  // ---- Атомарность жизненного цикла владения сущностями (#199) ----
+
+  it('не claim-ит сущности при ошибке валидации: невалидная в середине списка', () => {
+    const scope = createOrmScope('atomic-validate-fail');
+    const { executor } = createMockExecutor();
+
+    // ScopeUserA — валидна, ScopeNoPk — невалидна (нет PK), ScopeShared — валидна
+    expect(() =>
+      configureEntities([ScopeUserA, ScopeNoPk, ScopeShared], {
+        executor,
+        scope,
+      }),
+    ).toThrow(/must declare at least one primary key/);
+
+    // Ни одна сущность не должна остаться привязанной к скоупу
+    expect(getEntityOrmScope(ScopeUserA)).toBeUndefined();
+    expect(getEntityOrmScope(ScopeNoPk)).toBeUndefined();
+    expect(getEntityOrmScope(ScopeShared)).toBeUndefined();
+    expect(scope.entities.size).toBe(0);
+  });
+
+  it('не claim-ит сущности при ошибке валидации: невалидная в начале списка', () => {
+    const scope = createOrmScope('atomic-validate-fail-start');
+    const { executor } = createMockExecutor();
+
+    expect(() =>
+      configureEntities([ScopeNoPk, ScopeShared], {
+        executor,
+        scope,
+      }),
+    ).toThrow(/must declare at least one primary key/);
+
+    expect(getEntityOrmScope(ScopeNoPk)).toBeUndefined();
+    expect(getEntityOrmScope(ScopeShared)).toBeUndefined();
+    expect(scope.entities.size).toBe(0);
+  });
+
+  it('не claim-ит сущности при ошибке валидации шифрования (без провайдера)', () => {
+    const scope = createOrmScope('atomic-encrypted-fail');
+    const { executor } = createMockExecutor();
+
+    expect(() =>
+      configureEntities([ScopeEncrypted], { executor, scope }),
+    ).toThrow(/no encryptionProvider is configured/);
+
+    expect(getEntityOrmScope(ScopeEncrypted)).toBeUndefined();
+    expect(scope.entities.size).toBe(0);
+  });
+
+  it('после неудачной конфигурации сущность доступна для другой конфигурации', () => {
+    const first = createOrmScope('atomic-retry-first');
+    const second = createOrmScope('atomic-retry-second');
+    const { executor } = createMockExecutor();
+
+    // Первичная конфигурация с невалидной сущностью падает
+    expect(() =>
+      configureEntities([ScopeNoPk], { executor, scope: first }),
+    ).toThrow(/must declare at least one primary key/);
+
+    // Сущность не привязана ни к одному скоупу
+    expect(getEntityOrmScope(ScopeNoPk)).toBeUndefined();
+
+    // Теперь ScopeShared можно успешно сконфигурировать во втором скоупе
+    expect(() =>
+      configureEntities([ScopeShared], { executor, scope: second }),
+    ).not.toThrow();
+    expect(getEntityOrmScope(ScopeShared)).toBe(second);
+  });
+
+  it('успешная конфигурация claim-ит все сущности', () => {
+    const scope = createOrmScope('atomic-success');
+    const { executor } = createMockExecutor();
+
+    configureEntities([ScopeUserA, ScopeUserB, ScopeShared], {
+      executor,
+      scope,
+    });
+
+    expect(getEntityOrmScope(ScopeUserA)).toBe(scope);
+    expect(getEntityOrmScope(ScopeUserB)).toBe(scope);
+    expect(getEntityOrmScope(ScopeShared)).toBe(scope);
+    expect(scope.entities.size).toBe(3);
+  });
+
+  it('повторная конфигурация в том же скоупе идемпотентна (re-bootstrap)', () => {
+    const scope = createOrmScope('atomic-idempotent');
+    const first = createMockExecutor().executor;
+    const second = createMockExecutor().executor;
+
+    configureEntities([ScopeUserA], { executor: first, scope });
+    expect(getEntityOrmScope(ScopeUserA)).toBe(scope);
+
+    // Повторный бутстрап тем же скоупом — без ошибок
+    expect(() =>
+      configureEntities([ScopeUserA], { executor: second, scope }),
+    ).not.toThrow();
+
+    // Владение не изменилось
+    expect(getEntityOrmScope(ScopeUserA)).toBe(scope);
+    expect(scope.entities.size).toBe(1);
+  });
+
+  it('частичная конфигурация: валидная сущность в том же вызове с невалидной не claim-ится', () => {
+    const scope = createOrmScope('atomic-mixed');
+    const { executor } = createMockExecutor();
+
+    expect(() =>
+      configureEntities([ScopeUserA, ScopeNoPk], { executor, scope }),
+    ).toThrow(/must declare at least one primary key/);
+
+    // ScopeUserA не должна остаться claim-нутой
+    expect(getEntityOrmScope(ScopeUserA)).toBeUndefined();
+    expect(getEntityOrmScope(ScopeNoPk)).toBeUndefined();
+    expect(scope.entities.size).toBe(0);
   });
 });

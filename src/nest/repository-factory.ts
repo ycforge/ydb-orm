@@ -25,7 +25,11 @@ import {
   requestEntitiesForApp,
   type YdbEntityAppScope,
 } from '../metadata/entity-registry.js';
-import { claimEntitiesForScope, type YdbOrmScope } from '../core/orm-scope.js';
+import {
+  claimEntitiesForScopeWithTracking,
+  releaseEntitiesFromScope,
+  type YdbOrmScope,
+} from '../core/orm-scope.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
@@ -54,20 +58,16 @@ export function createActiveRecordEntityProvider(
       ormScope?: YdbOrmScope,
     ) => {
       // forFeature явно объявляет сущности ЭТОГО приложения (#142): декоратор
-      // @YdbEntity уже отработал при первом импорте класса и больше не
-      // выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
+      // @YdbEntity уже отработал при первом импорте класса и больше
+      // не выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
       // из контейнера своего приложения, поэтому привязка корректна при любом
       // порядке резолва провайдеров и не затрагивает чужие приложения.
       if (entityScope) {
         requestEntitiesForApp(entityScope, [entityClass]);
       }
 
-      // Владение сущностью (#199): один класс — одна активная конфигурация.
-      // Регистрация в чужой конфигурации — детерминированная ошибка.
-      if (ormScope) {
-        claimEntitiesForScope(ormScope, [entityClass]);
-      }
-
+      // Валидируем ДО привязки к скоупу: невалидная сущность не получает
+      // executor/провайдеры и не оставляет владения (#199 + атомарность).
       const issues = validateEntityMetadata(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
         blindIndexProviderConfigured: Boolean(blindIndexProvider),
@@ -79,25 +79,42 @@ export function createActiveRecordEntityProvider(
         );
       }
 
-      const runtime = getEntityRuntime(entityClass);
-      runtime.uuidGenerator = opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
-      // Привязка к конфигурации (#199): per-scope настройки транзакций.
+      // Владение сущностью (#199): один класс — одна активная конфигурация.
+      // Регистрация в чужой конфигурации — детерминированная ошибка.
+      // Запоминаем ново заявленные сущности для отката при ошибке конфигурации.
+      let newlyClaimed: (new (...args: any[]) => any)[] = [];
       if (ormScope) {
-        runtime.scope = ormScope;
-        runtime.transactions = ormScope.transactions;
+        newlyClaimed = claimEntitiesForScopeWithTracking(ormScope, [
+          entityClass,
+        ]);
       }
 
-      entityClass.setExecutor(db);
-      // Провайдеры перезаписываются безусловно: повторный бутстрап без них
-      // (тесты, hot-restart) не должен оставлять провайдеры прошлой
-      // конфигурации — undefined сбрасывает предыдущее значение.
-      entityClass.setEncryptionProvider(encryptionProvider);
-      entityClass.setBlindIndexProvider(blindIndexProvider);
-      entityClass.setValidationProvider(validationProvider);
-      entityClass.setAadFormat(opts.aadFormat);
-      entityClass.setAadReadFallback(opts.aadReadFallback);
+      try {
+        const runtime = getEntityRuntime(entityClass);
+        runtime.uuidGenerator = opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
+        // Привязка к конфигурации (#199): per-scope настройки транзакций.
+        if (ormScope) {
+          runtime.scope = ormScope;
+          runtime.transactions = ormScope.transactions;
+        }
 
-      getOrCreateRepository(entityClass as any);
+        entityClass.setExecutor(db);
+        // Провайдеры перезаписываются безусловно: повторный бутстрап без них
+        // (тесты, hot-restart) не должен оставлять провайдеры прошлой
+        // конфигурации — undefined сбрасывает предыдущее значение.
+        entityClass.setEncryptionProvider(encryptionProvider);
+        entityClass.setBlindIndexProvider(blindIndexProvider);
+        entityClass.setValidationProvider(validationProvider);
+        entityClass.setAadFormat(opts.aadFormat);
+        entityClass.setAadReadFallback(opts.aadReadFallback);
+
+        getOrCreateRepository(entityClass as any);
+      } catch (e) {
+        if (ormScope && newlyClaimed.length > 0) {
+          releaseEntitiesFromScope(ormScope, newlyClaimed);
+        }
+        throw e;
+      }
 
       return entityClass;
     },
