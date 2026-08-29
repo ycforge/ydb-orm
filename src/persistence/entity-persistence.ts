@@ -486,7 +486,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const aadFields: Record<string, string> = {};
     for (const aadName of meta.aadFields) {
       const av = entity[aadName];
-      if (av !== undefined && av !== null) aadFields[aadName] = String(av);
+      if (av !== undefined && av !== null) aadFields[aadName] = toAadString(av);
     }
 
     const pendingLazy = source ? lazyPendingCiphertext.get(source) : undefined;
@@ -558,7 +558,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       const aadFields: Record<string, string> = {};
       for (const aadName of meta.aadFields) {
         const av = row[aadName];
-        if (av !== undefined && av !== null) aadFields[aadName] = String(av);
+        if (av !== undefined && av !== null)
+          aadFields[aadName] = toAadString(av);
       }
 
       for (const ef of meta.encryptedFields) {
@@ -2078,7 +2079,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const aadFields: Record<string, string> = {};
     for (const aadName of meta.aadFields) {
       const av = (instance as any)[aadName];
-      if (av !== undefined && av !== null) aadFields[aadName] = String(av);
+      if (av !== undefined && av !== null) aadFields[aadName] = toAadString(av);
     }
     const pkField = this.getPkFields(meta)[0];
     const pkValue = (instance as any)[pkField];
