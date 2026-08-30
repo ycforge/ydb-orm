@@ -71,16 +71,40 @@ describe('evaluateMigrationCheck (#152)', () => {
   });
 
   it('modified after apply (#101) is its own state', () => {
+    // #212: producer даёт applied=false для изменённой миграции.
     const verdict = evaluateMigrationCheck([
-      status({ name: 'a', applied: true, contentChanged: true }),
+      status({ name: 'a', contentChanged: true }),
     ]);
 
     expect(verdict.modified).toEqual(['a']);
     expect(verdict.pending).toEqual([]);
     expect(verdict.interrupted).toEqual([]);
+    expect(verdict.appliedCount).toBe(0);
     expect(verdict.ready).toBe(false);
     expect(verdict.state).toBe('modified');
     expect(migrationStateExitCode(verdict.state)).toBe(4);
+  });
+
+  it('#212: a content-changed migration can never satisfy the healthy-applied condition', () => {
+    // Обе формы входа (новая from producer и legacy/ручная с applied=true)
+    // дают один вердикт: не готово, state=modified, appliedCount=0.
+    const inputs: YdbMigrationStatus[][] = [
+      [status({ name: 'm', contentChanged: true })],
+      [status({ name: 'm', applied: true, contentChanged: true })],
+    ];
+
+    for (const list of inputs) {
+      expect(
+        list[0].applied && !list[0].contentChanged && !list[0].interrupted,
+      ).toBe(false);
+
+      const verdict = evaluateMigrationCheck(list);
+      expect(verdict.ready).toBe(false);
+      expect(verdict.state).toBe('modified');
+      expect(verdict.appliedCount).toBe(0);
+      expect(verdict.modified).toEqual(['m']);
+      expect(verdict.pending).toEqual([]);
+    }
   });
 
   it('schema drift only when issues are passed', () => {
@@ -142,7 +166,7 @@ describe('evaluateMigrationCheck (#152)', () => {
       [
         status({ name: 'p' }),
         status({ name: 'i', applied: true, interrupted: true }),
-        status({ name: 'm', applied: true, contentChanged: true }),
+        status({ name: 'm', contentChanged: true }),
       ],
       { schemaIssues },
     );
@@ -159,7 +183,7 @@ describe('evaluateMigrationCheck (#152)', () => {
     expect(
       evaluateMigrationCheck([
         status({ name: 'p' }),
-        status({ name: 'm', applied: true, contentChanged: true }),
+        status({ name: 'm', contentChanged: true }),
       ]).state,
     ).toBe('modified');
 

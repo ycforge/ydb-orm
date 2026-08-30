@@ -34,6 +34,13 @@ export interface AppliedMigration {
 
 export interface YdbMigrationStatus {
   name: string;
+  /**
+   * Только «здорово применённая» миграция (#212): запись учёта есть,
+   * состояние не `started` и содержимое не менялось. Изменённая после
+   * применения (`contentChanged`) и прерванная (`interrupted`) миграции
+   * НЕ считаются applied — флаг несёт истинную причину, чтобы
+   * консьюмеры, проверяющие только `applied`, не приняли их за здоровые.
+   */
   applied: boolean;
   appliedAt?: Date;
   /** Запись есть в БД, но среди переданных миграций её нет (файл удалён). */
@@ -42,8 +49,8 @@ export interface YdbMigrationStatus {
   interrupted?: boolean;
   /**
    * Содержимое файла изменилось после применения (#101): запись учёта
-   * сопоставлена по имени, но хеш различается. Такая миграция считается
-   * «не успешно применённой» для проверок готовности — нужен явный
+   * сопоставлена по имени, но хеш различается. Для проверок готовности
+   * это «не успешно применённая» миграция (applied=false) — нужен явный
    * reconcile (восстановить содержимое или removeMigrationRecord).
    */
   contentChanged?: boolean;
@@ -228,7 +235,9 @@ export function computeMigrationStatuses(
     }
     return {
       name,
-      applied: true,
+      // `applied` — только здорово применённая (#212): изменённая после
+      // применения или прерванная миграция applied не считается.
+      applied: match.kind === 'matched' && match.record.state !== 'started',
       appliedAt: new Date(match.record.timestamp),
       interrupted: match.record.state === 'started',
       // Имя совпадает, а хеш содержимого различается (#101): файл меняли
@@ -239,11 +248,13 @@ export function computeMigrationStatuses(
   });
 
   // Orphan-записи (#101): применены, но файла миграции уже нет.
+  // Чистый orphan — информационный (applied=true); orphan в состоянии
+  // `started` — прерванный, applied=false (#212).
   for (const record of applied) {
     if (recordMatchesMigration(record, migrations)) continue;
     statuses.push({
       name: record.name,
-      applied: true,
+      applied: record.state !== 'started',
       appliedAt: new Date(record.timestamp),
       orphan: true,
       interrupted: record.state === 'started',

@@ -11,7 +11,8 @@
  *  - выполнение учитывается в таблице `ydb_migrations`;
  *  - повторный run() ничего не делает (миграции уже применены);
  *  - revert() откатывает последнюю применённую;
- *  - статус: pending/applied/interrupted.
+ *  - статус: pending/applied/interrupted/modified (после применения файлы
+ *    менять нельзя — содержимое фиксируется хешем, #101/#212).
  */
 import { fileURLToPath } from 'node:url';
 import {
@@ -20,8 +21,16 @@ import {
   loadMigrationsFromDir,
   mapToYdb,
   YdbMigrationRunner,
+  type YdbMigrationStatus,
 } from '../../src/index.js';
 import { buildYdbOptions } from '../shared/options.js';
+
+/** Человекочитаемое состояние миграции (причины не схлопываются в pending). */
+function renderStatus(status: YdbMigrationStatus): string {
+  if (status.contentChanged) return 'modified after apply';
+  if (status.interrupted) return 'interrupted';
+  return status.applied ? 'applied' : 'pending';
+}
 
 async function main(): Promise<void> {
   const dbOptions = buildYdbOptions();
@@ -44,9 +53,7 @@ async function main(): Promise<void> {
     const statusBefore = await runner.status(migrations);
     console.log(
       'Статус до run:',
-      statusBefore.map(
-        (s) => `${s.name} -> ${s.applied ? 'applied' : 'pending'}`,
-      ),
+      statusBefore.map((s) => `${s.name} -> ${renderStatus(s)}`),
     );
 
     // --- Применяем всё ---
@@ -80,9 +87,7 @@ async function main(): Promise<void> {
     const statusAfter = await runner.status(migrations);
     console.log(
       'Статус после run:',
-      statusAfter.map(
-        (s) => `${s.name} -> ${s.applied ? 'applied' : 'pending'}`,
-      ),
+      statusAfter.map((s) => `${s.name} -> ${renderStatus(s)}`),
     );
 
     // --- Откат последней миграции ---

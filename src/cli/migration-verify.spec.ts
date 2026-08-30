@@ -614,6 +614,47 @@ describe('runMigrationVerification (#152)', () => {
       });
     });
 
+    it('#212: content-changed migration is applied=false in JSON, state=modified', async () => {
+      const mock = makeRecordingExecutor();
+      const io = makeIo();
+
+      await runMigrationVerification({
+        command: 'migration:check',
+        migrationsDir: './migrations',
+        json: true,
+        connect: makeConnect(mock.executor),
+        loadMigrations: () =>
+          Promise.resolve(
+            makeMigrations([{ name: '1-Tampered', hash: 'new' }]),
+          ),
+        inspectBookkeeping: makeInspect([
+          { name: '1-Tampered', timestamp: 12345, hash: 'old' },
+        ]),
+        io,
+      });
+
+      const report = JSON.parse(io.stdoutLines.join('\n'));
+      expect(report).toMatchObject({
+        ready: false,
+        state: 'modified',
+        states: ['modified'],
+        exitCode: 4,
+        applied: false,
+        appliedCount: 0,
+        modified: ['1-Tampered'],
+        pending: [],
+      });
+      expect(report.migrations[0]).toEqual({
+        name: '1-Tampered',
+        applied: false,
+        appliedAt: new Date(12345).toISOString(),
+        interrupted: false,
+        orphan: false,
+        contentChanged: true,
+      });
+      mock.expectNoSqlAtAll();
+    });
+
     it('schema drift: structured issues included', async () => {
       const mock = makeRecordingExecutor();
       const io = makeIo();
@@ -765,7 +806,7 @@ describe('renderStatusLine (#152)', () => {
       renderStatusLine({ name: 'a', applied: true, interrupted: true }),
     ).toBe('[~] a — interrupted, resolve via migration:repair');
     expect(
-      renderStatusLine({ name: 'a', applied: true, contentChanged: true }),
+      renderStatusLine({ name: 'a', applied: false, contentChanged: true }),
     ).toContain('[#] a — content changed after apply');
     expect(renderStatusLine({ name: 'a', applied: true, orphan: true })).toBe(
       '[!] a — orphan record (no matching migration file)',
@@ -773,7 +814,7 @@ describe('renderStatusLine (#152)', () => {
     expect(
       renderStatusLine({
         name: 'a',
-        applied: true,
+        applied: false,
         orphan: true,
         interrupted: true,
       }),
@@ -781,7 +822,7 @@ describe('renderStatusLine (#152)', () => {
     expect(
       renderStatusLine({
         name: 'a',
-        applied: true,
+        applied: false,
         interrupted: true,
         contentChanged: true,
       }),
