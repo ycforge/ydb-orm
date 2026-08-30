@@ -131,6 +131,13 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * link-строки уникальны без дополнительной дедупликации); выборка
    * инверсных сущностей идёт через fetchByColumnIn (дедупликация FK,
    * чанкинг, слияние без дубликатов).
+   *
+   * Память ограничена (#209): для многочанковых запросов (>1 чанка)
+   * join-строки не материализуются полностью — два прохода по чанкам:
+   * 1) собираем уникальные inverse FK, 2) после загрузки инверсных
+   * сущностей снова стримим чанки и сразу заполняем result Map.
+   * Для однчанковых запросов используется классический однопроходной
+   * алгоритм (совместимость с существующим поведением и тестами).
    */
   private async loadManyToManyRelation(
     items: YdbBaseEntity[],
@@ -151,36 +158,78 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     if (!uniqueOwnerPks.length) return new Map();
 
     const ownerPkType = joinTable.ownerColumnType;
+    const inverseColumn = joinTable.inverseColumn;
+    const ownerColumn = joinTable.ownerColumn;
 
-    const links: { [key: string]: any }[] = [];
-    for (const chunk of chunkInValues(uniqueOwnerPks)) {
-      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+    const chunks = chunkInValues(uniqueOwnerPks);
+    const isMultiChunk = chunks.length > 1;
 
-      const sql =
-        `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
-        `${quoteIdentifier(joinTable.inverseColumn)} ` +
-        `FROM ${quoteIdentifier(joinTable.tableName)} ` +
-        `WHERE ${quoteIdentifier(joinTable.ownerColumn)} IN (${inParams})`;
-
-      const joinQuery = exec([sql] as unknown as TemplateStringsArray);
-      chunk.forEach((value, i) => {
-        joinQuery.parameter(
-          `p${i}`,
-          mapToYdb(ownerPkType, value, joinTable.ownerColumn),
-        );
-      });
-
-      const chunkRows = await this.executeQuery(joinQuery, options);
-      // Без spread: join-таблица может быть большой, а у push(...rows)
-      // есть лимит на число аргументов вызова.
-      const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
-      for (const row of rows) {
-        links.push(row);
-      }
+    if (isMultiChunk) {
+      // Two-pass для больших связей: ограничиваем память (#209).
+      return this.loadManyToManyRelationTwoPass(
+        Target,
+        joinTable,
+        chunks,
+        ownerPkType,
+        ownerColumn,
+        inverseColumn,
+        options,
+        hydration,
+      );
     }
 
-    const inverseFks = links
-      .map((row) => row[joinTable.inverseColumn])
+    // Single-pass для совместимости и малого объема.
+    return this.loadManyToManyRelationSinglePass(
+      Target,
+      joinTable,
+      chunks[0],
+      ownerPkType,
+      ownerColumn,
+      inverseColumn,
+      options,
+      hydration,
+    );
+  }
+
+  /**
+   * Классический однопроходной алгоритм (как было до #209).
+   * Материализует все link-строки одного чанка в памяти.
+   */
+  private async loadManyToManyRelationSinglePass(
+    Target: typeof YdbBaseEntity,
+    joinTable: ResolvedJoinTable,
+    chunk: any[],
+    ownerPkType: any,
+    ownerColumn: string,
+    inverseColumn: string,
+    options?: QueryOptions,
+    hydration?: { afterFind?: boolean },
+  ): Promise<Map<any, YdbBaseEntity[]>> {
+    const exec = this.getExecutor(options?.trx);
+    if (!exec) {
+      throw new Error(
+        `YDB executor not set for entity ${this.entityClass.name}`,
+      );
+    }
+
+    const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+
+    const sql =
+      `SELECT ${quoteIdentifier(ownerColumn)}, ` +
+      `${quoteIdentifier(inverseColumn)} ` +
+      `FROM ${quoteIdentifier(joinTable.tableName)} ` +
+      `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
+
+    const joinQuery = exec([sql] as unknown as TemplateStringsArray);
+    chunk.forEach((value, i) => {
+      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
+    });
+
+    const chunkRows = await this.executeQuery(joinQuery, options);
+    const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+
+    const inverseFks = rows
+      .map((row) => row[inverseColumn])
       .filter((v) => v !== undefined && v !== null);
 
     const targetPkField = getPrimaryKey(Target);
@@ -198,9 +247,10 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     }
 
     const result = new Map<string, YdbBaseEntity[]>();
-    for (const row of links) {
-      const ownerFk = row[joinTable.ownerColumn];
-      const inverseFk = row[joinTable.inverseColumn];
+    for (const row of rows) {
+      const ownerFk = row[ownerColumn];
+      const inverseFk = row[inverseColumn];
+      if (inverseFk === undefined || inverseFk === null) continue;
       const entity = byInversePk.get(relationKey(inverseFk));
       if (!entity) continue;
       const group = result.get(relationKey(ownerFk));
@@ -208,6 +258,122 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         group.push(entity);
       } else {
         result.set(relationKey(ownerFk), [entity]);
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Двухпроходной алгоритм для многочанковых запросов (#209).
+   * Pass 1: собираем уникальные inverse FK.
+   * Pass 2: после загрузки инверсных сущностей заполняем result Map.
+   */
+  private async loadManyToManyRelationTwoPass(
+    Target: typeof YdbBaseEntity,
+    joinTable: ResolvedJoinTable,
+    chunks: any[][],
+    ownerPkType: any,
+    ownerColumn: string,
+    inverseColumn: string,
+    options?: QueryOptions,
+    hydration?: { afterFind?: boolean },
+  ): Promise<Map<any, YdbBaseEntity[]>> {
+    const exec = this.getExecutor(options?.trx);
+    if (!exec) {
+      throw new Error(
+        `YDB executor not set for entity ${this.entityClass.name}`,
+      );
+    }
+
+    // Pass 1: stream join-table chunks, collect unique inverse FKs
+    // with their original values (key -> original value).
+    const inverseFkMap = new Map<string, any>();
+    for (const chunk of chunks) {
+      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+
+      const sql =
+        `SELECT ${quoteIdentifier(ownerColumn)}, ` +
+        `${quoteIdentifier(inverseColumn)} ` +
+        `FROM ${quoteIdentifier(joinTable.tableName)} ` +
+        `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
+
+      const joinQuery = exec([sql] as unknown as TemplateStringsArray);
+      chunk.forEach((value, i) => {
+        joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
+      });
+
+      const chunkRows = await this.executeQuery(joinQuery, options);
+      const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+      for (const row of rows) {
+        const inverseFk = row[inverseColumn];
+        if (inverseFk !== undefined && inverseFk !== null) {
+          const key = relationKey(inverseFk);
+          if (!inverseFkMap.has(key)) {
+            inverseFkMap.set(key, inverseFk);
+          }
+        }
+      }
+    }
+
+    // Fetch inverse entities (batched, deduped via fetchByColumnIn).
+    const targetPkField = getPrimaryKey(Target);
+    const inverseFks = [...inverseFkMap.values()];
+    const relatedEntities = await this.fetchByColumnIn(
+      Target,
+      targetPkField,
+      inverseFks,
+      options,
+      hydration,
+    );
+
+    const byInversePk = new Map<string, YdbBaseEntity>();
+    for (const entity of relatedEntities) {
+      byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
+    }
+
+    // Pass 2: stream join-table chunks again, directly populate result Map.
+    const result = new Map<string, YdbBaseEntity[]>();
+    // Для защиты от дублей на случай некорректных данных в join-таблице
+    // или проблем с моками в тестах: отслеживаем добавленные inverseKey на owner.
+    const addedPerOwner = new Map<string, Set<string>>();
+    for (const chunk of chunks) {
+      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
+
+      const sql =
+        `SELECT ${quoteIdentifier(ownerColumn)}, ` +
+        `${quoteIdentifier(inverseColumn)} ` +
+        `FROM ${quoteIdentifier(joinTable.tableName)} ` +
+        `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
+
+      const joinQuery = exec([sql] as unknown as TemplateStringsArray);
+      chunk.forEach((value, i) => {
+        joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
+      });
+
+      const chunkRows = await this.executeQuery(joinQuery, options);
+      const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+      for (const row of rows) {
+        const ownerFk = row[ownerColumn];
+        const inverseFk = row[inverseColumn];
+        if (inverseFk === undefined || inverseFk === null) continue;
+        const entity = byInversePk.get(relationKey(inverseFk));
+        if (!entity) continue;
+        const ownerKey = relationKey(ownerFk);
+        const inverseKey = relationKey(inverseFk);
+        let added = addedPerOwner.get(ownerKey);
+        if (!added) {
+          added = new Set();
+          addedPerOwner.set(ownerKey, added);
+        }
+        if (added.has(inverseKey)) continue;
+        added.add(inverseKey);
+        const group = result.get(ownerKey);
+        if (group) {
+          group.push(entity);
+        } else {
+          result.set(ownerKey, [entity]);
+        }
       }
     }
 

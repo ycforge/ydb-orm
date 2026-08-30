@@ -42,8 +42,10 @@ const photoRow = {
   title: 'Sunset',
 };
 
-async function createTestingModule(rows: any[][]) {
-  const mock = createMockExecutor(rows);
+async function createTestingModule(rows: any[][][]) {
+  // rows[0] = result sets for query 0 (find), rows[1] = result sets for query 1 (join pass 1), etc.
+  // Each element is any[][] (array of result sets)
+  const mock = createMockExecutor(rows, { sequential: true });
 
   const module = await Test.createTestingModule({
     imports: [
@@ -71,8 +73,8 @@ async function createTestingModule(rows: any[][]) {
 describe('NestJS integration: relations', () => {
   it('eager-loads one-to-one relation with IN query', async () => {
     const { module, mock } = await createTestingModule([
-      [profileRow],
-      [userRow],
+      [[profileRow]], // query 0: find user_profiles
+      [[userRow]], // query 1: eager load user
     ]);
 
     await UserProfileEntity.findByUuid(profileRow.uuid);
@@ -85,21 +87,26 @@ describe('NestJS integration: relations', () => {
   });
 
   it('eager-loads many-to-many relation via join table', async () => {
-    const { module, mock } = await createTestingModule([[photoRow], [], []]);
+    const { module, mock } = await createTestingModule([
+      [[photoRow]], // query 0: find photos_with_tags
+      [[]], // query 1: photo_tag (single pass)
+    ]);
 
     await PhotoWithTagsEntity.findByUuid(photoRow.uuid);
 
     expect(mock.queries[0].sql).toContain('FROM `photos_with_tags`');
     expect(mock.queries[1].sql).toContain('FROM `photo_tag`');
     expect(mock.queries[1].sql).toContain('`photos_with_tags_uuid` IN');
-    // #86: join-таблица вернула ноль ссылок — выборка тегов не выполняется.
+    // Single-pass: 1 photo + 1 join = 2 queries
     expect(mock.queries).toHaveLength(2);
 
     await module.close();
   });
 
   it('loadRelations loads many-to-many for single entity', async () => {
-    const { module, mock } = await createTestingModule([[photoRow], [], []]);
+    const { module, mock } = await createTestingModule([
+      [[]], // query 0: photo_tag (single pass)
+    ]);
 
     const photo = new PhotoWithTagsEntity();
     photo.uuid = photoRow.uuid;
@@ -107,7 +114,7 @@ describe('NestJS integration: relations', () => {
     await photo.loadRelations(['tags']);
 
     expect(mock.queries[0].sql).toContain('FROM `photo_tag`');
-    // #86: join-таблица вернула ноль ссылок — выборка тегов не выполняется.
+    // Single-pass: 1 join query
     expect(mock.queries).toHaveLength(1);
 
     await module.close();

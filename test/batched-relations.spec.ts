@@ -248,6 +248,7 @@ describe('#86: батчинг loadRelations', () => {
         label: l.tag_uuid,
       }));
 
+      // Single-pass: 1 join-table result set + 1 tag result set
       const mock = createMockExecutor([[linkRows], [tagRows]], {
         sequential: true,
       });
@@ -292,16 +293,22 @@ describe('#86: батчинг loadRelations', () => {
         })),
       );
 
+      // Two-pass: pass1 (3 chunks) -> tags -> pass2 (3 chunks) = 7 queries total
       const mock = createMockExecutor(
         [
-          [linkRows],
+          [linkRows], // pass1 chunk 1
+          [linkRows], // pass1 chunk 2
+          [linkRows], // pass1 chunk 3
           [
             [
               { uuid: 'tag-a', label: 'A' },
               { uuid: 'tag-b', label: 'B' },
               { uuid: 'tag-c', label: 'C' },
             ],
-          ],
+          ], // tags
+          [linkRows], // pass2 chunk 1
+          [linkRows], // pass2 chunk 2
+          [linkRows], // pass2 chunk 3
         ],
         { sequential: true },
       );
@@ -313,12 +320,18 @@ describe('#86: батчинг loadRelations', () => {
         ['tags'],
       );
 
-      // 1200 владельцев → 3 join-чанка (500+500+200) + 1 запрос тегов.
-      expect(mock.queries).toHaveLength(4);
-      const joinQueries = mock.queries.slice(0, 3);
-      expect(joinQueries.map((q) => Object.keys(q.params).length)).toEqual([
-        500, 500, 200,
-      ]);
+      // 1200 владельцев → 3 join-чанка pass1 + 1 tags + 3 join-чанка pass2 = 7 запросов.
+      expect(mock.queries).toHaveLength(7);
+      // Join queries at indices 0,1,2 (pass1) and 4,5,6 (pass2)
+      const pass1JoinQueries = mock.queries.slice(0, 3);
+      const pass2JoinQueries = mock.queries.slice(4, 7);
+      expect(pass1JoinQueries.map((q) => Object.keys(q.params).length)).toEqual(
+        [500, 500, 200],
+      );
+      expect(pass2JoinQueries.map((q) => Object.keys(q.params).length)).toEqual(
+        [500, 500, 200],
+      );
+      // Tags query at index 3
       expect(Object.keys(mock.queries[3].params)).toHaveLength(3);
 
       for (const photo of photos) {
@@ -328,6 +341,83 @@ describe('#86: батчинг loadRelations', () => {
           'tag-c',
         ]);
       }
+    });
+
+    it('large many-to-many: two-pass limits memory (no full links materialization) #209', async () => {
+      // Create a large relation: 1500 owners, each linked to 10 tags.
+      // Total join rows = 15,000. With single-pass this would materialize
+      // all 15,000 link rows in memory. Two-pass avoids this by streaming.
+      const ownerCount = 1500;
+      const tagsPerOwner = 10;
+      const tagCount = 100; // 100 unique tags total
+
+      const photos = Array.from({ length: ownerCount }, (_, i) => {
+        const photo = new BatchPhotoEntity();
+        photo.uuid = `p${String(i).padStart(5, '0')}`;
+        photo.title = '';
+        photo.user_uuid = '';
+        photo.profile_uuid = '';
+        return photo;
+      });
+
+      // Each owner linked to 10 tags (cycling through 100 tags)
+      const linkRows = photos.flatMap((p, i) =>
+        Array.from({ length: tagsPerOwner }, (_, j) => ({
+          photo_uuid: p.uuid,
+          tag_uuid: `tag-${(i * tagsPerOwner + j) % tagCount}`,
+        })),
+      );
+
+      const tagRows = Array.from({ length: tagCount }, (_, i) => ({
+        uuid: `tag-${i}`,
+        label: `Tag ${i}`,
+      }));
+
+      // Two-pass: pass1 (3 chunks of 500) -> tags -> pass2 (3 chunks of 500) = 7 queries
+      const mock = createMockExecutor(
+        [
+          [linkRows],       // pass1 chunk 1
+          [linkRows],       // pass1 chunk 2
+          [linkRows],       // pass1 chunk 3
+          [tagRows],        // tags
+          [linkRows],       // pass2 chunk 1
+          [linkRows],       // pass2 chunk 2
+          [linkRows],       // pass2 chunk 3
+        ],
+        { sequential: true },
+      );
+      BatchPhotoEntity.setExecutor(mock.executor);
+      BatchTagEntity.setExecutor(mock.executor);
+
+      await getOrCreateRepository(BatchPhotoEntity).relations.loadRelations(
+        photos,
+        ['tags'],
+      );
+
+      // Verify two-pass query pattern: 3 pass1 + 1 tags + 3 pass2 = 7 queries
+      expect(mock.queries).toHaveLength(7);
+      const pass1Chunks = mock.queries.slice(0, 3);
+      const pass2Chunks = mock.queries.slice(4, 7);
+      expect(pass1Chunks.map((q) => Object.keys(q.params).length)).toEqual([
+        500, 500, 500,
+      ]);
+      expect(pass2Chunks.map((q) => Object.keys(q.params).length)).toEqual([
+        500, 500, 500,
+      ]);
+      expect(Object.keys(mock.queries[3].params)).toHaveLength(tagCount);
+
+      // Verify results are correct
+      for (const photo of photos) {
+        expect(photo.tags).toHaveLength(tagsPerOwner);
+      }
+
+      // Spot-check a few owners
+      expect(photos[0].tags?.map((t) => t.uuid).sort()).toEqual(
+        Array.from({ length: tagsPerOwner }, (_, j) => `tag-${j % tagCount}`).sort(),
+      );
+      expect(photos[999].tags?.map((t) => t.uuid).sort()).toEqual(
+        Array.from({ length: tagsPerOwner }, (_, j) => `tag-${(999 * tagsPerOwner + j) % tagCount}`).sort(),
+      );
     });
   });
 
@@ -414,6 +504,7 @@ describe('#86: батчинг loadRelations', () => {
       }));
 
       const dbMock = createMockExecutor([[]]);
+      // Single-pass: join -> tags
       const trxMock = createMockExecutor(
         [[linkRows], [[{ uuid: 'tag-x', label: 'X' }]]],
         { sequential: true },

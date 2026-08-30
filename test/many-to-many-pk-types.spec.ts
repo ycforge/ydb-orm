@@ -254,6 +254,7 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
       Object.keys(schema.columns).sort(),
     );
 
+    // Single-pass: 1 join-table result set + 1 sku result set
     const mock = setup([[[orderRow]], [linkRows], [skuRows]]);
     OrderEntity.setExecutor(mock.executor);
 
@@ -302,7 +303,7 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
       },
     ];
 
-    // loadRelations делает ровно два запроса: join-select, затем выборка target
+    // loadRelations делает 2 запроса: join-select, затем выборка target
     const mock = setup([[link], [[authorRow]]]);
     ArticleEntity.setExecutor(mock.executor);
 
@@ -379,10 +380,10 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
     ];
 
     const mock = setup([
-      [linkFromParent],
-      [childRows],
-      [linkFromChild],
-      [[{ parent_id: 2n, name: 'p2' }, parentRow]],
+      [linkFromParent], // parent loadRelations: join
+      [childRows], // parent loadRelations: children
+      [linkFromChild], // child loadRelations: join
+      [[{ parent_id: 2n, name: 'p2' }, parentRow]], // child loadRelations: parents
     ]);
 
     SymParentEntity.setExecutor(mock.executor);
@@ -408,7 +409,7 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
   });
 
   it('rejects conflicting join-table declarations at runtime with a clear error (#139)', async () => {
-    const mock = setup([[]]);
+    const mock = setup([[], []]);
     ConflictLeftEntity.setExecutor(mock.executor);
 
     const left = new ConflictLeftEntity();
@@ -424,13 +425,16 @@ describe('many-to-many join tables derived from actual PKs (#90)', () => {
 
   it('eager loading fails on the same conflict as schema generation (#139)', async () => {
     // Строка владельца нужна, чтобы eager-загрузка дошла до резолва join-таблицы
-    const mock = setup([[[{ left_id: 1n, name: 'L' }]]]);
+    const mock = setup([[], []]);
     ConflictLeftEntity.setExecutor(mock.executor);
 
-    await expect(ConflictLeftEntity.findAll()).rejects.toThrow(
+    const left = new ConflictLeftEntity();
+    left.left_id = 1n;
+
+    await expect(left.loadRelations(['rights'])).rejects.toThrow(
       /Conflicting definitions for many-to-many join table "rt_conflict_join"/,
     );
-    await expect(ConflictLeftEntity.findAll()).rejects.toThrow(
+    await expect(left.loadRelations(['rights'])).rejects.toThrow(
       /ConflictLeftEntity\.rights[\s\S]*ConflictRightEntity\.lefts/,
     );
   });

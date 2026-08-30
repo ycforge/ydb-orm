@@ -325,13 +325,14 @@ function trxChainMock(
   const linkRows = [{ photo_uuid: 'p1', tag_uuid: 't1' }];
   const tagRows = [{ uuid: 't1', name: 'x', owner_uuid: 'u1' }];
   const userRows = [{ uuid: 'u1', login: 'alice' }];
+  // Single-pass order: join -> tags -> users -> user hook -> tag hook
   return dbMockFactory(
     [
-      [linkRows],
-      [tagRows],
-      [userRows],
-      [[{ cnt: 1 }]], // COUNT из afterFind user-хука
-      [[{ cnt: 1 }]], // COUNT из отложенного afterFind tag-хука
+      [linkRows], // query 0: join table (single pass)
+      [tagRows], // query 1: tags
+      [userRows], // query 2: users (owner)
+      [[{ cnt: 1 }]], // query 3: COUNT из afterFind user-хука (leaf)
+      [[{ cnt: 1 }]], // query 4: COUNT из отложенного afterFind tag-хука (intermediate)
     ],
     { sequential: true },
   );
@@ -833,6 +834,7 @@ describe('#16: вложенная eager-load', () => {
     }
 
     expect(dbMock.queries).toHaveLength(0);
+    // Ambient mode: 5 queries (join + tags + users + 2 hooks)
     expect(trxMock.queries).toHaveLength(5);
     expect(trxHookCalls).toEqual(['user:u1', 'tag:t1:owner=u1']);
   });
