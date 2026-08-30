@@ -18,7 +18,10 @@ import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import {
   resolveOperationExecutor,
+  createTransactionContext,
   runWithTransactionContext,
+  getTransactionId,
+  TRANSACTION_ID_KEY,
 } from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
@@ -276,14 +279,28 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     // Внутренний контекст нужен только для многоуровневых путей с явным
     // { trx }: одноуровневая eager-load и ambient-режим ведут себя как раньше.
     if (options?.trx && segments.length > 1) {
+      // Извлекаем transactionId из явного trx (или генерируем и сохраняем его),
+      // чтобы resolveOperationExecutor не ругался на смешивание транзакций.
+      const extractedId = getTransactionId(options.trx);
+      const transactionId: symbol =
+        typeof extractedId === 'symbol' ? extractedId : Symbol('transaction');
+      if (typeof extractedId !== 'symbol') {
+        if (
+          options.trx &&
+          (typeof options.trx === 'object' || typeof options.trx === 'function')
+        ) {
+          (options.trx as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
+            TRANSACTION_ID_KEY
+          ] = transactionId;
+        }
+      }
       await runWithTransactionContext(
-        {
+        createTransactionContext({
+          transactionId,
           trx: options.trx,
-          // Executor БД, открывший транзакцию: для детекции вложенности по
-          // ссылке (#98). Базовый executor сущности и есть этот db в wiring.
           db: this.executor ?? options.trx,
           ambient: true,
-        },
+        }),
         () => this.loadRelationSegments(rel, items, segments, options),
       );
       return;

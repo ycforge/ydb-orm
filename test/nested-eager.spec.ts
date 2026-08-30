@@ -14,6 +14,7 @@ import {
   MAX_IN_CLAUSE_VALUES,
 } from '../src/index.js';
 import {
+  createTransactionContext,
   runWithTransactionContext,
   configureTransactionContext,
 } from '../src/transaction/transaction-context.js';
@@ -722,11 +723,12 @@ describe('#16: вложенная eager-load', () => {
     configureTransactionContext({ ambient: true });
     try {
       await runWithTransactionContext(
-        {
+        createTransactionContext({
+          transactionId: Symbol('nested-eager'),
           trx: trxMock.executor,
           db: dbMock.executor,
           ambient: true,
-        },
+        }),
         async () => {
           await getOrCreateRepository(
             TwoLevelPhoto,
@@ -816,11 +818,12 @@ describe('#16: вложенная eager-load', () => {
     configureTransactionContext({ ambient: true });
     try {
       await runWithTransactionContext(
-        {
+        createTransactionContext({
+          transactionId: Symbol('nested-eager-ambient'),
           trx: trxMock.executor,
           db: dbMock.executor,
           ambient: true,
-        },
+        }),
         async () => {
           // Без явного { trx } — прежний ambient auto-join (#98).
           await getOrCreateRepository(TrxPhoto).relations.loadEagerRelations([

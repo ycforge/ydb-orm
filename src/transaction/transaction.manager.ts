@@ -7,10 +7,17 @@ import type {
   YdbTransactionsSettings,
 } from '../core/interfaces.js';
 import {
+  createTransactionContext,
   getActiveTransaction,
   resolveTransactionSettings,
   runWithTransactionContext,
+  TRANSACTION_ID_KEY,
 } from './transaction-context.js';
+
+/** Генерирует уникальный идентификатор транзакции. */
+function generateTransactionId(): symbol {
+  return Symbol('transaction');
+}
 
 /**
  * Опции runInTransaction() (#98).
@@ -246,6 +253,8 @@ export class YdbTransactionManager {
 
     // Детекция вложенности работает всегда (ambient включён или нет).
     const active = getActiveTransaction();
+    // Сравниваем по transactionId, а не по ссылке на executor (#207).
+    // active.db === this.db проверяет, что это тот же executor БД.
     if (active && active.db === this.db) {
       if (options?.reuse) {
         // Переиспользуем активную транзакцию: коммит/откат остаются у
@@ -256,12 +265,13 @@ export class YdbTransactionManager {
         // транзакция открыта с ambient: false.
         if (options.ambient === true) {
           return runWithTransactionContext(
-            {
+            createTransactionContext({
+              transactionId: active.transactionId,
               trx: active.trx,
               db: this.db,
               signal: active.signal,
               ambient: true,
-            },
+            }),
             () => fn(active.trx, active.signal),
           );
         }
@@ -321,8 +331,23 @@ export class YdbTransactionManager {
       sdkSignal: AbortSignal | undefined,
     ) => {
       const attemptSignal = composeAttemptSignal(sdkSignal);
+      // Генерируем уникальный ID для этой транзакции и сохраняем на executor'е.
+      const transactionId = generateTransactionId();
+      // Защита для моков и нестандартных executor'ов: trx может быть
+      // функцией (jest mock), объектом или примитивом.
+      if (trx && (typeof trx === 'object' || typeof trx === 'function')) {
+        (trx as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
+          TRANSACTION_ID_KEY
+        ] = transactionId;
+      }
       return runWithTransactionContext(
-        { trx, db: this.db, signal: attemptSignal, ambient },
+        createTransactionContext({
+          transactionId,
+          trx,
+          db: this.db,
+          signal: attemptSignal,
+          ambient,
+        }),
         () => fn(trx, attemptSignal),
       );
     };

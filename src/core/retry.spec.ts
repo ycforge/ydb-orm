@@ -464,7 +464,14 @@ describe('интеграция с транзакциями: без умноже�
   }
 
   /** Минимальный фейковый executor БД с управляемым поведением execute(). */
-  function makeFakeDb(executeImpl: (fn: any, opts: any) => Promise<unknown>) {
+  function makeFakeDb(
+    executeImpl: (
+      fn: any,
+      opts: any,
+      trx: any,
+      signal: AbortSignal,
+    ) => Promise<unknown>,
+  ) {
     const transactions: FakeTxCall[] = [];
     const executor: any = jest.fn(() => ({
       parameter() {
@@ -488,7 +495,31 @@ describe('интеграция с транзакциями: без умноже�
     }));
     executor.transaction = (options?: Record<string, unknown>) => {
       transactions.push({ options: options ?? {} });
-      return { execute: (fn: any) => executeImpl(fn, options ?? {}) };
+      const trx: any = jest.fn(() => ({
+        parameter() {
+          return this;
+        },
+        timeout() {
+          return this;
+        },
+        signal() {
+          return this;
+        },
+        cancel() {
+          return this;
+        },
+        then(
+          onFulfilled?: (value: unknown) => unknown,
+          onRejected?: (reason: unknown) => unknown,
+        ) {
+          return Promise.resolve([]).then(onFulfilled, onRejected);
+        },
+      }));
+      const controller = new AbortController();
+      return {
+        execute: (fn: any) =>
+          executeImpl(fn, options ?? {}, trx, controller.signal),
+      };
     };
     return { executor: executor as unknown as YdbExecutor, transactions };
   }
@@ -501,7 +532,7 @@ describe('интеграция с транзакциями: без умноже�
   it('runInTransaction НЕ имеет скрытого ORM-ретрая: транзитная ошибка выходит сразу', async () => {
     const boom = ydbErr(Code.ABORTED);
     let bodyCalls = 0;
-    const db = makeFakeDb(() => {
+    const db = makeFakeDb((_fn, _opts, _trx, _signal) => {
       bodyCalls += 1;
       return Promise.reject(boom);
     });
@@ -524,18 +555,20 @@ describe('интеграция с транзакциями: без умноже�
     // Имитация @ydbjs/query: ПЕРВАЯ попытка тела транзакции падает транзитной
     // ошибкой, SDK-idempotent-повтор (вторая попытка ВНУТРИ execute)
     // успешен — наружу транзитная ошибка не выходит.
-    const db = makeFakeDb(async (fn: any, opts: any) => {
-      for (;;) {
-        sdkAttempts += 1;
-        try {
-          if (sdkAttempts === 1 && opts.idempotent) throw boom;
-          return await fn();
-        } catch (error) {
-          if (error === boom && sdkAttempts < 2) continue; // SDK ретраит сам
-          throw error;
+    const db = makeFakeDb(
+      async (fn: any, opts: any, trx: any, signal: AbortSignal) => {
+        for (;;) {
+          sdkAttempts += 1;
+          try {
+            if (sdkAttempts === 1 && opts.idempotent) throw boom;
+            return await fn(trx, signal);
+          } catch (error) {
+            if (error === boom && sdkAttempts < 2) continue; // SDK ретраит сам
+            throw error;
+          }
         }
-      }
-    });
+      },
+    );
 
     const manager = await makeManager(db.executor);
 
