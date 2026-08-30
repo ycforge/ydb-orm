@@ -22,6 +22,8 @@ export { quoteIdentifier, validateIdentifier } from './core/sql-utils.js';
 export {
   ConsoleQueryLogger,
   wrapExecutorWithLogging,
+  getExecutorLogger,
+  resolveExecutorLogger,
 } from './core/query-logger.js';
 export type {
   YdbLogParamValues,

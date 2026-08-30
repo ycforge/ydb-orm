@@ -26,6 +26,7 @@ import {
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { executeYdbQuery } from '../core/execute-query.js';
+import { resolveExecutorLogger } from '../core/query-logger.js';
 import { mapToYdb } from '../core/mapper.js';
 import {
   resolveManyToManyJoinTable,
@@ -71,12 +72,14 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor | undefined {
     // Ambient-контекст транзакций (#98): auto-join / запрет смешивания.
-    // Настройки — из конфигурации-владельца сущности (#199).
+    // Настройки — из конфигурации-владельца сущности (#199), логгер — тоже
+    // из неё (#206): предупреждения warnOutsideTransaction не эмитятся чужим.
     return resolveOperationExecutor(
       trx,
       this.executor,
       this.entityClass.name,
       getEntityRuntime(this.entityClass).transactions,
+      resolveExecutorLogger(this.executor),
     );
   }
 
@@ -91,6 +94,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         this.executor,
         this.entityClass.name,
         getEntityRuntime(this.entityClass).transactions,
+        resolveExecutorLogger(this.executor),
       ),
       this.options,
     );

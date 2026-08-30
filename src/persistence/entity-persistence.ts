@@ -38,6 +38,7 @@ import {
   resolveRetrieveOffset,
 } from '../core/query-limits.js';
 import { executeYdbQuery } from '../core/execute-query.js';
+import { resolveExecutorLogger } from '../core/query-logger.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
   getYdbEnumMetadata,
@@ -192,6 +193,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       this.executor,
       this.entityClass.name,
       getEntityRuntime(this.entityClass).transactions,
+      // Логгер СВОЕЙ конфигурации (#206): предупреждение warnOutsideTransaction
+      // уходит в логгер конфигурации-владельца сущности, а не напрямую в консоль.
+      resolveExecutorLogger(this.executor),
     );
     if (!db) {
       throw new Error(

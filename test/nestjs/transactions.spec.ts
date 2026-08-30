@@ -17,6 +17,10 @@ import {
 import { getActiveTransaction } from '../../src/nest/index.js';
 import { UserEntity } from '../fixtures/user/user.entity.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
+import {
+  wrapExecutorWithLogging,
+  type QueryLogger,
+} from '../../src/core/query-logger.js';
 
 /**
  * Интеграционные тесты транзакций (#98): ambient-контекст через репозитории,
@@ -99,6 +103,7 @@ class TestFeatureModule {}
 async function createTestingModule(
   db: TaggedDb,
   transactions?: YdbModuleOptions['transactions'],
+  queryOverride?: YdbExecutor,
 ) {
   const moduleRef = await Test.createTestingModule({
     imports: [
@@ -120,7 +125,7 @@ async function createTestingModule(
     .overrideProvider(YDB_DRIVER)
     .useValue({})
     .overrideProvider(YDB_QUERY)
-    .useValue(db.base)
+    .useValue(queryOverride ?? db.base)
     .compile();
 
   return { moduleRef, txManager: moduleRef.get(YdbTransactionManager) };
@@ -387,6 +392,37 @@ describe('NestJS integration: transactions (#98)', () => {
           },
           { ambient: true },
         );
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        await moduleRef.close();
+      }
+    });
+
+    it('routes warnings to the configured QueryLogger without console.warn (#206)', async () => {
+      const warnings: string[] = [];
+      const configuredLogger: QueryLogger = {
+        log: () => undefined,
+        warn: (message: string) => warnings.push(message),
+      };
+      // Логгер путешествует вместе с executor'ом обёртки (как при logQueries
+      // в createExecutor): предупреждения уходят именно в него.
+      const wrapped = wrapExecutorWithLogging(db.base, configuredLogger);
+
+      const { moduleRef } = await createTestingModule(
+        db,
+        { warnOutsideTransaction: true },
+        wrapped,
+      );
+      try {
+        await UserEntity.count({});
+
+        expect(warnings).toHaveLength(1);
+        expect(warnings[0]).toBe(
+          '[ydb-orm] UserEntity: query executed outside any transaction ' +
+            '(warnOutsideTransaction is enabled).',
+        );
+        // Кастомный логгер перехватывает предупреждение — прямой console.warn
+        // не требуется.
         expect(warnSpy).not.toHaveBeenCalled();
       } finally {
         await moduleRef.close();

@@ -814,10 +814,33 @@ await txManager.runInTransaction(async () => {
 Для отладки можно включить предупреждение о каждом запросе вне какой бы то ни было транзакции:
 
 ```ts
-transactions: { warnOutsideTransaction: true } // console.warn на каждый такой запрос
+transactions: { warnOutsideTransaction: true } // предупреждение на каждый такой запрос
 ```
 
 По умолчанию выключено — предупреждения не шумят.
+
+Предупреждения маршрутизируются через тот же логгер, что и запросы (#206): они уходят
+в логгер, сконфигурированный через `logQueries`, через опциональный хук
+`QueryLogger.warn(message)`. Без кастомного логгера используется устоявшийся
+фолбэк `ConsoleQueryLogger` (вывод в `console.warn`) — поведение не меняется.
+Если свой логгер хочет видеть транзакционные предупреждения, добавьте `warn`:
+
+```ts
+const myLogger: QueryLogger = {
+  log(entry) {
+    // SQL, paramNames, maskedParams, durationMs, error
+  },
+  warn(message) {
+    // '[ydb-orm] UserEntity: query executed outside any transaction ...'
+  },
+};
+```
+
+Логгер скоупится по конфигурации: каждая конфигурация (#199) передаёт на
+executor'ах свой логгер, поэтому предупреждение одной конфигурации не попадает
+в логгер другой. Утилиты `getExecutorLogger(executor)` /
+`resolveExecutorLogger(executor)` достают логгер из (обёрнутого) executor'а —
+второй возвращает консольный фолбэк, если логирование не настроено.
 
 ### Retry-семантика (важно!)
 
@@ -966,7 +989,7 @@ YdbCoreModule.forRootAsync({
 ```
 
 - `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams`, `durationMs` и опциональную `error`.
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void; warn?(message: string): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams`, `durationMs` и опциональную `error`. Опциональный `warn` получает предупреждения ORM (см. `warnOutsideTransaction`).
 - Утилита `wrapExecutorWithLogging(executor, logger, options?)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
 - **Значения параметров по умолчанию скрыты (#168)**: raw-значения не попадают в журналы вообще, только тип и укрупнённый класс размера (`<string:1-31>`, `<json:512-2047>`, `<bytes:128-511>`). Точная длина скрыта (чтобы по журналам нельзя было различать значения). Это intentional behavior change: раньше маскировался лишь конечный денylist имён (`password`, `token`, `email`, ...), и значения с произвольными именами (`salary`, `medical_record`, blind-index хеши не из денylist) утекали в лог.
 - **Бинарные значения маскируются всегда**, даже при явном opt-in: ciphertext шифрованных колонок логируется только как `<bytes:<класс размера>>`.

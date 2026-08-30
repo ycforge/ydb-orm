@@ -18,7 +18,10 @@ import {
   getTransactionId,
   resolveOperationExecutor,
 } from './transaction-context.js';
-import { wrapExecutorWithLogging } from '../core/query-logger.js';
+import {
+  wrapExecutorWithLogging,
+  resolveExecutorLogger,
+} from '../core/query-logger.js';
 import type {
   YdbExecutor,
   YdbTransactionHandle,
@@ -755,7 +758,7 @@ describe('retry semantics are surfaced, not hidden (#98)', () => {
   });
 });
 
-describe('warnOutsideTransaction (#98)', () => {
+describe('warnOutsideTransaction (#98) through the ORM logger (#206)', () => {
   let warnSpy: ReturnType<typeof jest.spyOn>;
 
   beforeEach(() => {
@@ -768,22 +771,58 @@ describe('warnOutsideTransaction (#98)', () => {
   });
 
   it('does not warn by default', () => {
-    resolveOperationExecutor(undefined, makeFakeDb().executor, 'UserEntity');
+    resolveOperationExecutor(
+      undefined,
+      makeFakeDb().executor,
+      'UserEntity',
+      undefined,
+      resolveExecutorLogger(makeFakeDb().executor),
+    );
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it('warns when configured and no transaction is active', () => {
+  it('warns through the fallback console logger when configured and no transaction is active', () => {
     configureTransactionContext({ warnOutsideTransaction: true });
     const fallback = makeFakeDb().executor;
+    // Without a configured logger the resolved logger is the established
+    // ConsoleQueryLogger fallback — console output is preserved.
     const resolved = resolveOperationExecutor(
       undefined,
       fallback,
       'UserEntity',
+      undefined,
+      resolveExecutorLogger(fallback),
     );
 
     expect(resolved).toBe(fallback);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(String(warnSpy.mock.calls[0][0])).toMatch(/outside any transaction/);
+  });
+
+  it('routes the warning to the configured logger and keeps the content', () => {
+    configureTransactionContext({ warnOutsideTransaction: true });
+    const warnings: string[] = [];
+    const logger = {
+      log: () => undefined,
+      warn: (message: string) => warnings.push(message),
+    };
+
+    resolveOperationExecutor(
+      undefined,
+      makeFakeDb().executor,
+      'UserEntity',
+      undefined,
+      logger,
+    );
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toBe(
+      '[ydb-orm] UserEntity: query executed outside any transaction ' +
+        '(warnOutsideTransaction is enabled).',
+    );
+    // Предупреждение не требует прямого console.warn: кастомный логгер
+    // получает сообщение, консоль не задействована.
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
   it('never warns inside an active transaction', async () => {
@@ -797,6 +836,8 @@ describe('warnOutsideTransaction (#98)', () => {
           undefined,
           db.executor,
           'UserEntity',
+          undefined,
+          resolveExecutorLogger(db.executor),
         );
         expect(resolved).toBe(trx);
         return Promise.resolve();
