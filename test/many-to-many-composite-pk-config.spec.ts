@@ -12,10 +12,7 @@ import {
 } from '../src/index.js';
 import { getManyToManyJoinTables } from '../src/decorators/relation.decorators.js';
 import { buildExpectedSchemas } from '../src/schema/schema-sync.js';
-import {
-  validateEntityMetadata,
-  validationIssuesToMessages,
-} from '../src/metadata/validate-entity.js';
+import { validateEntityMetadata } from '../src/metadata/validate-entity.js';
 import { YDB_PRIMARY_KEYS_KEY } from '../src/metadata/entity-metadata.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 
@@ -362,24 +359,12 @@ describe('many-to-many composite PK rejection is deterministic in every path (#8
 
   it('composite-PK rejection surfaces as a validation issue at module init', () => {
     const ownerIssues = validateEntityMetadata(CompOwnerPhoto, validationCtx);
-    expect(
-      validationIssuesToMessages(ownerIssues).some((i) =>
-        COMPOSITE_PK_RE.test(i),
-      ),
-    ).toBe(true);
+    expect(ownerIssues.some((i) => COMPOSITE_PK_RE.test(i))).toBe(true);
 
     // Валидация обратной стороны находит ту же проблему через декларацию владельца.
     const rightIssues = validateEntityMetadata(InvRight, validationCtx);
-    expect(
-      validationIssuesToMessages(rightIssues).some((i) =>
-        COMPOSITE_PK_RE.test(i),
-      ),
-    ).toBe(true);
-    expect(
-      validationIssuesToMessages(rightIssues).some((i) =>
-        i.includes('InvRight'),
-      ),
-    ).toBe(true);
+    expect(rightIssues.some((i) => COMPOSITE_PK_RE.test(i))).toBe(true);
+    expect(rightIssues.some((i) => i.includes('InvRight'))).toBe(true);
   });
 });
 
@@ -474,7 +459,7 @@ describe('join-column selector resolution is strict (#87)', () => {
 
     for (const [Entity, re] of cases) {
       const issues = validateEntityMetadata(Entity, validationCtx);
-      const hasIssue = validationIssuesToMessages(issues).some((i) =>
+      const hasIssue = issues.some((i) =>
         i.includes('Invalid join column selector'),
       );
       if (!hasIssue) {
@@ -497,11 +482,9 @@ describe('join-column selector resolution is strict (#87)', () => {
     NoJoinColumnParent.setExecutor(createMockExecutor([[[]]]).executor);
 
     const issues = validateEntityMetadata(NoJoinColumnParent, validationCtx);
-    expect(
-      validationIssuesToMessages(issues).some((i) =>
-        i.includes('Join column is required'),
-      ),
-    ).toBe(true);
+    expect(issues.some((i) => i.includes('Join column is required'))).toBe(
+      true,
+    );
 
     const instance = new NoJoinColumnParent();
     instance.uuid = '11111111-2222-4333-8444-555555555555';

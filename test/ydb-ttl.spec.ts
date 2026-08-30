@@ -25,10 +25,7 @@ import {
   YdbTableDescription,
 } from '../src/schema/schema-sync.js';
 import { YdbPrimitive } from '../src/core/types.js';
-import {
-  validateEntityMetadata,
-  validationIssuesToMessages,
-} from '../src/metadata/validate-entity.js';
+import { validateEntityMetadata } from '../src/metadata/validate-entity.js';
 import { getYdbEntityMetadata } from '../src/metadata/entity-metadata.js';
 
 const meta = (entity: new (...args: any[]) => any) => {
@@ -319,10 +316,8 @@ describe('validateEntityMetadata with TTL', () => {
       TtlValidateUnknownEntity,
       validationCtx,
     );
-    expect(validationIssuesToMessages(issues)).toHaveLength(1);
-    expect(validationIssuesToMessages(issues)[0]).toContain(
-      '"missing_column" is not declared',
-    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('"missing_column" is not declared');
   });
 
   it('reports signed numeric TTL column as unsupported type', () => {
@@ -330,10 +325,8 @@ describe('validateEntityMetadata with TTL', () => {
       TtlSignedNumericEntity,
       validationCtx,
     );
-    expect(validationIssuesToMessages(issues)).toHaveLength(1);
-    expect(validationIssuesToMessages(issues)[0]).toContain(
-      'Uint32/Uint64/DyNumber',
-    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain('Uint32/Uint64/DyNumber');
   });
 });
 

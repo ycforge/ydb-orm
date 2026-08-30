@@ -21,7 +21,7 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getActiveRecordInitToken } from './repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import {
-  validateEntityMetadata,
+  validateEntityMetadataIssues,
   validationIssuesToMessages,
 } from '../metadata/validate-entity.js';
 import {
@@ -39,7 +39,7 @@ import { getOrCreateRepository } from '../repository/repository-resolver.js';
  * Провайдер, который при инициализации модуля подключает executor и
  * опциональные encryption/blind-index провайдеры СВОЕЙ конфигурации (#199)
  * к Active Record сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
- * Перед подключением валидирует метаданные сущности (validateEntityMetadata).
+ * Перед подключением валидирует метаданные сущности (validateEntityMetadataIssues).
  * Также создаёт `YdbRepository` для сущности и сохраняет его в entity-runtime.
  *
  * connectionName выбирает конфигурацию (#199): 'default' — прежние
@@ -71,7 +71,7 @@ export function createActiveRecordEntityProvider(
 
       // Валидируем ДО привязки к скоупу: невалидная сущность не получает
       // executor/провайдеры и не оставляет владения (#199 + атомарность).
-      const issues = validateEntityMetadata(entityClass, {
+      const issues = validateEntityMetadataIssues(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
         blindIndexProviderConfigured: Boolean(blindIndexProvider),
       });

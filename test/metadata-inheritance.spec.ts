@@ -18,7 +18,6 @@ import {
   buildExpectedSchemas,
   generateCreateTableYql,
   validateEntityMetadata,
-  validationIssuesToMessages,
   YdbSchemaSyncer,
 } from '../src/index.js';
 import type { ExpectedTableSchema } from '../src/index.js';
@@ -203,11 +202,7 @@ describe('metadata inheritance (#92)', () => {
     });
 
     it('validateEntityMetadata ясно сообщает про отсутствие @YdbEntity', () => {
-      expect(
-        validationIssuesToMessages(
-          validateEntityMetadata(UndecoratedSubEntity, ctx),
-        ),
-      ).toEqual([
+      expect(validateEntityMetadata(UndecoratedSubEntity, ctx)).toEqual([
         'Class UndecoratedSubEntity is not decorated with @YdbEntity',
       ]);
     });

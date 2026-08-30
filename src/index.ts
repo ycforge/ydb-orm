@@ -180,6 +180,8 @@ export {
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
 export {
   validateEntityMetadata,
+  validateEntityMetadataIssues,
+  validationIssueToMessage,
   validationIssuesToMessages,
 } from './metadata/validate-entity.js';
 export {

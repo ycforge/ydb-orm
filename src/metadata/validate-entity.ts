@@ -93,10 +93,25 @@ const AAD_UNSAFE_TYPES = new Set(['Json', 'JsonDocument']);
 
 /**
  * Валидация метаданных сущности при инициализации модуля.
+ * Возвращает прежний плоский список человекочитаемых строк (пустой, если всё
+ * в порядке) — обратная совместимость с прежним API.
+ *
+ * Структурированный вариант с кодами/путями/severity — `validateEntityMetadataIssues`.
+ * Чистая функция, без сети.
+ */
+export function validateEntityMetadata(
+  entity: typeof YdbBaseEntity,
+  ctx: EntityValidationContext,
+): string[] {
+  return validationIssuesToMessages(validateEntityMetadataIssues(entity, ctx));
+}
+
+/**
+ * Валидация метаданных сущности при инициализации модуля.
  * Возвращает список структурированных диагностик (пустой, если всё в порядке) —
  * вызывающий код решает, как бросать ошибку. Чистая функция, без сети.
  */
-export function validateEntityMetadata(
+export function validateEntityMetadataIssues(
   entity: typeof YdbBaseEntity,
   ctx: EntityValidationContext,
 ): EntityValidationIssue[] {

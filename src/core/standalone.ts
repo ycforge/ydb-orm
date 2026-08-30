@@ -9,7 +9,7 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 import {
-  validateEntityMetadata,
+  validateEntityMetadataIssues,
   validationIssuesToMessages,
 } from '../metadata/validate-entity.js';
 import {
@@ -81,7 +81,7 @@ export function configureEntities(
   // сущность не получает executor/провайдеры и не оставляет владения.
   for (const entity of entities) {
     assertEntityClass(entity);
-    const issues = validateEntityMetadata(
+    const issues = validateEntityMetadataIssues(
       entity as unknown as typeof YdbBaseEntity,
       {
         encryptionProviderConfigured: Boolean(options.encryptionProvider),
