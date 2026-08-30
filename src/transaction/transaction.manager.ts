@@ -8,10 +8,12 @@ import type {
 } from '../core/interfaces.js';
 import {
   createTransactionContext,
+  ensureExecutorIdentity,
   getActiveTransaction,
+  getTransactionId,
   resolveTransactionSettings,
   runWithTransactionContext,
-  TRANSACTION_ID_KEY,
+  setExecutorIdentity,
 } from './transaction-context.js';
 
 /** Генерирует уникальный идентификатор транзакции. */
@@ -225,7 +227,12 @@ export class YdbTransactionManager {
   constructor(
     private readonly db: YdbExecutor,
     private readonly settings?: YdbTransactionsSettings,
-  ) {}
+  ) {
+    // Стабильный identity для логического DB-executor'а (#207): разные обёртки
+    // одного и того же executor'а разделяют его, поэтому детекция вложенных
+    // транзакций сравнивает контексты по значению, а не по ссылке на объект.
+    ensureExecutorIdentity(db);
+  }
 
   /**
    * Выполняет fn внутри транзакции YDB.
@@ -253,9 +260,11 @@ export class YdbTransactionManager {
 
     // Детекция вложенности работает всегда (ambient включён или нет).
     const active = getActiveTransaction();
-    // Сравниваем по transactionId, а не по ссылке на executor (#207).
-    // active.db === this.db проверяет, что это тот же executor БД.
-    if (active && active.db === this.db) {
+    // Сравниваем по identity-токену, а не по ссылке на executor (#207).
+    // active.db === this.db — ссылочное сравнение; разные обёртки одного
+    // логического DB-executor'а (логирование/retry) разделяют токен, поэтому
+    // проверка по значению распознаёт вложенную транзакцию того же DB.
+    if (active && getTransactionId(active.db) === getTransactionId(this.db)) {
       if (options?.reuse) {
         // Переиспользуем активную транзакцию: коммит/откат остаются у
         // внешнего вызова, новая БД-транзакция не открывается. Если на
@@ -331,14 +340,12 @@ export class YdbTransactionManager {
       sdkSignal: AbortSignal | undefined,
     ) => {
       const attemptSignal = composeAttemptSignal(sdkSignal);
-      // Генерируем уникальный ID для этой транзакции и сохраняем на executor'е.
+      // Генерируем уникальный ID для этой транзакции и запоминаем его для
+      // trx-executor'а данной попытки в приватном реестре identity (#217).
       const transactionId = generateTransactionId();
-      // Защита для моков и нестандартных executor'ов: trx может быть
-      // функцией (jest mock), объектом или примитивом.
+      // trx всегда объект/функция (WeakMap-ключ); защита для примитивных моков.
       if (trx && (typeof trx === 'object' || typeof trx === 'function')) {
-        (trx as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
-          TRANSACTION_ID_KEY
-        ] = transactionId;
+        setExecutorIdentity(trx, transactionId);
       }
       return runWithTransactionContext(
         createTransactionContext({

@@ -21,7 +21,7 @@ import {
   createTransactionContext,
   runWithTransactionContext,
   getTransactionId,
-  TRANSACTION_ID_KEY,
+  setExecutorIdentity,
 } from '../transaction/transaction-context.js';
 import { chunkInValues, dedupeInValues } from '../core/query-limits.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
@@ -289,9 +289,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
           options.trx &&
           (typeof options.trx === 'object' || typeof options.trx === 'function')
         ) {
-          (options.trx as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
-            TRANSACTION_ID_KEY
-          ] = transactionId;
+          setExecutorIdentity(options.trx, transactionId);
         }
       }
       await runWithTransactionContext(

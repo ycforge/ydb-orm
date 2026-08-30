@@ -2,9 +2,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { YdbExecutor } from '../core/interfaces.js';
 import type { YdbTransactionsSettings } from '../core/interfaces.js';
 
-/** Уникальный ключ для хранения transactionId на executor'е. */
-export const TRANSACTION_ID_KEY = Symbol.for('ydb.transaction.id');
-
 /** Параметры создания контекста активной транзакции (#208). */
 export interface TransactionContextParams {
   transactionId: symbol;
@@ -184,16 +181,67 @@ export function resolveOperationExecutor(
 }
 
 /**
- * Получает transactionId из executor'а транзакции.
- * Если executor не имеет transactionId (не создан через runInTransaction),
- * возвращает сам executor для обратной совместимости (сравнение по ссылке).
+ * Приватный реестр identity (#217): executor -> символ.
+ *
+ * Источник правды для transaction/executor identity находится ЗДЕСЬ, а не в
+ * мутируемом свойстве executor'а. Слабые ключи позволяют собирать объекты,
+ * на которые больше нет ссылок (в т.ч. краткоживущие trx-executor'ы каждой
+ * попытки), и НЕ требуют мутации объект executor'а вовсе — frozen/sealed
+ * executor'ы работают без изменений. Потребители не имеют доступа к реестру,
+ * поэтому не могут перезаписать чужой identity и соединить два независимых
+ * контекста в один.
+ */
+const identityRegistry = new WeakMap<YdbExecutor, symbol>();
+
+/**
+ * Получает identity-токен из executor'а (#207/#217).
+ * Возвращает символ из приватного реестра (для live-транзакции это её
+ * transactionId, для логического DB-executor'а — стабильный идентификатор
+ * этого executor'а), иначе сам executor для обратной совместимости
+ * (сравнение по ссылке для executor'ов без identity).
  */
 export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
-  const withId = trx as unknown as Record<
-    typeof TRANSACTION_ID_KEY,
-    symbol | undefined
-  >;
-  return withId[TRANSACTION_ID_KEY] ?? trx;
+  return identityRegistry.get(trx) ?? trx;
+}
+
+/**
+ * Явно запоминает identity-токен для executor'а в приватном реестре (#217).
+ * Используется, чтобы присвоить свежесозданному trx-executor'у данной попытки
+ * её transactionId (см. runAttemptBody, entity-relations). Не мутирует объект.
+ */
+export function setExecutorIdentity(executor: YdbExecutor, id: symbol): void {
+  identityRegistry.set(executor, id);
+}
+
+/**
+ * Присваивает executor'у стабильный identity-токен, если его ещё нет (#207).
+ * Используется для логических DB-executor'ов: разные обёртки одного и того же
+ * логического executor'а разделяют этот токен, поэтому детекция вложенных
+ * транзакций может сравнивать DB-контексты по значению, а не по ссылке на
+ * объект. Токен хранится в приватном реестре и не мутирует executor.
+ */
+export function ensureExecutorIdentity(executor: YdbExecutor): symbol {
+  const existing = identityRegistry.get(executor);
+  if (existing) return existing;
+  const id = Symbol('ydb.executor');
+  identityRegistry.set(executor, id);
+  return id;
+}
+
+/**
+ * Наследует identity-токен с внутреннего executor'а на обёртку (#207):
+ * wrapExecutorWithLogging()/withRetryPolicy() создают НОВЫЕ объекты, и чтобы
+ * обёртки того же логического executor'а распознавались как один DB-контекст,
+ * они копируют токен с исходного executor'а в приватный реестр обёртки.
+ */
+export function inheritExecutorIdentity(
+  source: YdbExecutor,
+  target: YdbExecutor,
+): void {
+  const id = identityRegistry.get(source);
+  if (id !== undefined) {
+    identityRegistry.set(target, id);
+  }
 }
 
 /**

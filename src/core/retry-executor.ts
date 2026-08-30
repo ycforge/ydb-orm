@@ -13,6 +13,10 @@ import type {
   YdbRetryPolicyInput,
   YdbRetryPolicyOptions,
 } from './retry.js';
+import {
+  ensureExecutorIdentity,
+  inheritExecutorIdentity,
+} from '../transaction/transaction-context.js';
 
 /**
  * Подключение retry-политики к executor'у (#27).
@@ -270,6 +274,12 @@ export function withRetryPolicy(
   (wrapped as unknown as Record<string, unknown>).transaction = (
     options?: YdbTransactionOptions,
   ) => executor.transaction(options);
+
+  // Identity (#207): обёртка наследует identity-токен исходника (см. также
+  // wrapExecutorWithLogging), чтобы разные обёртки одного логического
+  // executor'а распознавались как один DB-контекст.
+  ensureExecutorIdentity(executor);
+  inheritExecutorIdentity(executor, wrapped);
 
   return wrapped;
 }
