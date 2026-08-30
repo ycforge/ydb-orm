@@ -17,7 +17,11 @@ import {
 } from '../encryption/ydb-encryption-provider.interface.js';
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
-import { getEntityRuntime } from '../entity/entity-runtime.js';
+import {
+  getEntityRuntime,
+  restoreEntityRuntime,
+  snapshotEntityRuntime,
+} from '../entity/entity-runtime.js';
 import { getActiveRecordInitToken } from './repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
@@ -90,7 +94,7 @@ export function createActiveRecordEntityProvider(
       }
 
       // Снимок runtime-конфигурации для атомарного отката при ошибке.
-      const runtimeSnapshot = { ...getEntityRuntime(entityClass) };
+      const runtimeSnapshot = snapshotEntityRuntime(entityClass);
 
       try {
         const runtime = getEntityRuntime(entityClass);
@@ -114,7 +118,7 @@ export function createActiveRecordEntityProvider(
         getOrCreateRepository(entityClass as any);
       } catch (e) {
         // Откат runtime-конфигурации сущности к снимку перед изменением.
-        Object.assign(getEntityRuntime(entityClass), runtimeSnapshot);
+        restoreEntityRuntime(entityClass, runtimeSnapshot);
         if (ormScope && newlyClaimed.length > 0) {
           releaseEntitiesFromScope(ormScope, newlyClaimed);
         }

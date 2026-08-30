@@ -6,7 +6,12 @@ import type {
 import type { YdbValidationProvider } from '../validation/ydb-validate.interface.js';
 import type { AadFormat } from '../encryption/aad.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
-import { getEntityRuntime } from '../entity/entity-runtime.js';
+import {
+  getEntityRuntime,
+  restoreEntityRuntime,
+  snapshotEntityRuntime,
+  type EntityRuntime,
+} from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 import { validateEntityMetadata } from '../metadata/validate-entity.js';
 import {
@@ -102,13 +107,10 @@ export function configureEntities(
   // в середине цикла откатить все мутации (executor, providers, uuidGenerator,
   // aadFormat, scope, transactions, repository) и оставить сущности
   // в точно таком же состоянии, как до вызова configureEntities.
-  const runtimeSnapshots = new Map<
-    typeof YdbBaseEntity,
-    ReturnType<typeof getEntityRuntime>
-  >();
+  const runtimeSnapshots = new Map<typeof YdbBaseEntity, EntityRuntime>();
   for (const entity of entities) {
     const entityClass = entity as unknown as typeof YdbBaseEntity;
-    runtimeSnapshots.set(entityClass, { ...getEntityRuntime(entityClass) });
+    runtimeSnapshots.set(entityClass, snapshotEntityRuntime(entityClass));
   }
 
   try {
@@ -133,7 +135,7 @@ export function configureEntities(
       const entityClass = entity as unknown as typeof YdbBaseEntity;
       const snapshot = runtimeSnapshots.get(entityClass);
       if (snapshot) {
-        Object.assign(getEntityRuntime(entityClass), snapshot);
+        restoreEntityRuntime(entityClass, snapshot);
       }
     }
     releaseEntitiesFromScope(scope, newlyClaimed);

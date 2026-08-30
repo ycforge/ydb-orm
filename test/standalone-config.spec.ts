@@ -484,6 +484,81 @@ describe('configureEntities: атомарность runtime-конфигурац
     setExecutorSpy.mockRestore();
   });
 
+  it('восстанавливает ПОЛНОЕ прежнее runtime-состояние сущности, сконфигурированной до падающего вызова', async () => {
+    const firstExecutor = createMockExecutor([[]]);
+    const secondExecutor = createMockExecutor([[]]);
+    const scope = createOrmScope('atomic-full-rollback-scope', {
+      transactions: { ambient: true, warnOutsideTransaction: true },
+    });
+    const { encryptionProvider, blindIndexProvider } = makeTaggedProviders('A');
+    const validationProvider: YdbValidationProvider = {
+      validate: () => Promise.resolve([]),
+    };
+
+    // 1. Сущность УЖЕ сконфигурирована до падающего вызова: заданы все
+    //    опции, влияющие на runtime (executor, провайдеры, uuidVersion, aad).
+    configureEntities([TestUser], {
+      executor: firstExecutor.executor,
+      scope,
+      encryptionProvider,
+      blindIndexProvider,
+      validationProvider,
+      uuidVersion: 'v4',
+      aadFormat: 'legacy',
+      aadReadFallback: false,
+    });
+
+    const before = getEntityRuntime(TestUser);
+    const repositoryBefore = before.repository;
+    expect(repositoryBefore).toBeDefined();
+
+    // 2. Падающий вызов СНАЧАЛА применяет новую конфигурацию к TestUser
+    //    (новый executor, провайдеры обнуляются, uuid -> v7, repository
+    //    пересоздаётся), затем спотыкается на TestPost.
+    const setExecutorSpy = jest.spyOn(TestPost, 'setExecutor');
+    setExecutorSpy.mockImplementationOnce(() => {
+      throw new Error('simulated configuration failure');
+    });
+
+    try {
+      expect(() =>
+        configureEntities([TestUser, TestPost], {
+          executor: secondExecutor.executor,
+          scope,
+        }),
+      ).toThrow('simulated configuration failure');
+    } finally {
+      setExecutorSpy.mockRestore();
+    }
+
+    // 3. Runtime TestUser восстановлен ТОЧНО к прежнему состоянию — по ссылкам.
+    const after = getEntityRuntime(TestUser);
+    expect(after.executor).toBe(firstExecutor.executor);
+    expect(after.encryptionProvider).toBe(encryptionProvider);
+    expect(after.blindIndexProvider).toBe(blindIndexProvider);
+    expect(after.validationProvider).toBe(validationProvider);
+    expect(after.uuidGenerator).toBe(before.uuidGenerator);
+    expect(after.aadFormat).toBe('legacy');
+    expect(after.aadReadFallback).toBe(false);
+    expect(after.scope).toBe(scope);
+    expect(after.transactions).toBe(scope.transactions);
+    expect(after.repository).toBe(repositoryBefore);
+    expect(after.repositoryDeps).toBe(before.repositoryDeps);
+
+    // 4. Владение (#199): ранее принадлежавшая сущность осталась за скоупом,
+    //    ново заявленная — освобождена.
+    expect(getEntityOrmScope(TestUser)).toBe(scope);
+    expect(scope.entities.has(TestUser)).toBe(true);
+    expect(getEntityOrmScope(TestPost)).toBeUndefined();
+    expect(scope.entities.has(TestPost)).toBe(false);
+
+    // 5. Поведение: Active Record снова работает через прежний executor,
+    //    а executor падающей конфигурации не использовался вовсе.
+    await expect(TestUser.findAll()).resolves.toEqual([]);
+    expect(firstExecutor.queries.length).toBeGreaterThan(0);
+    expect(secondExecutor.queries).toHaveLength(0);
+  });
+
   it('сохраняет конфигурацию при успешном вызове', () => {
     const firstExecutor = createMockExecutor();
     const secondExecutor = createMockExecutor();
