@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { jest } from '@jest/globals';
 import { Test } from '@nestjs/testing';
 import { Module } from '@nestjs/common';
 import { createAuth } from '@ycforge/auth';
@@ -18,6 +19,8 @@ import { PhotoEntity } from '../fixtures/photo/photo.entity.js';
 import { createActiveRecordEntityProvider } from '../../src/nest/repository-factory.js';
 import { getEntityRuntime } from '../../src/entity/entity-runtime.js';
 import { createMockExecutor, MockExecutor } from '../helpers/mock-executor.js';
+import type { YdbOrmScope } from '../../src/nest/index.js';
+import { createOrmScope, getEntityOrmScope } from '../../src/nest/index.js';
 
 @Module({
   imports: [YdbOrmModule.forFeature([PhotoEntity])],
@@ -161,5 +164,86 @@ describe('NestJS integration: сброс провайдеров при повт�
     useFactory(db, opts, undefined, undefined);
     expect(getEntityRuntime(ResetPlain).encryptionProvider).toBeUndefined();
     expect(getEntityRuntime(ResetPlain).blindIndexProvider).toBeUndefined();
+  });
+
+  it('createActiveRecordEntityProvider: сбой конфигурации откатывает ранее сконфигурированную сущность (#200)', () => {
+    const provider = createActiveRecordEntityProvider(ResetPlain);
+    const useFactory = (
+      provider as unknown as {
+        useFactory: (
+          db: any,
+          opts: any,
+          encryptionProvider?: YdbEncryptionProvider,
+          blindIndexProvider?: YdbBlindIndexProvider,
+          _validationProvider?: unknown,
+          _entityAppScope?: unknown,
+          ormScope?: YdbOrmScope,
+        ) => unknown;
+      }
+    ).useFactory;
+
+    const opts = {
+      endpoint: 'grpc://localhost:2136/local',
+      auth: createAuth({ type: 'anonymous' }),
+      uuidVersion: 'v4' as const,
+    };
+    const scope = createOrmScope('factory-rollback-scope', {
+      transactions: { ambient: true },
+    });
+    const firstDb = createMockExecutor().executor;
+    const secondDb = createMockExecutor().executor;
+    const { encryptionProvider, blindIndexProvider } = makeTaggedProviders('A');
+
+    // 1. Успешная конфигурация — сущность уже настроена до падающего вызова.
+    useFactory(
+      firstDb,
+      opts,
+      encryptionProvider,
+      blindIndexProvider,
+      undefined,
+      undefined,
+      scope,
+    );
+
+    const before = getEntityRuntime(ResetPlain);
+    const repositoryBefore = before.repository;
+    expect(repositoryBefore).toBeDefined();
+    expect(before.scope).toBe(scope);
+
+    // 2. Вторая конфигурация мутирует runtime (новый executor, uuid v7,
+    //    провайдеры обнуляются, repository пересоздаётся), затем падает.
+    const setExecutorSpy = jest.spyOn(ResetPlain, 'setExecutor');
+    setExecutorSpy.mockImplementationOnce(() => {
+      throw new Error('simulated configuration failure');
+    });
+
+    try {
+      expect(() =>
+        useFactory(
+          secondDb,
+          opts,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          scope,
+        ),
+      ).toThrow('simulated configuration failure');
+    } finally {
+      setExecutorSpy.mockRestore();
+    }
+
+    // 3. Runtime восстановлен ТОЧНО к прежнему состоянию — по ссылкам.
+    const after = getEntityRuntime(ResetPlain);
+    expect(after.executor).toBe(firstDb);
+    expect(after.encryptionProvider).toBe(encryptionProvider);
+    expect(after.blindIndexProvider).toBe(blindIndexProvider);
+    expect(after.uuidGenerator).toBe(before.uuidGenerator);
+    expect(after.scope).toBe(scope);
+    expect(after.transactions).toBe(scope.transactions);
+    expect(after.repository).toBe(repositoryBefore);
+
+    // 4. Владение не изменилось: сущность осталась за своим скоупом.
+    expect(getEntityOrmScope(ResetPlain)).toBe(scope);
   });
 });

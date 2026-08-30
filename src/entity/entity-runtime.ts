@@ -69,3 +69,46 @@ export function getEntityRuntime(target: typeof YdbBaseEntity): EntityRuntime {
   }
   return runtime;
 }
+
+/**
+ * Снимок runtime-состояния сущности ДО применения конфигурации для
+ * атомарного отката (#200). Используется configureEntities() и
+ * createActiveRecordEntityProvider(): если конфигурация падает после того,
+ * как часть runtime уже изменена, restoreEntityRuntime() возвращает сущность
+ * ровно в то состояние, в котором она была до вызова.
+ *
+ * Контракт (обязателен для корректности поверхностного снимка):
+ * конфигурация заменяет только ВЕРХНЕУРОВНЕВЫЕ поля runtime (executor,
+ * провайдеры, uuidGenerator, aadFormat, aadReadFallback, scope, transactions,
+ * repository, repositoryDeps), присваивая новые значения по ссылке. Ни одно
+ * вложенное значение (scope.transactions, repositoryDeps, repository) внутри
+ * не мутируется в месте — поэтому копирования ссылок достаточно для точного
+ * восстановления прежних ссылок. Если появится поле, которое мутируется
+ * в месте (например, `runtime.transactions.ambient = true`), его снимок
+ * нужно делать здесь глубоким, а restoreEntityRuntime() — дополнить.
+ */
+export function snapshotEntityRuntime(
+  entityClass: typeof YdbBaseEntity,
+): EntityRuntime {
+  return { ...getEntityRuntime(entityClass) };
+}
+
+/**
+ * Восстанавливает runtime-состояние сущности из снимка (см.
+ * snapshotEntityRuntime). Помимо присваивания сохранённых ссылок удаляет
+ * поля, которых не было в снимке: если конфигурация добавила новое поле
+ * (не существовавшее до вызова), оно не должно пережить откат.
+ */
+export function restoreEntityRuntime(
+  entityClass: typeof YdbBaseEntity,
+  snapshot: EntityRuntime,
+): void {
+  const runtime = getEntityRuntime(entityClass);
+  const snapshotKeys = new Set(Object.keys(snapshot));
+  for (const key of Object.keys(runtime)) {
+    if (!snapshotKeys.has(key)) {
+      delete (runtime as Record<string, unknown>)[key];
+    }
+  }
+  Object.assign(runtime, snapshot);
+}
