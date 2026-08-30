@@ -23,7 +23,11 @@ import {
   CreateSessionResultSchema,
   DescribeTableResultSchema,
 } from '@ydbjs/api/table';
-import { IssueMessageSchema, StatusIds_StatusCode } from '@ydbjs/api/operation';
+import {
+  IssueMessageSchema,
+  StatusIds_StatusCode,
+  type IssueMessage,
+} from '@ydbjs/api/operation';
 import type { Driver } from '@ydbjs/core';
 import {
   runMigrationVerification,
@@ -113,10 +117,7 @@ function bookkeepingDescribeResponse(columnNames: string[]): unknown {
 }
 
 function notFoundDescribeResponse(): unknown {
-  const issueMsg = (
-    message: string,
-    children?: ReturnType<typeof issueMsg>[],
-  ) =>
+  const issueMsg = (message: string, children?: IssueMessage[]): IssueMessage =>
     create(IssueMessageSchema, {
       message,
       severity: 1,

@@ -222,7 +222,12 @@ export class YdbBaseEntity {
   static _buildWhereClause(
     this: typeof YdbBaseEntity,
     where: Record<string, any>,
-  ) {
+  ): Promise<{
+    whereClause: string;
+    values: Record<string, any>;
+    keys: string[];
+    dbSchema: Record<string, YdbPrimitive>;
+  }> {
     return getOrCreateRepository(this).persistence.buildWhere(where);
   }
 
