@@ -35,7 +35,9 @@ type EntityClass<T extends YdbBaseEntity> = {
 /**
  * Цепочный query builder поверх Active Record сущности.
  * Условия where/andWhere — только равенство, объединяются через AND
- * (повторное поле в andWhere перезаписывает предыдущее).
+ * (повторное поле в andWhere перезаписывает предыдущее). JSON-предикаты
+ * (andWhereJsonExists/andWhereJsonValue) для одной колонки НЕ перезаписывают
+ * друг друга, а компонуются через AND (#201).
  * Зашифрованные поля с blind index поддерживаются так же, как в find/findAll.
  *
  * Билдер переиспользуем: методы-строители (where/orderBy/limit/... ) и методы
@@ -99,27 +101,58 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Добавить условие JSON_EXISTS для JSON-колонки.
+   * Добавить условие JSON_EXISTS для JSON-колонки (#201).
    * Колонка должна быть объявлена как `@YdbColumn('Json')`, `@YdbColumn('JsonDocument')`
    * или `@YdbJson()`.
+   *
+   * Несколько JSON-предикатов для одной колонки сохраняются и объединяются
+   * через AND (композиция через `$and`), а не перезаписывают друг друга.
    */
   andWhereJsonExists(column: string, path: string): this {
-    this.whereValues = {
-      ...this.whereValues,
-      [column]: { $jsonExists: path },
-    };
-    return this;
+    return this.appendJsonCondition(column, { $jsonExists: path });
   }
 
   /**
-   * Добавить условие JSON_VALUE = значение для JSON-колонки.
+   * Добавить условие JSON_VALUE = значение для JSON-колонки (#201).
    * Значение сравнивается как строка (Utf8).
+   *
+   * Несколько JSON-предикатов для одной колонки сохраняются и объединяются
+   * через AND (композиция через `$and`), а не перезаписывают друг друга.
    */
   andWhereJsonValue(column: string, path: string, value: any): this {
-    this.whereValues = {
-      ...this.whereValues,
-      [column]: { $jsonValue: { path, equals: value } },
-    };
+    return this.appendJsonCondition(column, {
+      $jsonValue: { path, equals: value },
+    });
+  }
+
+  /**
+   * Накопить JSON-предикат для колонки (#201). Существующий предикат той же
+   * колонки не перезаписывается: первым задаётся как есть, каждый следующий
+   * присоединяется через `$and` (явная AND-семантика).
+   */
+  private appendJsonCondition(
+    column: string,
+    predicate: Record<string, any>,
+  ): this {
+    const existing: unknown = this.whereValues[column];
+    const isJsonGroup =
+      existing !== null &&
+      typeof existing === 'object' &&
+      !Array.isArray(existing) &&
+      Object.keys(existing).length === 1 &&
+      Array.isArray((existing as { $and: unknown }).$and);
+    let next: unknown;
+    if (existing === undefined) {
+      next = predicate;
+    } else if (isJsonGroup) {
+      // Уже накопленная группа — дополняем плоский список `$and`.
+      const members = (existing as { $and: unknown[] }).$and;
+      next = { $and: [...members, predicate] };
+    } else {
+      // Любое предыдущее значение той же колонки сохраняется в группу.
+      next = { $and: [existing, predicate] };
+    }
+    this.whereValues = { ...this.whereValues, [column]: next };
     return this;
   }
 

@@ -769,12 +769,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
       const subConditions: string[] = [];
       for (const [op, operand] of opEntries) {
-        const condition = this.buildSingleOperatorCondition(
+        const condition = await this.buildSingleOperatorCondition(
           field,
           op,
           operand,
           ctx,
           isRoot,
+          env,
         );
         if (condition) subConditions.push(condition);
       }
@@ -814,15 +815,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Строит условие для одного оператора над полем.
+   * Строит условие для одного оператора над полем. Логические `$and`/`$or`
+   * на уровне значения поля (#201) рекурсивно строят вложенные условия той же
+   * колонки — это делает JSON-предикаты (JSON_EXISTS/JSON_VALUE) композируемыми.
    */
-  private buildSingleOperatorCondition(
+  private async buildSingleOperatorCondition(
     field: string,
     op: string,
     operand: any,
     ctx: WhereBuildContext,
     isRoot: boolean,
-  ): string | undefined {
+    env: WhereBuildEnv,
+  ): Promise<string | undefined> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
     const fieldType = dbSchema[field];
@@ -836,6 +840,28 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     };
 
     switch (op) {
+      case '$and':
+      case '$or': {
+        if (!Array.isArray(operand) || operand.length === 0) {
+          throw new Error(
+            `Operator "${op}" on field "${field}" requires a non-empty array of conditions.`,
+          );
+        }
+        const combiner = op === '$and' ? 'AND' : 'OR';
+        const subs: string[] = [];
+        for (const sub of operand) {
+          const subSql = await this.buildFieldCondition(
+            field,
+            sub,
+            ctx,
+            false,
+            env,
+          );
+          if (subSql) subs.push(subSql);
+        }
+        if (!subs.length) return undefined;
+        return subs.length === 1 ? subs[0] : `(${subs.join(` ${combiner} `)})`;
+      }
       case '$eq': {
         if (operand === null) return `${quotedField} IS NULL`;
         if (operand === undefined) return undefined;
