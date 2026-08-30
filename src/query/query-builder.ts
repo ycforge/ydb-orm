@@ -191,8 +191,21 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return normalized;
   }
 
-  /** Указать конкретные колонки для SELECT (вместо SELECT *). */
+  /**
+   * Указать конкретные колонки для SELECT (вместо SELECT *).
+   *
+   * Семантика пустой проекции (#202): `select([])` явно отклоняется ошибкой,
+   * а не молчаливо превращается в дефолтную проекцию. Пропущенный `select()`
+   * продолжает использовать дефолтную проекцию всех объявленных колонок (#164).
+   */
   select(columns: string[]): this {
+    if (!Array.isArray(columns) || columns.length === 0) {
+      throw new Error(
+        `Invalid select: expected a non-empty array of column names. ` +
+          `Received ${JSON.stringify(columns)}. ` +
+          `To use the default projection, omit select() entirely.`,
+      );
+    }
     this.selectColumns = columns;
     return this;
   }
