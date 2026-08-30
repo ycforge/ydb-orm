@@ -136,7 +136,6 @@ export async function createTableForEntity(
   const expected = buildExpectedTableSchema(meta);
   const yql = generateCreateTableYql(expected);
   const tmpl = [yql] as unknown as TemplateStringsArray;
-  tmpl.raw = [yql];
   try {
     await executor(tmpl);
   } catch {
@@ -158,7 +157,6 @@ export async function dropTableForEntity(
   const tmpl = [
     `DROP TABLE IF EXISTS \`${meta.tableName}\``,
   ] as unknown as TemplateStringsArray;
-  tmpl.raw = tmpl;
   try {
     await executor(tmpl);
   } catch {
