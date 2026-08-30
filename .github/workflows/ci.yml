@@ -17,12 +17,14 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['22.18.0']
     steps:
-      # Пин по полному SHA коммита (#167): mutable 'v4' здесь и ниже.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn lint
@@ -30,11 +32,14 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['22.18.0']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn test:cov
@@ -42,16 +47,19 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['22.18.0']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: yarn
       - run: yarn install --frozen-lockfile
       - run: yarn build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: dist
+          name: dist-${{ matrix.node-version }}
           path: dist/
           retention-days: 7

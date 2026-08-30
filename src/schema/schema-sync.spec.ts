@@ -8,7 +8,11 @@ import {
   DescribeTableResultSchema,
   ValueSinceUnixEpochModeSettings_Unit,
 } from '@ydbjs/api/table';
-import { IssueMessageSchema, StatusIds_StatusCode } from '@ydbjs/api/operation';
+import {
+  IssueMessageSchema,
+  StatusIds_StatusCode,
+  type IssueMessage,
+} from '@ydbjs/api/operation';
 import { YdbEntity } from '../decorators/entity.decorator.js';
 import { YdbColumn, YdbPrimaryColumn } from '../decorators/column.decorator.js';
 import { YdbEncrypted } from '../decorators/encryption.decorator.js';
@@ -1884,10 +1888,7 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
     create(CreateSessionResultSchema, { sessionId: 'session-nf-1' }),
   );
 
-  const issueMsg = (
-    message: string,
-    children?: ReturnType<typeof issueMsg>[],
-  ) =>
+  const issueMsg = (message: string, children?: IssueMessage[]): IssueMessage =>
     create(IssueMessageSchema, {
       message,
       severity: 1,

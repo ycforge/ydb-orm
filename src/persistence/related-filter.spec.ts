@@ -15,6 +15,7 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { createMockExecutor } from '../../test/helpers/mock-executor.js';
 import {
   configureTransactionContext,
+  createTransactionContext,
   runWithTransactionContext,
 } from '../transaction/transaction-context.js';
 
@@ -355,7 +356,12 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     configureTransactionContext({ ambient: true });
     const ambTrx = createMockExecutor([[[]]]);
     await runWithTransactionContext(
-      { trx: ambTrx.executor, db: base.executor, ambient: true },
+      createTransactionContext({
+        transactionId: Symbol('related-filter'),
+        trx: ambTrx.executor,
+        db: base.executor,
+        ambient: true,
+      }),
       async () => {
         await RfUser.findAll({ roles: { role: 'admin' } });
       },

@@ -9,7 +9,9 @@
     "outDir": "../dist-examples",
     "skipLibCheck": true,
     "strictNullChecks": true,
-    "noImplicitAny": false,
+    "noImplicitAny": true,
+    "strictBindCallApply": true,
+    "noFallthroughCasesInSwitch": true,
     "sourceMap": false,
     "declaration": false
   },

@@ -161,7 +161,10 @@ describe('Security AAD format (#165)', () => {
     const entity = newEntity();
     await LazySecretEntity.save(entity);
 
-    const expected = serializeAadV2(['uuid'], (n) => entity[n]);
+    const expected = serializeAadV2(
+      ['uuid'],
+      (n) => (entity as unknown as Record<string, unknown>)[n],
+    );
     expect(expected.startsWith('v2:')).toBe(true);
     expect(provider.encryptAads.length).toBe(2);
     for (const aad of provider.encryptAads) {
@@ -178,7 +181,10 @@ describe('Security AAD format (#165)', () => {
 
     await LazySecretEntity.find({ uuid: row.uuid });
 
-    const expected = serializeAadV2(['uuid'], (n) => row[n]);
+    const expected = serializeAadV2(
+      ['uuid'],
+      (n) => row[n as keyof typeof row],
+    );
     // дешифруется только eager-поле (lazy остаётся ciphertext)
     expect(provider.decryptAads).toEqual([expected]);
   });
@@ -190,8 +196,8 @@ describe('Security AAD format (#165)', () => {
     // размещая длину значения перед ним.
     const row1 = makeRow();
     const row2 = makeRow();
-    const aad1 = serializeAadV2(['uuid'], (n) => row1[n]);
-    const aad2 = serializeAadV2(['uuid'], (n) => row2[n]);
+    const aad1 = serializeAadV2(['uuid'], (n) => row1[n as keyof typeof row1]);
+    const aad2 = serializeAadV2(['uuid'], (n) => row2[n as keyof typeof row2]);
     expect(aad1).toBe(aad2);
     expect(aad1).toContain(`${row1.uuid.length}:${row1.uuid}`);
   });

@@ -110,6 +110,9 @@ function createPolicyQuery(
   // Единственное исполнение операции на весь прокси-запрос (#172):
   // два .then()/await на одном запросе НЕ дублируют обращение к БД.
   let settled: Promise<unknown> | undefined;
+  // Флаг: исполнение начато (первый .then()/await).
+  // После этого мутирующие методы билдера запрещены.
+  let started = false;
 
   const runOnce = async (policySignal?: AbortSignal): Promise<unknown> => {
     // Отмена до старта (cancel() до первого await) — ни одного обращения
@@ -151,18 +154,42 @@ function createPolicyQuery(
 
   const proxy: YdbQuery = {
     parameter(name: string, value: unknown): YdbQuery {
+      if (started) {
+        throw new Error(
+          'Cannot call .parameter() after query execution has started. ' +
+            'All query parameters must be set before the first await/.then().',
+        );
+      }
       params.push([name, value]);
       return proxy;
     },
     timeout(timeout: number): YdbQuery {
+      if (started) {
+        throw new Error(
+          'Cannot call .timeout() after query execution has started. ' +
+            'Query timeout must be set before the first await/.then().',
+        );
+      }
       timeoutMs = timeout;
       return proxy;
     },
     signal(signal: AbortSignal): YdbQuery {
+      if (started) {
+        throw new Error(
+          'Cannot call .signal() after query execution has started. ' +
+            'AbortSignal must be set before the first await/.then().',
+        );
+      }
       userSignal = signal;
       return proxy;
     },
     idempotent(flag?: boolean): YdbQuery {
+      if (started) {
+        throw new Error(
+          'Cannot call .idempotent() after query execution has started. ' +
+            'Idempotency flag must be set before the first await/.then().',
+        );
+      }
       markedIdempotent = flag !== false;
       return proxy;
     },
@@ -177,6 +204,7 @@ function createPolicyQuery(
       // (#172); последующие подписки цепляются за тот же промис и не
       // трогают БД повторно.
       if (settled === undefined) {
+        started = true;
         const operationSignal = combineSignals([
           userSignal,
           policy.signal,

@@ -7,6 +7,7 @@ import type {
   YdbTransactionsSettings,
 } from '../core/interfaces.js';
 import {
+  createTransactionContext,
   ensureExecutorIdentity,
   getActiveTransaction,
   getTransactionId,
@@ -273,13 +274,13 @@ export class YdbTransactionManager {
         // транзакция открыта с ambient: false.
         if (options.ambient === true) {
           return runWithTransactionContext(
-            {
+            createTransactionContext({
               transactionId: active.transactionId,
               trx: active.trx,
               db: this.db,
               signal: active.signal,
               ambient: true,
-            },
+            }),
             () => fn(active.trx, active.signal),
           );
         }
@@ -347,7 +348,13 @@ export class YdbTransactionManager {
         setExecutorIdentity(trx, transactionId);
       }
       return runWithTransactionContext(
-        { transactionId, trx, db: this.db, signal: attemptSignal, ambient },
+        createTransactionContext({
+          transactionId,
+          trx,
+          db: this.db,
+          signal: attemptSignal,
+          ambient,
+        }),
         () => fn(trx, attemptSignal),
       );
     };

@@ -18,6 +18,7 @@ import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import {
   resolveOperationExecutor,
+  createTransactionContext,
   runWithTransactionContext,
   getTransactionId,
   setExecutorIdentity,
@@ -292,12 +293,12 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
       }
       await runWithTransactionContext(
-        {
+        createTransactionContext({
           transactionId,
           trx: options.trx,
           db: this.executor ?? options.trx,
           ambient: true,
-        },
+        }),
         () => this.loadRelationSegments(rel, items, segments, options),
       );
       return;
