@@ -23,9 +23,15 @@ export interface QueryLogEntry {
 /**
  * Интерфейс логгера запросов.
  * Пользователь может передать свой логгер (e.g. pino, winston, OpenTelemetry span).
+ *
+ * `warn` — опциональный хук для предупреждений ORM (#206): маршрутизируются
+ * через логгер, сконфигурированный через `logQueries`, например предупреждение
+ * `warnOutsideTransaction`. Метод опционален для обратной совместимости —
+ * логгер, не реализующий `warn`, просто не получает предупреждения.
  */
 export interface QueryLogger {
   log(entry: QueryLogEntry): void;
+  warn?(message: string): void;
 }
 
 /**
@@ -217,6 +223,39 @@ export class ConsoleQueryLogger implements QueryLogger {
       console.log(`${base}\n  SQL: ${sql}\n  Params: ${params}`);
     }
   }
+
+  /**
+   * Предупреждение ORM (#206): выдаётся как есть (текст содержит собственный
+   * префикс `[ydb-orm]`), чтобы контент предупреждения не искажался.
+   */
+  warn(message: string): void {
+    console.warn(message);
+  }
+}
+
+/** Приватный ключ: логгер, привязанный к обёрнутому executor'у (#206). */
+const executorLoggerSymbol = Symbol('ydb-orm.executorLogger');
+
+/** Возвращает логгер, привязанный к executor'у в wrapExecutorWithLogging. */
+export function getExecutorLogger(
+  executor: YdbExecutor | undefined,
+): QueryLogger | undefined {
+  return (executor as any)?.[executorLoggerSymbol] as QueryLogger | undefined;
+}
+
+/**
+ * Резолвит логгер для операций сущности (#206): логгер, привязанный к
+ * executor'у конфигурации, или единый консольный фолбэк, если логирование
+ * не сконфигурировано. Фолбэк — устоявшийся `ConsoleQueryLogger`, поэтому
+ * поведение без кастомного логгера сохраняется (предупреждения идут в консоль),
+ * а отдельная конфигурация не может подсветить чужой кастомный логгер.
+ */
+const fallbackQueryLogger = new ConsoleQueryLogger();
+
+export function resolveExecutorLogger(
+  executor: YdbExecutor | undefined,
+): QueryLogger {
+  return getExecutorLogger(executor) ?? fallbackQueryLogger;
 }
 
 /**
@@ -321,6 +360,12 @@ export function wrapExecutorWithLogging(
   // сравнивает DB-контексты по значению, а не по ссылке на объект.
   ensureExecutorIdentity(executor);
   inheritExecutorIdentity(executor, wrapped);
+
+  // Логгер путешествует вместе с executor'ом (#206): операции сущности могут
+  // достать его через getExecutorLogger/resolveExecutorLogger, поэтому
+  // предупреждения (warnOutsideTransaction) попадают в логгер СВОЕЙ
+  // конфигурации, а не в чужой или напрямую в консоль.
+  wrapped[executorLoggerSymbol] = logger;
 
   return wrapped as YdbExecutor;
 }

@@ -2,9 +2,12 @@ import 'reflect-metadata';
 import { jest } from '@jest/globals';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { createScriptedExecutor } from './helpers/ydb-mock.js';
+import type { YdbExecutor } from '../src/core/interfaces.js';
 import {
   ConsoleQueryLogger,
   wrapExecutorWithLogging,
+  getExecutorLogger,
+  resolveExecutorLogger,
   type QueryLogger,
   type QueryLogEntry,
 } from '../src/core/query-logger.js';
@@ -12,12 +15,33 @@ import {
 describe('ConsoleQueryLogger', () => {
   const logSpies: jest.SpiedFunction<typeof console.log>[] = [];
   const errorSpies: jest.SpiedFunction<typeof console.error>[] = [];
+  const warnSpies: jest.SpiedFunction<typeof console.warn>[] = [];
 
   afterEach(() => {
     for (const s of logSpies) s.mockRestore();
     for (const s of errorSpies) s.mockRestore();
+    warnSpies.forEach((s) => s.mockRestore());
     logSpies.length = 0;
     errorSpies.length = 0;
+    warnSpies.length = 0;
+  });
+
+  it('routes warnings verbatim through console.warn (#206)', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    warnSpies.push(warnSpy);
+    const logger = new ConsoleQueryLogger();
+
+    logger.warn(
+      '[ydb-orm] UserEntity: query executed outside any transaction ' +
+        '(warnOutsideTransaction is enabled).',
+    );
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    // Контент предупреждения не переписывается и не оборачивается в префикс.
+    expect(warnSpy.mock.calls[0][0]).toBe(
+      '[ydb-orm] UserEntity: query executed outside any transaction ' +
+        '(warnOutsideTransaction is enabled).',
+    );
   });
 
   it('logs query with params and duration', () => {
@@ -519,5 +543,39 @@ describe('wrapExecutorWithLogging', () => {
     expect(logEntries[0].sql).toBe('UPDATE t SET x = 1');
     expect(logEntries[0].maskedParams).toEqual({ v: '<number>' });
     expect(logEntries[0].error).toBeUndefined();
+  });
+});
+
+describe('getExecutorLogger / resolveExecutorLogger (#206)', () => {
+  it('returns the logger attached to a logging-wrapped executor', () => {
+    const mock = createMockExecutor([[]]);
+    const logger: QueryLogger = { log: () => undefined, warn: () => undefined };
+    const logging = wrapExecutorWithLogging(mock.executor, logger);
+
+    expect(getExecutorLogger(logging)).toBe(logger);
+    expect(resolveExecutorLogger(logging)).toBe(logger);
+  });
+
+  it('falls back to the shared ConsoleQueryLogger for unwrapped executors', () => {
+    const mock = createMockExecutor([[]]);
+
+    expect(getExecutorLogger(mock.executor)).toBeUndefined();
+    const resolved = resolveExecutorLogger(mock.executor);
+    // Устоявшийся консольный фолбэк: умеет warn и пишет в консоль.
+    expect(resolved).toBeInstanceOf(ConsoleQueryLogger);
+    expect(typeof resolved.warn).toBe('function');
+    // Единый фолбэк, не новый инстанс на каждый вызов.
+    expect(resolveExecutorLogger(mock.executor)).toBe(resolved);
+  });
+
+  it('keeps transaction executors bound to the same logger instance', async () => {
+    const mock = createMockExecutor([[]]);
+    const logger: QueryLogger = { log: () => undefined, warn: () => undefined };
+    const logging = wrapExecutorWithLogging(mock.executor, logger);
+
+    await (logging as any).transaction().execute(async (trx: YdbExecutor) => {
+      await trx(['SELECT 1'] as unknown as TemplateStringsArray);
+      expect(getExecutorLogger(trx)).toBe(logger);
+    });
   });
 });

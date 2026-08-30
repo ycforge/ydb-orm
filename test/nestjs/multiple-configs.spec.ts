@@ -18,6 +18,10 @@ import {
   releaseOrmScope,
 } from '../../src/nest/index.js';
 import { createMockExecutor } from '../helpers/mock-executor.js';
+import {
+  wrapExecutorWithLogging,
+  type QueryLogger,
+} from '../../src/core/query-logger.js';
 
 @YdbEntity('mc_users')
 class McUser extends YdbBaseEntity {
@@ -207,5 +211,67 @@ describe('NestJS: несколько независимых конфигурац
     );
     await second.init();
     expect(getEntityOrmScope(McReport)?.name).toBe('default');
+  });
+
+  it('конфигурации не делятся логгерами: предупреждения идут в логгер СВОЕЙ конфигурации (#206)', async () => {
+    const execDefault = createMockExecutor();
+    const execReporting = createMockExecutor();
+    const warnsDefault: string[] = [];
+    const warnsReporting: string[] = [];
+    const loggerDefault: QueryLogger = {
+      log: () => undefined,
+      warn: (m) => warnsDefault.push(m),
+    };
+    const loggerReporting: QueryLogger = {
+      log: () => undefined,
+      warn: (m) => warnsReporting.push(m),
+    };
+
+    const module = track(
+      await Test.createTestingModule({
+        imports: [
+          YdbCoreModule.forRootAsync({
+            useFactory: () => ({
+              ...coreOptions(),
+              transactions: { warnOutsideTransaction: true },
+            }),
+          }),
+          YdbCoreModule.forRootAsync({
+            name: 'reporting',
+            useFactory: () => ({
+              ...coreOptions(),
+              transactions: { warnOutsideTransaction: true },
+            }),
+          }),
+          YdbOrmModule.forFeature([McUser]),
+          YdbOrmModule.forFeature([McReport], 'reporting'),
+        ],
+      })
+        // Каждая конфигурация несёт СВОЙ логгер на своём executor'е (как при
+        // logQueries в createExecutor): предупреждения не должны перетекать.
+        .overrideProvider(YDB_QUERY)
+        .useValue(wrapExecutorWithLogging(execDefault.executor, loggerDefault))
+        .overrideProvider(getScopedToken(YDB_QUERY, 'reporting'))
+        .useValue(
+          wrapExecutorWithLogging(execReporting.executor, loggerReporting),
+        )
+        .compile(),
+    );
+    await module.init();
+
+    await McUser.find({ uuid: '00000000-0000-0000-0000-000000000001' });
+    expect(warnsDefault).toHaveLength(1);
+    expect(warnsDefault[0]).toMatch(
+      'McUser: query executed outside any transaction',
+    );
+    // Чужая конфигурация не получила предупреждение.
+    expect(warnsReporting).toHaveLength(0);
+
+    await McReport.findAll();
+    expect(warnsDefault).toHaveLength(1);
+    expect(warnsReporting).toHaveLength(1);
+    expect(warnsReporting[0]).toMatch(
+      'McReport: query executed outside any transaction',
+    );
   });
 });

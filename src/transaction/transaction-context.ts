@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { YdbExecutor } from '../core/interfaces.js';
 import type { YdbTransactionsSettings } from '../core/interfaces.js';
+import type { QueryLogger } from '../core/query-logger.js';
 
 /** Параметры создания контекста активной транзакции (#208). */
 export interface TransactionContextParams {
@@ -134,6 +135,11 @@ export function runWithTransactionContext<T>(
  * - Иначе — обычный executor сущности; если настроен
  *   warnOutsideTransaction и транзакции нет вовсе — предупреждение.
  *
+ * Предупреждение уходит в логгер через опциональный хук `warn` (#206).
+ * Вызывающий код передаёт логгер СВОЕЙ конфигурации (resolveExecutorLogger);
+ * без переданного логгера предупреждение не эмитится вовсе — прямой записи
+ * в console.warn здесь нет.
+ *
  * Ошибки не глотаются и не заменяются фолбэками.
  */
 export function resolveOperationExecutor(
@@ -141,6 +147,7 @@ export function resolveOperationExecutor(
   fallback: YdbExecutor | undefined,
   entityName: string,
   scopeSettings?: Required<YdbTransactionsSettings>,
+  logger?: QueryLogger,
 ): YdbExecutor | undefined {
   const active = storage.getStore();
   const effectiveSettings = resolveTransactionSettings(scopeSettings);
@@ -171,7 +178,7 @@ export function resolveOperationExecutor(
   }
 
   if (effectiveSettings.warnOutsideTransaction && !active) {
-    console.warn(
+    logger?.warn?.(
       `[ydb-orm] ${entityName}: query executed outside any transaction ` +
         '(warnOutsideTransaction is enabled).',
     );

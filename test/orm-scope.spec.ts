@@ -20,6 +20,7 @@ import {
 } from '../src/transaction/transaction-context.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { createScriptedExecutor } from './helpers/ydb-mock.js';
+import { resolveExecutorLogger } from '../src/core/query-logger.js';
 
 @YdbEntity('scope_users_a')
 class ScopeUserA extends YdbBaseEntity {
@@ -165,10 +166,25 @@ describe('ORM scopes: независимые конфигурации в одн�
     const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const db = createMockExecutor().executor;
-      resolveOperationExecutor(undefined, db, 'A', warnScope.transactions);
+      // Логгер передаётся как при резолве из конфигурации (#206): промежуточный
+      // слой — resolveExecutorLogger(executor), для сконфигурированного
+      // executor'а это консольный фолбэк, поэтому устаналиваем через него.
+      resolveOperationExecutor(
+        undefined,
+        db,
+        'A',
+        warnScope.transactions,
+        resolveExecutorLogger(db),
+      );
       expect(warnSpy).toHaveBeenCalledTimes(1);
 
-      resolveOperationExecutor(undefined, db, 'B', quietScope.transactions);
+      resolveOperationExecutor(
+        undefined,
+        db,
+        'B',
+        quietScope.transactions,
+        resolveExecutorLogger(db),
+      );
       expect(warnSpy).toHaveBeenCalledTimes(1);
     } finally {
       warnSpy.mockRestore();
