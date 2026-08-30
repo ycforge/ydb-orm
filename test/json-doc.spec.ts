@@ -1,7 +1,7 @@
 import 'reflect-metadata';
 import { JsonDocEntity } from './fixtures/json_doc/json-doc.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
-import { Utf8, Json, JsonDocument } from '@ydbjs/value/primitive';
+import { Utf8, Json, JsonDocument, Uuid } from '@ydbjs/value/primitive';
 
 const uuid = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';
 const metadata = { role: 'admin', settings: { theme: 'dark' } };
@@ -161,6 +161,133 @@ describe('JSON columns', () => {
       );
       expect((q.params.metadata_0_jsonvalue_path as any).value).toBe('$.role');
       expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
+    });
+
+    it('composes three JSON_EXISTS on the same column with AND (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonExists('metadata', '$.settings.theme')
+        .andWhereJsonExists('metadata', '$.security.role')
+        .andWhereJsonExists('metadata', '$.owner.id')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
+          'AND JSON_EXISTS(`metadata`, $metadata_1_jsonexists) ' +
+          'AND JSON_EXISTS(`metadata`, $metadata_2_jsonexists))',
+      );
+      expect((q.params.metadata_0_jsonexists as any).value).toBe(
+        '$.settings.theme',
+      );
+      expect((q.params.metadata_1_jsonexists as any).value).toBe(
+        '$.security.role',
+      );
+      expect((q.params.metadata_2_jsonexists as any).value).toBe('$.owner.id');
+    });
+
+    it('composes mixed JSON_EXISTS + JSON_VALUE on the same column (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonExists('metadata', '$.settings.theme')
+        .andWhereJsonValue('metadata', '$.role', 'admin')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
+          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
+          '= $metadata_1_jsonvalue_val)',
+      );
+      expect((q.params.metadata_0_jsonexists as any).value).toBe(
+        '$.settings.theme',
+      );
+      expect((q.params.metadata_1_jsonvalue_path as any).value).toBe('$.role');
+      expect((q.params.metadata_1_jsonvalue_val as any).value).toBe('admin');
+    });
+
+    it('composes two JSON_VALUE on the same column with AND (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonValue('metadata', '$.role', 'admin')
+        .andWhereJsonValue('metadata', '$.theme', 'dark')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) ' +
+          '= $metadata_0_jsonvalue_val ' +
+          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
+          '= $metadata_1_jsonvalue_val)',
+      );
+      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
+      expect((q.params.metadata_1_jsonvalue_val as any).value).toBe('dark');
+    });
+
+    it('composes JSON predicates with ordinary where/andWhere criteria (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .where({ uuid })
+        .andWhereJsonExists('metadata', '$.settings.theme')
+        .andWhereJsonValue('metadata', '$.role', 'admin')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE `uuid` = $uuid AND (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
+          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
+          '= $metadata_1_jsonvalue_val)',
+      );
+      expect(q.params.uuid).toBeInstanceOf(Uuid);
+      expect(String(q.params.uuid)).toBe(uuid);
+    });
+
+    it('keeps JSON predicates intact inside an $or group (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonValue('metadata', '$.role', 'admin')
+        .orWhere({ uuid })
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) ' +
+          '= $metadata_0_jsonvalue_val OR `uuid` = $uuid_1_eq)',
+      );
+      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
+      expect(q.params.uuid_1_eq).toBeInstanceOf(Uuid);
+      expect(String(q.params.uuid_1_eq)).toBe(uuid);
+    });
+
+    it('builds composed JSON predicates from a hand-written $and object (#201)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.find({
+        metadata: {
+          $and: [
+            { $jsonExists: '$.settings.theme' },
+            { $jsonValue: { path: '$.role', equals: 'admin' } },
+          ],
+        },
+      });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain(
+        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
+          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
+          '= $metadata_1_jsonvalue_val)',
+      );
     });
   });
 });

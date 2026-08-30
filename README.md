@@ -631,6 +631,19 @@ await EventEntity.query()
   .getMany();
 ```
 
+Несколько JSON-предикатов для одной колонки не перезаписывают друг друга,
+а объединяются через `AND` (#201):
+
+```ts
+// metadata: $.settings.theme существует И $.role = 'admin'
+await EventEntity.query()
+  .andWhereJsonExists('metadata', '$.settings.theme')
+  .andWhereJsonValue('metadata', '$.role', 'admin')
+  .getMany();
+// WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists)
+//    AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) = $metadata_1_jsonvalue_val)
+```
+
 ## Schema sync
 
 ### Standalone
