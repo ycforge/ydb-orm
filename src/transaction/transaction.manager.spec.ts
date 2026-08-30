@@ -16,6 +16,7 @@ import {
   getActiveTransaction,
   resolveOperationExecutor,
 } from './transaction-context.js';
+import { wrapExecutorWithLogging } from '../core/query-logger.js';
 import type {
   YdbExecutor,
   YdbTransactionHandle,
@@ -456,6 +457,93 @@ describe('runInTransaction(): nested call detection (#98)', () => {
 
     await manager.runInTransaction(() => Promise.resolve());
     expect(db.count()).toBe(2);
+  });
+});
+
+describe('nested detection and mixing with executor wrappers (#207)', () => {
+  const noopLogger = { log() {} };
+
+  it('recognizes nested runInTransaction across different wrappers of the same logical DB', async () => {
+    const db = makeFakeDb();
+    const managerA = new YdbTransactionManager(db.executor);
+    // Вторая обёртка того же логического executor'а (логирование).
+    const managerB = new YdbTransactionManager(
+      wrapExecutorWithLogging(db.executor, noopLogger),
+    );
+
+    await expect(
+      managerA.runInTransaction(() =>
+        managerB.runInTransaction(() => Promise.resolve('inner')),
+      ),
+    ).rejects.toThrow(/Nested runInTransaction\(\) detected/);
+
+    // Вторая независимая транзакция не открылась — вложенность распознана.
+    expect(db.count()).toBe(1);
+  });
+
+  it('reuses the active transaction across different wrappers of the same logical DB', async () => {
+    const db = makeFakeDb();
+    const managerA = new YdbTransactionManager(db.executor);
+    const managerB = new YdbTransactionManager(
+      wrapExecutorWithLogging(db.executor, noopLogger),
+    );
+
+    const result = await managerA.runInTransaction((outerTrx) =>
+      managerB.runInTransaction(
+        (innerTrx) => {
+          // reuse присоединяется к активной транзакции внешнего вызова —
+          // тот же trx, новая БД-транзакция не открывается.
+          expect(innerTrx).toBe(outerTrx);
+          return Promise.resolve('joined');
+        },
+        { reuse: true },
+      ),
+    );
+
+    expect(result).toBe('joined');
+    // Открыта ровно одна транзакция — внешняя.
+    expect(db.count()).toBe(1);
+  });
+
+  it('does not treat a wrapped executor of the SAME transaction as mixing (ambient)', async () => {
+    const db = makeFakeDb();
+    const manager = new YdbTransactionManager(db.executor);
+
+    await manager.runInTransaction(
+      (trx) => {
+        const wrappedTrx = wrapExecutorWithLogging(trx, noopLogger);
+        // Обёртка активной транзакции как явный { trx } при ambient —
+        // это та же логическая транзакция, ошибки смешивания быть не должно.
+        expect(() =>
+          resolveOperationExecutor(wrappedTrx, db.executor, 'UserEntity'),
+        ).not.toThrow();
+        return Promise.resolve();
+      },
+      { ambient: true },
+    );
+  });
+
+  it('still rejects a wrapped executor of a DISTINCT transaction as mixing (ambient)', async () => {
+    const db = makeFakeDb();
+    const manager = new YdbTransactionManager(db.executor);
+
+    await manager.runInTransaction(
+      async () => {
+        const stranger = makeFakeDb().executor;
+        const other = await new YdbTransactionManager(
+          stranger,
+        ).runInTransaction((otherTrx) =>
+          Promise.resolve(wrapExecutorWithLogging(otherTrx, noopLogger)),
+        );
+        // Посторонняя транзакция (хоть и обёрнутая) при активной ambient —
+        // смешивание, ошибка сохраняется.
+        expect(() =>
+          resolveOperationExecutor(other, db.executor, 'UserEntity'),
+        ).toThrow(/mixing detected.*different transaction is active/s);
+        return Promise.resolve();
+      },
+      { ambient: true },
+    );
   });
 });
 

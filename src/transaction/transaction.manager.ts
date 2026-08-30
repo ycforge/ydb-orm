@@ -7,7 +7,9 @@ import type {
   YdbTransactionsSettings,
 } from '../core/interfaces.js';
 import {
+  ensureExecutorIdentity,
   getActiveTransaction,
+  getTransactionId,
   resolveTransactionSettings,
   runWithTransactionContext,
   TRANSACTION_ID_KEY,
@@ -224,7 +226,12 @@ export class YdbTransactionManager {
   constructor(
     private readonly db: YdbExecutor,
     private readonly settings?: YdbTransactionsSettings,
-  ) {}
+  ) {
+    // Стабильный identity для логического DB-executor'а (#207): разные обёртки
+    // одного и того же executor'а разделяют его, поэтому детекция вложенных
+    // транзакций сравнивает контексты по значению, а не по ссылке на объект.
+    ensureExecutorIdentity(db);
+  }
 
   /**
    * Выполняет fn внутри транзакции YDB.
@@ -252,9 +259,11 @@ export class YdbTransactionManager {
 
     // Детекция вложенности работает всегда (ambient включён или нет).
     const active = getActiveTransaction();
-    // Сравниваем по transactionId, а не по ссылке на executor (#207).
-    // active.db === this.db проверяет, что это тот же executor БД.
-    if (active && active.db === this.db) {
+    // Сравниваем по identity-токену, а не по ссылке на executor (#207).
+    // active.db === this.db — ссылочное сравнение; разные обёртки одного
+    // логического DB-executor'а (логирование/retry) разделяют токен, поэтому
+    // проверка по значению распознаёт вложенную транзакцию того же DB.
+    if (active && getTransactionId(active.db) === getTransactionId(this.db)) {
       if (options?.reuse) {
         // Переиспользуем активную транзакцию: коммит/откат остаются у
         // внешнего вызова, новая БД-транзакция не открывается. Если на

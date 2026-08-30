@@ -1,4 +1,8 @@
 import { YdbExecutor } from './interfaces.js';
+import {
+  ensureExecutorIdentity,
+  inheritExecutorIdentity,
+} from '../transaction/transaction-context.js';
 
 /**
  * Информация о запросе для логирования.
@@ -309,6 +313,14 @@ export function wrapExecutorWithLogging(
         }),
     };
   };
+
+  // Identity (#207): обёртка и её исходник представляют один логический
+  // executor, поэтому обёртка наследует identity-токен исходника, а исходник
+  // при необходимости получает собственный токен. Разные обёртки одного
+  // логического executor'а разделяют токен — детекция вложенных транзакций
+  // сравнивает DB-контексты по значению, а не по ссылке на объект.
+  ensureExecutorIdentity(executor);
+  inheritExecutorIdentity(executor, wrapped);
 
   return wrapped as YdbExecutor;
 }

@@ -142,9 +142,11 @@ export function resolveOperationExecutor(
 }
 
 /**
- * Получает transactionId из executor'а транзакции.
- * Если executor не имеет transactionId (не создан через runInTransaction),
- * возвращает сам executor для обратной совместимости (сравнение по ссылке).
+ * Получает identity-токен из executor'а (#207).
+ * Возвращает символ, если он присвоен executor'у (для live-транзакции это
+ * его transactionId, для логического DB-executor'а — стабильный идентификатор
+ * этого executor'а), иначе сам executor для обратной совместимости
+ * (сравнение по ссылке для executor'ов без identity).
  */
 export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
   const withId = trx as unknown as Record<
@@ -152,4 +154,46 @@ export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
     symbol | undefined
   >;
   return withId[TRANSACTION_ID_KEY] ?? trx;
+}
+
+/**
+ * Присваивает executor'у стабильный identity-токен, если его ещё нет.
+ * Используется для логических DB-executor'ов (#207): разные обёртки одного
+ * и того же логического executor'а разделяют этот токен, поэтому детекция
+ * вложенных транзакций может сравнивать контексты по значению, а не по
+ * ссылке на объект.
+ */
+export function ensureExecutorIdentity(executor: YdbExecutor): symbol {
+  const existing = getTransactionId(executor);
+  if (typeof existing === 'symbol') return existing;
+  const id = Symbol('ydb.executor');
+  if (typeof executor === 'object' || typeof executor === 'function') {
+    (executor as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
+      TRANSACTION_ID_KEY
+    ] = id;
+  }
+  return id;
+}
+
+/**
+ * Наследует identity-токен с внутреннего executor'а на обёртку (#207):
+ * wrapExecutorWithLogging()/withRetryPolicy() создают НОВЫЕ объекты, и чтобы
+ * обёртки того же логического executor'а распознавались как один DB-контекст,
+ * они копируют токен с исходного executor'а.
+ */
+export function inheritExecutorIdentity(
+  source: YdbExecutor,
+  target: YdbExecutor,
+): void {
+  const id = (
+    source as unknown as Record<typeof TRANSACTION_ID_KEY, symbol | undefined>
+  )[TRANSACTION_ID_KEY];
+  if (
+    typeof id === 'symbol' &&
+    (typeof target === 'object' || typeof target === 'function')
+  ) {
+    (target as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
+      TRANSACTION_ID_KEY
+    ] = id;
+  }
 }
