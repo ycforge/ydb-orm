@@ -20,7 +20,10 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getActiveRecordInitToken } from './repository-token.js';
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
-import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import {
+  validateEntityMetadata,
+  validationIssuesToMessages,
+} from '../metadata/validate-entity.js';
 import {
   requestEntitiesForApp,
   type YdbEntityAppScope,
@@ -75,7 +78,9 @@ export function createActiveRecordEntityProvider(
       if (issues.length) {
         throw new Error(
           `Entity ${entityClass.name} metadata validation failed:\n` +
-            issues.map((i) => `  - ${i}`).join('\n'),
+            validationIssuesToMessages(issues)
+              .map((i) => `  - ${i}`)
+              .join('\n'),
         );
       }
 

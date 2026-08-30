@@ -8,7 +8,10 @@ import type { AadFormat } from '../encryption/aad.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
-import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import {
+  validateEntityMetadata,
+  validationIssuesToMessages,
+} from '../metadata/validate-entity.js';
 import {
   claimEntitiesForScopeWithTracking,
   getDefaultOrmScope,
@@ -88,7 +91,9 @@ export function configureEntities(
     if (issues.length) {
       throw new Error(
         `configureEntities(): metadata validation failed for ${entity.name}:\n` +
-          issues.map((i) => `  - ${i}`).join('\n'),
+          validationIssuesToMessages(issues)
+            .map((i) => `  - ${i}`)
+            .join('\n'),
       );
     }
   }

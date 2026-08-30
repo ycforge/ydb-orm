@@ -178,12 +178,19 @@ export {
 
 // Метаданные и реестр сущностей
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
-export { validateEntityMetadata } from './metadata/validate-entity.js';
+export {
+  validateEntityMetadata,
+  validationIssuesToMessages,
+} from './metadata/validate-entity.js';
 export {
   validateYdbTtlAgainstSchema,
   YDB_TTL_KEY,
 } from './decorators/ttl.decorator.js';
-export type { EntityValidationContext } from './metadata/validate-entity.js';
+export type {
+  EntityValidationContext,
+  EntityValidationIssue,
+  EntityValidationSeverity,
+} from './metadata/validate-entity.js';
 export type {
   YdbEntityMetadata,
   EncryptedFieldMeta,

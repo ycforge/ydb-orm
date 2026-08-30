@@ -15,7 +15,9 @@ import { YdbIndex } from '../decorators/index.decorator.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import {
   validateEntityMetadata,
+  validationIssuesToMessages,
   EntityValidationContext,
+  EntityValidationIssue,
 } from './validate-entity.js';
 
 const ctx: EntityValidationContext = {
@@ -194,41 +196,50 @@ describe('validateEntityMetadata', () => {
   });
 
   it('rejects class without @YdbEntity', () => {
-    expect(validateEntityMetadata(NotAnEntity, ctx)).toEqual([
+    const issues = validateEntityMetadata(NotAnEntity, ctx);
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('not decorated with @YdbEntity'),
     ]);
+    expect(issues[0].code).toBe('MISSING_ENTITY_DECORATOR');
+    expect(issues[0].severity).toBe('error');
+    expect(issues[0].path).toContain(NotAnEntity.name);
   });
 
   it('rejects entity without any primary key', () => {
     const issues = validateEntityMetadata(MissingPkColumn, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('must declare at least one primary key'),
     ]);
+    expect(issues[0].code).toBe('MISSING_PRIMARY_KEY');
   });
 
   it('rejects @YdbSecurityAAD on non-primary-key column', () => {
     const issues = validateEntityMetadata(AadOnNonPk, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining(
         '@YdbSecurityAAD field "tenant_id" must be a primary key column',
       ),
     ]);
+    expect(issues[0].code).toBe('SECURITY_AAD_NOT_PRIMARY_KEY');
+    expect(issues[0].path).toContain('.tenant_id');
   });
 
   it('rejects encrypted primary key', () => {
     const issues = validateEntityMetadata(EncryptedPk, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('primary key "uuid" cannot be encrypted'),
     ]);
+    expect(issues[0].code).toBe('ENCRYPTED_PRIMARY_KEY');
   });
 
   it('rejects @YdbSecurityAAD on Json column (not serializable to AAD)', () => {
     const issues = validateEntityMetadata(AadJsonPk, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining(
         '@YdbSecurityAAD field "attributes" has type Json, which cannot be serialized to AAD',
       ),
     ]);
+    expect(issues[0].code).toBe('SECURITY_AAD_UNSAFE_TYPE');
   });
 
   it('accepts @YdbSecurityAAD on Bytes column (base64-normalized in AAD)', () => {
@@ -243,53 +254,80 @@ describe('validateEntityMetadata', () => {
 
   it('rejects encrypted entity without configured providers', () => {
     const issues = validateEntityMetadata(ValidUser, noProviders);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('no encryptionProvider is configured'),
       expect.stringContaining('no blindIndexProvider is configured'),
+    ]);
+    expect(issues.map((i) => i.code)).toEqual([
+      'ENCRYPTION_PROVIDER_MISSING',
+      'BLIND_INDEX_PROVIDER_MISSING',
     ]);
   });
 
   it('rejects relation to class without @YdbEntity', () => {
     const issues = validateEntityMetadata(BadRelTarget, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('not decorated with @YdbEntity'),
     ]);
+    expect(issues[0].code).toBe('RELATION_TARGET_NOT_ENTITY');
   });
 
   it('rejects one-to-many with unknown join column on target', () => {
     const issues = validateEntityMetadata(BadJoinColumn, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('join column "no_such_column" is not a column'),
     ]);
+    expect(issues[0].code).toBe('RELATION_JOIN_COLUMN_NOT_ON_TARGET');
   });
 
   it('rejects @JoinTable without @ManyToMany', () => {
     const issues = validateEntityMetadata(JoinTableWithoutManyToMany, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining(
         '@JoinTable("v_orphan_jt") on "tags" without @ManyToMany',
       ),
     ]);
+    expect(issues[0].code).toBe('JOIN_TABLE_WITHOUT_MANY_TO_MANY');
   });
 
   it('rejects many-to-many without @JoinTable on any side', () => {
     const issues = validateEntityMetadata(M2mNoJoinTableA, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('requires @JoinTable on one of the sides'),
     ]);
+    expect(issues[0].code).toBe('M2M_NO_JOIN_TABLE');
   });
 
   it('rejects @YdbIndex with unknown column', () => {
     const issues = validateEntityMetadata(BadIndexColumn, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('@YdbIndex references unknown column "nope"'),
     ]);
+    expect(issues[0].code).toBe('INDEX_UNKNOWN_COLUMN');
   });
 
   it('rejects many-to-many with @JoinTable on both sides', () => {
     const issues = validateEntityMetadata(M2mTwoJoinTablesA, ctx);
-    expect(issues).toEqual([
+    expect(validationIssuesToMessages(issues)).toEqual([
       expect.stringContaining('both sides have @JoinTable'),
     ]);
+    expect(issues[0].code).toBe('M2M_BOTH_JOIN_TABLES');
+  });
+
+  it('every issue carries a stable code, severity and the human message', () => {
+    const issues: EntityValidationIssue[] = validateEntityMetadata(
+      AadOnNonPk,
+      ctx,
+    );
+    for (const issue of issues) {
+      expect(typeof issue.code).toBe('string');
+      expect(issue.code.length).toBeGreaterThan(0);
+      expect(issue.severity).toBe('error');
+      expect(typeof issue.message).toBe('string');
+      expect(issue.message.length).toBeGreaterThan(0);
+      expect(validationIssuesToMessages(issues)).toEqual(
+        issues.map((i) => i.message),
+      );
+    }
   });
 });

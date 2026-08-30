@@ -20,6 +20,70 @@ export interface EntityValidationContext {
   blindIndexProviderConfigured: boolean;
 }
 
+/** Строгость диагностики. Модель валидации сейчас различает только 'error'. */
+export type EntityValidationSeverity = 'error' | 'warning';
+
+/**
+ * Структурированная диагностика проблемы в метаданных сущности (#213).
+ *
+ * - `code` — стабильный машинно-читаемый код правила (не менять и не
+ *   выводить из текста; новые правила добавляют новые коды, а не парсят строки).
+ * - `path` — локус проблемы в метаданных (сущность/поле/отношение), когда
+ *   применимо; формат точечный, например `entity.User.email`.
+ * - `message` — человекочитаемое описание (прежний текст).
+ * - `severity` — строгость; сейчас все проблемы блокируют инициализацию,
+ *   но тип оставляет место для будущих предупреждений.
+ */
+export interface EntityValidationIssue {
+  code: string;
+  path?: string;
+  message: string;
+  severity: EntityValidationSeverity;
+}
+
+/** Возвращает прежнее человекочитаемое представление диагностики. */
+export function validationIssueToMessage(issue: EntityValidationIssue): string {
+  return issue.message;
+}
+
+/** Собирает список диагностик в прежний плоский список человекочитаемых строк. */
+export function validationIssuesToMessages(
+  issues: readonly EntityValidationIssue[],
+): string[] {
+  return issues.map(validationIssueToMessage);
+}
+
+const ISSUE_ERROR: EntityValidationSeverity = 'error';
+
+function entityIssue(
+  entity: typeof YdbBaseEntity,
+  code: string,
+  message: string,
+  field?: string,
+): EntityValidationIssue {
+  const base = `entity.${entity.name}`;
+  return {
+    code,
+    path: field === undefined ? base : `${base}.${field}`,
+    message,
+    severity: ISSUE_ERROR,
+  };
+}
+
+function relationIssue(
+  entity: typeof YdbBaseEntity,
+  code: string,
+  message: string,
+  propertyKey: string,
+): EntityValidationIssue {
+  return {
+    code,
+    path: `entity.${entity.name}.relation.${propertyKey}`,
+    message,
+    severity: ISSUE_ERROR,
+  };
+}
+
 /**
  * Типы YDB-колонок, которые нельзя использовать как Security AAD (#165):
  * значения этих колонок — объекты (JSON), и toAadString не имеет для них
@@ -29,23 +93,36 @@ const AAD_UNSAFE_TYPES = new Set(['Json', 'JsonDocument']);
 
 /**
  * Валидация метаданных сущности при инициализации модуля.
- * Возвращает список проблем (пустой, если всё в порядке) — вызывающий код
- * решает, как бросать ошибку. Чистая функция, без сети.
+ * Возвращает список структурированных диагностик (пустой, если всё в порядке) —
+ * вызывающий код решает, как бросать ошибку. Чистая функция, без сети.
  */
 export function validateEntityMetadata(
   entity: typeof YdbBaseEntity,
   ctx: EntityValidationContext,
-): string[] {
-  const issues: string[] = [];
+): EntityValidationIssue[] {
+  const issues: EntityValidationIssue[] = [];
   const meta = getYdbEntityMetadata(entity);
 
   if (!meta) {
-    return [`Class ${entity.name} is not decorated with @YdbEntity`];
+    return [
+      {
+        code: 'MISSING_ENTITY_DECORATOR',
+        path: `entity.${entity.name}`,
+        message: `Class ${entity.name} is not decorated with @YdbEntity`,
+        severity: ISSUE_ERROR,
+      },
+    ];
   }
+
+  const entityName = meta.target.name;
 
   if (meta.primaryKeys.length === 0) {
     issues.push(
-      `entity "${meta.target.name}" must declare at least one primary key via @YdbPrimaryColumn`,
+      entityIssue(
+        entity,
+        'MISSING_PRIMARY_KEY',
+        `entity "${entityName}" must declare at least one primary key via @YdbPrimaryColumn`,
+      ),
     );
   }
 
@@ -53,7 +130,12 @@ export function validateEntityMetadata(
   for (const pk of pkFields) {
     if (!meta.schema[pk]) {
       issues.push(
-        `primary key column "${pk}" is not declared via @YdbColumn/@YdbPrimaryColumn`,
+        entityIssue(
+          entity,
+          'PRIMARY_KEY_UNDECLARED',
+          `primary key column "${pk}" is not declared via @YdbColumn/@YdbPrimaryColumn`,
+          pk,
+        ),
       );
     }
   }
@@ -61,7 +143,12 @@ export function validateEntityMetadata(
   for (const aadField of meta.aadFields) {
     if (!pkFields.includes(aadField)) {
       issues.push(
-        `@YdbSecurityAAD field "${aadField}" must be a primary key column`,
+        entityIssue(
+          entity,
+          'SECURITY_AAD_NOT_PRIMARY_KEY',
+          `@YdbSecurityAAD field "${aadField}" must be a primary key column`,
+          aadField,
+        ),
       );
     }
 
@@ -72,9 +159,14 @@ export function validateEntityMetadata(
     const aadType = meta.schema[aadField];
     if (aadType && AAD_UNSAFE_TYPES.has(aadType)) {
       issues.push(
-        `@YdbSecurityAAD field "${aadField}" has type ${aadType}, which cannot be ` +
-          `serialized to AAD; use a scalar type (Uuid, Utf8, Bytes, Int32, Int64, ` +
-          `Bool, Double, Float, Date, Datetime, Timestamp)`,
+        entityIssue(
+          entity,
+          'SECURITY_AAD_UNSAFE_TYPE',
+          `@YdbSecurityAAD field "${aadField}" has type ${aadType}, which cannot be ` +
+            `serialized to AAD; use a scalar type (Uuid, Utf8, Bytes, Int32, Int64, ` +
+            `Bool, Double, Float, Date, Datetime, Timestamp)`,
+          aadField,
+        ),
       );
     }
   }
@@ -82,14 +174,23 @@ export function validateEntityMetadata(
   for (const ef of meta.encryptedFields) {
     if (pkFields.includes(ef.propertyKey)) {
       issues.push(
-        `primary key "${ef.propertyKey}" cannot be encrypted (@YdbEncrypted)`,
+        entityIssue(
+          entity,
+          'ENCRYPTED_PRIMARY_KEY',
+          `primary key "${ef.propertyKey}" cannot be encrypted (@YdbEncrypted)`,
+          ef.propertyKey,
+        ),
       );
     }
   }
 
   if (meta.encryptedFields.length && !ctx.encryptionProviderConfigured) {
     issues.push(
-      `entity has @YdbEncrypted fields, but no encryptionProvider is configured`,
+      entityIssue(
+        entity,
+        'ENCRYPTION_PROVIDER_MISSING',
+        `entity has @YdbEncrypted fields, but no encryptionProvider is configured`,
+      ),
     );
   }
   if (
@@ -97,14 +198,21 @@ export function validateEntityMetadata(
     !ctx.blindIndexProviderConfigured
   ) {
     issues.push(
-      `entity has blind index fields, but no blindIndexProvider is configured`,
+      entityIssue(
+        entity,
+        'BLIND_INDEX_PROVIDER_MISSING',
+        `entity has blind index fields, but no blindIndexProvider is configured`,
+      ),
     );
   }
 
   const ttl = getYdbTtlMetadata(entity);
   if (ttl) {
     issues.push(
-      ...validateYdbTtlAgainstSchema(meta.target.name, ttl, meta.schema),
+      ...validateYdbTtlAgainstSchema(meta.target.name, ttl, meta.schema).map(
+        (message) =>
+          entityIssue(entity, 'TTL_INVALID', message, `ttl.${ttl.column}`),
+      ),
     );
   }
 
@@ -119,11 +227,24 @@ export function validateEntityMetadata(
   ]);
   for (const idx of getYdbIndexesMetadata(entity)) {
     if (!idx.columns.length) {
-      issues.push('@YdbIndex without columns');
+      issues.push(
+        entityIssue(
+          entity,
+          'INDEX_WITHOUT_COLUMNS',
+          '@YdbIndex without columns',
+        ),
+      );
     }
     for (const col of idx.columns) {
       if (!allowedColumns.has(col)) {
-        issues.push(`@YdbIndex references unknown column "${col}"`);
+        issues.push(
+          entityIssue(
+            entity,
+            'INDEX_UNKNOWN_COLUMN',
+            `@YdbIndex references unknown column "${col}"`,
+            col,
+          ),
+        );
       }
     }
   }
@@ -134,7 +255,12 @@ export function validateEntityMetadata(
     );
     if (!rel) {
       issues.push(
-        `@JoinTable("${jt.tableName}") on "${jt.propertyKey}" without @ManyToMany`,
+        relationIssue(
+          entity,
+          'JOIN_TABLE_WITHOUT_MANY_TO_MANY',
+          `@JoinTable("${jt.tableName}") on "${jt.propertyKey}" without @ManyToMany`,
+          jt.propertyKey,
+        ),
       );
     }
   }
@@ -151,14 +277,19 @@ function validateRelation(
   schema: Record<string, unknown>,
   rel: RelationMetadata,
   _ctx: EntityValidationContext,
-): string[] {
-  const issues: string[] = [];
+): EntityValidationIssue[] {
+  const issues: EntityValidationIssue[] = [];
   const Target = rel.target();
   const targetMeta = getYdbEntityMetadata(Target);
 
   if (!targetMeta) {
     issues.push(
-      `relation "${rel.propertyKey}" targets ${Target.name}, which is not decorated with @YdbEntity`,
+      relationIssue(
+        entity,
+        'RELATION_TARGET_NOT_ENTITY',
+        `relation "${rel.propertyKey}" targets ${Target.name}, which is not decorated with @YdbEntity`,
+        rel.propertyKey,
+      ),
     );
     return issues;
   }
@@ -175,7 +306,12 @@ function validateRelation(
       });
     } catch (err) {
       issues.push(
-        `${rel.type} "${rel.propertyKey}": ${(err as Error).message}`,
+        relationIssue(
+          entity,
+          'RELATION_JOIN_COLUMN_INVALID',
+          `${rel.type} "${rel.propertyKey}": ${(err as Error).message}`,
+          rel.propertyKey,
+        ),
       );
     }
   }
@@ -183,7 +319,12 @@ function validateRelation(
   if (rel.type === 'one-to-many') {
     if (joinColumn !== undefined && !targetMeta.schema[joinColumn]) {
       issues.push(
-        `one-to-many "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${Target.name}`,
+        relationIssue(
+          entity,
+          'RELATION_JOIN_COLUMN_NOT_ON_TARGET',
+          `one-to-many "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${Target.name}`,
+          rel.propertyKey,
+        ),
       );
     }
   }
@@ -191,7 +332,12 @@ function validateRelation(
   if (rel.type === 'many-to-one' || rel.type === 'one-to-one') {
     if (joinColumn !== undefined && !schema[joinColumn]) {
       issues.push(
-        `${rel.type} "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${entity.name}`,
+        relationIssue(
+          entity,
+          'RELATION_JOIN_COLUMN_NOT_ON_SOURCE',
+          `${rel.type} "${rel.propertyKey}": join column "${joinColumn}" is not a column of ${entity.name}`,
+          rel.propertyKey,
+        ),
       );
     }
   }
@@ -211,13 +357,23 @@ function validateRelation(
 
     if (ownJoin && inverseJoin) {
       issues.push(
-        `many-to-many "${rel.propertyKey}": both sides have @JoinTable ` +
-          `(${entity.name} and ${Target.name}) — only one owning side is allowed`,
+        relationIssue(
+          entity,
+          'M2M_BOTH_JOIN_TABLES',
+          `many-to-many "${rel.propertyKey}": both sides have @JoinTable ` +
+            `(${entity.name} and ${Target.name}) — only one owning side is allowed`,
+          rel.propertyKey,
+        ),
       );
     } else if (!ownJoin && !inverseJoin) {
       issues.push(
-        `many-to-many "${rel.propertyKey}" requires @JoinTable on one of the sides ` +
-          `(${entity.name} or ${Target.name})`,
+        relationIssue(
+          entity,
+          'M2M_NO_JOIN_TABLE',
+          `many-to-many "${rel.propertyKey}" requires @JoinTable on one of the sides ` +
+            `(${entity.name} or ${Target.name})`,
+          rel.propertyKey,
+        ),
       );
     } else {
       // Ошибки конфигурации m2m (нет PK, составной PK, невыводимый тип
@@ -230,7 +386,14 @@ function validateRelation(
           ownJoin ? rel : inverseRel!,
         );
       } catch (err) {
-        issues.push((err as Error).message);
+        issues.push(
+          relationIssue(
+            entity,
+            'M2M_JOIN_TABLE_INVALID',
+            (err as Error).message,
+            rel.propertyKey,
+          ),
+        );
       }
     }
   }
