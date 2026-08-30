@@ -5,6 +5,15 @@ import type { YdbTransactionsSettings } from '../core/interfaces.js';
 /** Уникальный ключ для хранения transactionId на executor'е. */
 export const TRANSACTION_ID_KEY = Symbol.for('ydb.transaction.id');
 
+/** Параметры создания контекста активной транзакции (#208). */
+export interface TransactionContextParams {
+  transactionId: symbol;
+  trx: YdbExecutor;
+  db: YdbExecutor;
+  signal?: AbortSignal;
+  ambient: boolean;
+}
+
 /**
  * Активная транзакция в цепочке async-вызовов (#98).
  *
@@ -19,18 +28,40 @@ export const TRANSACTION_ID_KEY = Symbol.for('ydb.transaction.id');
  * Идентичность транзакции определяется `transactionId`, а не ссылкой на
  * executor, так как разные обёртки могут представлять одну и ту же
  * логическую транзакцию (например, при оборачивании executor'а для логирования).
+ *
+ * Инварианты (#208) валидируются в единственной точке создания — конструкторе,
+ * поэтому невалидный инстанс создать невозможно ни через фабрику
+ * createTransactionContext(), ни напрямую через new. Приватное brand-поле
+ * делает контекст непрозрачным для структурной типизации и защищает
+ * runWithTransactionContext() от подделок через cast/instanceof.
  */
-export interface ActiveTransactionContext {
+export class ActiveTransactionContext {
   /** Уникальный идентификатор транзакции (символ) — для сравнения по значению. */
-  transactionId: symbol;
+  readonly transactionId: symbol;
   /** Executor транзакции — передаётся в операции вместо executor'а сущности. */
-  trx: YdbExecutor;
+  readonly trx: YdbExecutor;
   /** Executor БД, открывший транзакцию: детекция вложенности по transactionId. */
-  db: YdbExecutor;
+  readonly db: YdbExecutor;
   /** Сигнал отмены конкретной попытки транзакции (при retry — новый). */
-  signal?: AbortSignal;
+  readonly signal: AbortSignal | undefined;
   /** Включён ли ambient auto-join для этого контекста. */
-  ambient: boolean;
+  readonly ambient: boolean;
+  /** Приватная brand-метка: есть только у инстансов, созданных через фабрику. */
+  readonly #brand = Symbol('ActiveTransactionContext');
+
+  constructor(params: TransactionContextParams) {
+    validateTransactionContextParams(params);
+    this.transactionId = params.transactionId;
+    this.trx = params.trx;
+    this.db = params.db;
+    this.signal = params.signal;
+    this.ambient = params.ambient;
+  }
+
+  /** Возвращает true только для настоящего фабричного инстанса. */
+  static isContext(value: unknown): value is ActiveTransactionContext {
+    return typeof value === 'object' && value !== null && #brand in value;
+  }
 }
 
 const storage = new AsyncLocalStorage<ActiveTransactionContext>();
@@ -76,11 +107,22 @@ export function getActiveTransaction(): ActiveTransactionContext | undefined {
   return storage.getStore();
 }
 
-/** Выполняет fn с заданным контекстом активной транзакции. */
+/**
+ * Выполняет fn с заданным контекстом активной транзакции.
+ *
+ * Публичная граница (#208): контекст обязан быть настоящим инстансом,
+ * созданным через createTransactionContext() — приватный brand-проверкой
+ * исключаются и обычные объекты, и подделки через cast/instanceof.
+ */
 export function runWithTransactionContext<T>(
   context: ActiveTransactionContext,
   fn: () => Promise<T>,
 ): Promise<T> {
+  if (!ActiveTransactionContext.isContext(context)) {
+    throw new Error(
+      'ActiveTransactionContext: invalid context. Create it via createTransactionContext().',
+    );
+  }
   return storage.run(context, fn);
 }
 
@@ -155,9 +197,8 @@ export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
 }
 
 /**
- * Валидирует инварианты ActiveTransactionContext и создаёт контекст.
+ * Единственная точка валидации инвариантов ActiveTransactionContext (#208):
  *
- * Инварианты:
  * - transactionId должен быть символом
  * - trx должен быть валидным executor'ом (объект или функция)
  * - db должен быть валидным executor'ом (объект или функция)
@@ -166,13 +207,9 @@ export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
  *
  * @throws Error если любой инвариант нарушен
  */
-export function createTransactionContext(params: {
-  transactionId: symbol;
-  trx: YdbExecutor;
-  db: YdbExecutor;
-  signal?: AbortSignal;
-  ambient: boolean;
-}): ActiveTransactionContext {
+function validateTransactionContextParams(
+  params: TransactionContextParams,
+): void {
   if (typeof params.transactionId !== 'symbol') {
     throw new Error(
       'ActiveTransactionContext: transactionId must be a symbol.',
@@ -202,11 +239,15 @@ export function createTransactionContext(params: {
   if (typeof params.ambient !== 'boolean') {
     throw new Error('ActiveTransactionContext: ambient must be a boolean.');
   }
-  return {
-    transactionId: params.transactionId,
-    trx: params.trx,
-    db: params.db,
-    signal: params.signal,
-    ambient: params.ambient,
-  };
+}
+
+/**
+ * Канонический способ получения ActiveTransactionContext: валидация инвариантов
+ * (#208) происходит в конструкторе, brand-поле блокирует структурные подделки
+ * (объектные литералы и касты в runWithTransactionContext отклоняются).
+ */
+export function createTransactionContext(
+  params: TransactionContextParams,
+): ActiveTransactionContext {
+  return new ActiveTransactionContext(params);
 }

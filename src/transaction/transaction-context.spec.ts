@@ -3,6 +3,7 @@ import {
   createTransactionContext,
   runWithTransactionContext,
   getActiveTransaction,
+  ActiveTransactionContext,
 } from './transaction-context.js';
 import type { YdbExecutor } from '../core/interfaces.js';
 
@@ -304,6 +305,105 @@ describe('runWithTransactionContext(): context propagation with validation (#208
       ).rejects.toThrow('inner error');
 
       expect(getActiveTransaction()).toBe(outerContext);
+    });
+
+    expect(getActiveTransaction()).toBeUndefined();
+  });
+});
+
+describe('runWithTransactionContext(): rejects invalid contexts at the boundary (#208)', () => {
+  const validTrx = makeMockExecutor();
+  const validDb = makeMockExecutor();
+
+  it('rejects a plain object cast to a context (factory bypass)', () => {
+    const fake = {
+      transactionId: Symbol('fake'),
+      trx: validTrx,
+      db: validDb,
+      ambient: true,
+    } as unknown as ActiveTransactionContext;
+
+    expect(() =>
+      runWithTransactionContext(fake, () => Promise.resolve('never')),
+    ).toThrow('invalid context');
+
+    // Контекст не попал в ALS.
+    expect(getActiveTransaction()).toBeUndefined();
+  });
+
+  it('rejects cast contexts with invalid field values', () => {
+    for (const invalid of [
+      { transactionId: 'id', trx: validTrx, db: validDb, ambient: true },
+      { transactionId: Symbol('t'), trx: null, db: validDb, ambient: true },
+      { transactionId: Symbol('t'), trx: validTrx, db: null, ambient: true },
+      {
+        transactionId: Symbol('t'),
+        trx: validTrx,
+        db: validDb,
+        ambient: 'yes',
+      },
+      {
+        transactionId: Symbol('t'),
+        trx: validTrx,
+        db: validDb,
+        signal: {},
+        ambient: true,
+      },
+    ] as unknown as ActiveTransactionContext[]) {
+      expect(() =>
+        runWithTransactionContext(invalid, () => Promise.resolve('never')),
+      ).toThrow('ActiveTransactionContext');
+      expect(getActiveTransaction()).toBeUndefined();
+    }
+  });
+
+  it('rejects null and undefined contexts', () => {
+    expect(() =>
+      runWithTransactionContext(
+        null as unknown as ActiveTransactionContext,
+        () => Promise.resolve('never'),
+      ),
+    ).toThrow('invalid context');
+    expect(() =>
+      runWithTransactionContext(
+        undefined as unknown as ActiveTransactionContext,
+        () => Promise.resolve('never'),
+      ),
+    ).toThrow('invalid context');
+    expect(getActiveTransaction()).toBeUndefined();
+  });
+
+  it('rejects a prototype-forged context (instanceof cannot fake the brand)', () => {
+    const forged = Object.create(
+      ActiveTransactionContext.prototype,
+    ) as unknown as ActiveTransactionContext;
+
+    expect(() =>
+      runWithTransactionContext(forged, () => Promise.resolve('never')),
+    ).toThrow('invalid context');
+    expect(getActiveTransaction()).toBeUndefined();
+  });
+
+  it('preserves an active outer context when an invalid inner context is rejected', async () => {
+    const outer = createTransactionContext({
+      transactionId: Symbol('outer'),
+      trx: validTrx,
+      db: validDb,
+      ambient: true,
+    });
+    const fake = {
+      transactionId: Symbol('fake'),
+      trx: validTrx,
+      db: validDb,
+      ambient: false,
+    } as unknown as ActiveTransactionContext;
+
+    await runWithTransactionContext(outer, () => {
+      expect(() =>
+        runWithTransactionContext(fake, () => Promise.resolve('never')),
+      ).toThrow('invalid context');
+      expect(getActiveTransaction()).toBe(outer);
+      return Promise.resolve();
     });
 
     expect(getActiveTransaction()).toBeUndefined();

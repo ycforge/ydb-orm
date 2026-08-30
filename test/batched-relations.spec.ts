@@ -14,6 +14,7 @@ import {
   MAX_IN_CLAUSE_VALUES,
 } from '../src/index.js';
 import {
+  createTransactionContext,
   runWithTransactionContext,
   configureTransactionContext,
 } from '../src/transaction/transaction-context.js';
@@ -449,11 +450,12 @@ describe('#86: батчинг loadRelations', () => {
       configureTransactionContext({ ambient: true });
       try {
         await runWithTransactionContext(
-          {
+          createTransactionContext({
+            transactionId: Symbol('batched-relations'),
             trx: trxMock.executor,
             db: dbMock.executor,
             ambient: true,
-          },
+          }),
           async () => {
             await userRepo().relations.loadRelations(users, ['photos']);
           },
