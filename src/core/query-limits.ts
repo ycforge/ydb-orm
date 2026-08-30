@@ -51,6 +51,27 @@ export function chunkInValues<T>(
  * тоже схлопываются в одно значение, хотя по ссылке это разные объекты.
  */
 export function dedupeInValues<T>(values: readonly T[]): T[] {
+  const hasObject = values.some(
+    (value) => typeof value === 'object' && value !== null,
+  );
+  if (!hasObject) {
+    // Быстрый путь: все значения — примитивы (string/number/bigint/boolean/
+    // null/undefined). Нативные Set-семантики (SameValueZero с различением
+    // типов и нормализацией -0/0) в точности совпадают с каноническим
+    // value-ключом однокомпонентных примитивов (#174), поэтому сериализация
+    // каждого значения не нужна.
+    const seen = new Set<T>();
+    const out: T[] = [];
+    for (const value of values) {
+      if (!seen.has(value)) {
+        seen.add(value);
+        out.push(value);
+      }
+    }
+    return out;
+  }
+  // Fallback: есть Bytes/Date — сравнение по значению требует
+  // канонического ключа.
   const seen = new Map<string, T>();
   for (const value of values) {
     const key = valueIdentityKey([value]);
