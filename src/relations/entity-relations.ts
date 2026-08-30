@@ -131,9 +131,27 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * Батчинг и guard-ы (#86): пустой список владельцев — ноль запросов;
    * дубликаты PK владельцев убираются; join-select чанкуется по
    * MAX_IN_CLAUSE_VALUES (чанки по owner-PK не пересекаются, поэтому
-   * link-строки уникальны без дополнительной дедупликации); выборка
-   * инверсных сущностей идёт через fetchByColumnIn (дедупликация FK,
-   * чанкинг, слияние без дубликатов).
+   * каждый владелец встречается ровно в одном чанке).
+   *
+   * Память ограничена (#209) и семантика эквивалентна одному согласованному
+   * чтению (#224): join-таблица читается ровно ОДИН раз на чанк — для
+   * каждого чанка сразу собираются уникальные inverse FK, по ним выбираются
+   * (только ещё не загруженные) инверсные сущности, и результат заполняется.
+   * Полный `links[]` не материализуется, повторного чтения изменяемого
+   * состояния join-таблицы нет — рассинхронизации «pass 1 vs pass 2», когда
+   * ссылка появляется во втором чтении, но отсутствует в собранных FK (и
+   * потому молча теряется), не существует: каждый inverse FK результата
+   * получен ровно из того же чтения, что и его ссылка.
+   *
+   * Общие инстансы между чанками: инверсные сущности кешируются по PK в
+   * `byInversePk` — один тег, общий для нескольких владельцев в разных
+   * чанках, гидратируется (и получает afterFind) ровно один раз и разделяется
+   * между владельцами по ссылке. Инверсный FK, уже загруженный в другом
+   * чанке, не выбирается повторно (без N+1 и без дублей инстансов).
+   *
+   * Кардинальность и порядок совпадают с одиночным чтением join-таблицы:
+   * одинаковые (owner, inverse) строки не дедуплицируются, порядок сущностей
+   * владельца — порядок строк его чанка из БД.
    */
   private async loadManyToManyRelation(
     items: YdbBaseEntity[],
@@ -154,63 +172,78 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     if (!uniqueOwnerPks.length) return new Map();
 
     const ownerPkType = joinTable.ownerColumnType;
+    const inverseColumn = joinTable.inverseColumn;
+    const ownerColumn = joinTable.ownerColumn;
+    const targetPkField = getPrimaryKey(Target);
 
-    const links: { [key: string]: any }[] = [];
+    const result = new Map<string, YdbBaseEntity[]>();
+    // Общий кеш инверсных сущностей: общий инстанс на PK между чанками.
+    // Растёт до числа различных инверсных сущностей (масштаб результата),
+    // а не до числа повторений ссылок.
+    const byInversePk = new Map<string, YdbBaseEntity>();
+
     for (const chunk of chunkInValues(uniqueOwnerPks)) {
       const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
 
       const sql =
-        `SELECT ${quoteIdentifier(joinTable.ownerColumn)}, ` +
-        `${quoteIdentifier(joinTable.inverseColumn)} ` +
+        `SELECT ${quoteIdentifier(ownerColumn)}, ` +
+        `${quoteIdentifier(inverseColumn)} ` +
         `FROM ${quoteIdentifier(joinTable.tableName)} ` +
-        `WHERE ${quoteIdentifier(joinTable.ownerColumn)} IN (${inParams})`;
+        `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
 
       const joinQuery = exec([sql] as unknown as TemplateStringsArray);
       chunk.forEach((value, i) => {
-        joinQuery.parameter(
-          `p${i}`,
-          mapToYdb(ownerPkType, value, joinTable.ownerColumn),
-        );
+        joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
       });
 
       const chunkRows = await this.executeQuery(joinQuery, options);
-      // Без spread: join-таблица может быть большой, а у push(...rows)
-      // есть лимит на число аргументов вызова.
       const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+
+      // Уникальные inverse FK этого чанка (для выборки сущностей).
+      const inverseFkValues: any[] = [];
+      const seenFk = new Set<string>();
       for (const row of rows) {
-        links.push(row);
+        const inverseFk = row[inverseColumn];
+        if (inverseFk === undefined || inverseFk === null) continue;
+        const key = relationKey(inverseFk);
+        if (!seenFk.has(key)) {
+          seenFk.add(key);
+          inverseFkValues.push(inverseFk);
+        }
       }
-    }
 
-    const inverseFks = links
-      .map((row) => row[joinTable.inverseColumn])
-      .filter((v) => v !== undefined && v !== null);
+      // Выбираем только те инверсные сущности, которых ещё нет в кеше:
+      // общие инстансы между чанками, без повторной гидратации и без N+1.
+      const missing = inverseFkValues.filter(
+        (fk) => !byInversePk.has(relationKey(fk)),
+      );
+      if (missing.length) {
+        const relatedEntities = await this.fetchByColumnIn(
+          Target,
+          targetPkField,
+          missing,
+          options,
+          hydration,
+        );
+        for (const entity of relatedEntities) {
+          byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
+        }
+      }
 
-    const targetPkField = getPrimaryKey(Target);
-    const relatedEntities = await this.fetchByColumnIn(
-      Target,
-      targetPkField,
-      inverseFks,
-      options,
-      hydration,
-    );
-
-    const byInversePk = new Map<string, YdbBaseEntity>();
-    for (const entity of relatedEntities) {
-      byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
-    }
-
-    const result = new Map<string, YdbBaseEntity[]>();
-    for (const row of links) {
-      const ownerFk = row[joinTable.ownerColumn];
-      const inverseFk = row[joinTable.inverseColumn];
-      const entity = byInversePk.get(relationKey(inverseFk));
-      if (!entity) continue;
-      const group = result.get(relationKey(ownerFk));
-      if (group) {
-        group.push(entity);
-      } else {
-        result.set(relationKey(ownerFk), [entity]);
+      // Заполняем результат по строкам этого единственного чтения join-
+      // таблицы: порядок и кардинальность — как у базового SELECT'а.
+      for (const row of rows) {
+        const ownerFk = row[ownerColumn];
+        const inverseFk = row[inverseColumn];
+        if (inverseFk === undefined || inverseFk === null) continue;
+        const entity = byInversePk.get(relationKey(inverseFk));
+        if (!entity) continue;
+        const group = result.get(relationKey(ownerFk));
+        if (group) {
+          group.push(entity);
+        } else {
+          result.set(relationKey(ownerFk), [entity]);
+        }
       }
     }
 
