@@ -8,7 +8,10 @@ import type { AadFormat } from '../encryption/aad.js';
 import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getEntityRuntime } from '../entity/entity-runtime.js';
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
-import { validateEntityMetadata } from '../metadata/validate-entity.js';
+import {
+  validateEntityMetadataIssues,
+  validationIssuesToMessages,
+} from '../metadata/validate-entity.js';
 import {
   claimEntitiesForScopeWithTracking,
   getDefaultOrmScope,
@@ -78,7 +81,7 @@ export function configureEntities(
   // сущность не получает executor/провайдеры и не оставляет владения.
   for (const entity of entities) {
     assertEntityClass(entity);
-    const issues = validateEntityMetadata(
+    const issues = validateEntityMetadataIssues(
       entity as unknown as typeof YdbBaseEntity,
       {
         encryptionProviderConfigured: Boolean(options.encryptionProvider),
@@ -88,7 +91,9 @@ export function configureEntities(
     if (issues.length) {
       throw new Error(
         `configureEntities(): metadata validation failed for ${entity.name}:\n` +
-          issues.map((i) => `  - ${i}`).join('\n'),
+          validationIssuesToMessages(issues)
+            .map((i) => `  - ${i}`)
+            .join('\n'),
       );
     }
   }
