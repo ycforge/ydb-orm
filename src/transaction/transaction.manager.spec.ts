@@ -13,7 +13,9 @@ import {
 } from './transaction.manager.js';
 import {
   configureTransactionContext,
+  ensureExecutorIdentity,
   getActiveTransaction,
+  getTransactionId,
   resolveOperationExecutor,
 } from './transaction-context.js';
 import { wrapExecutorWithLogging } from '../core/query-logger.js';
@@ -539,6 +541,89 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
         // смешивание, ошибка сохраняется.
         expect(() =>
           resolveOperationExecutor(other, db.executor, 'UserEntity'),
+        ).toThrow(/mixing detected.*different transaction is active/s);
+        return Promise.resolve();
+      },
+      { ambient: true },
+    );
+  });
+});
+
+describe('identity registry (#217): private, non-mutable source of truth', () => {
+  const noopLogger = { log() {} };
+
+  it('overwriting a symbol/property on the executor cannot forge its identity', async () => {
+    const db = makeFakeDb();
+    const executor = db.executor;
+    const manager = new YdbTransactionManager(executor);
+
+    // Пытаемся «подделать» identity, записав произвольный символ в свойства
+    // executor'а, в т.ч. по прежнему глобальному ключу Symbol.for(...).
+    const forged = Symbol('forged');
+    (executor as unknown as Record<PropertyKey, unknown>)[
+      Symbol.for('ydb.transaction.id')
+    ] = forged;
+    (executor as unknown as Record<string, unknown>).anyOtherProp = forged;
+
+    // Реестр identity не читает свойства объекта — identity не изменился.
+    expect(getTransactionId(executor)).not.toBe(forged);
+
+    // Вложенная детекция по-прежнему работает по registry-identity.
+    await expect(
+      manager.runInTransaction(() =>
+        manager.runInTransaction(() => Promise.resolve()),
+      ),
+    ).rejects.toThrow(/Nested runInTransaction\(\) detected/);
+  });
+
+  it('two wrappers of the same logical executor resolve to one identity', () => {
+    const anExecutor = makeFakeDb().executor;
+    ensureExecutorIdentity(anExecutor);
+    const wrapped = wrapExecutorWithLogging(anExecutor, noopLogger);
+    expect(getTransactionId(wrapped)).toBe(ensureExecutorIdentity(anExecutor));
+  });
+
+  it('different executors get different identities', () => {
+    const a = makeFakeDb().executor;
+    const b = makeFakeDb().executor;
+    const idA = ensureExecutorIdentity(a);
+    const idB = ensureExecutorIdentity(b);
+    expect(idA).not.toBe(idB);
+    expect(getTransactionId(a)).toBe(idA);
+    expect(getTransactionId(b)).toBe(idB);
+  });
+
+  it('works for a frozen executor without requiring mutation', async () => {
+    const db = makeFakeDb();
+    Object.freeze(db.executor);
+    const manager = new YdbTransactionManager(db.executor);
+
+    const id = ensureExecutorIdentity(db.executor);
+    expect(getTransactionId(db.executor)).toBe(id);
+
+    // Вложенная детекция на frozen-executor'е работает (никаких записей в объект).
+    await expect(
+      manager.runInTransaction(() =>
+        manager.runInTransaction(() => Promise.resolve()),
+      ),
+    ).rejects.toThrow(/Nested runInTransaction\(\) detected/);
+  });
+
+  it('same-vs-distinct transaction detection keeps working', async () => {
+    const db = makeFakeDb();
+    const manager = new YdbTransactionManager(db.executor);
+
+    await manager.runInTransaction(
+      (trx) => {
+        // Обёртка ТОЙ ЖЕ транзакции — не смешивание.
+        const wrapped = wrapExecutorWithLogging(trx, noopLogger);
+        expect(() =>
+          resolveOperationExecutor(wrapped, db.executor, 'UserEntity'),
+        ).not.toThrow();
+        // Чужой executor — смешивание при активной ambient-транзакции.
+        const stranger = makeFakeDb().executor;
+        expect(() =>
+          resolveOperationExecutor(stranger, db.executor, 'UserEntity'),
         ).toThrow(/mixing detected.*different transaction is active/s);
         return Promise.resolve();
       },

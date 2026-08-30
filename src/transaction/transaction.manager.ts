@@ -12,7 +12,7 @@ import {
   getTransactionId,
   resolveTransactionSettings,
   runWithTransactionContext,
-  TRANSACTION_ID_KEY,
+  setExecutorIdentity,
 } from './transaction-context.js';
 
 /** Генерирует уникальный идентификатор транзакции. */
@@ -339,14 +339,12 @@ export class YdbTransactionManager {
       sdkSignal: AbortSignal | undefined,
     ) => {
       const attemptSignal = composeAttemptSignal(sdkSignal);
-      // Генерируем уникальный ID для этой транзакции и сохраняем на executor'е.
+      // Генерируем уникальный ID для этой транзакции и запоминаем его для
+      // trx-executor'а данной попытки в приватном реестре identity (#217).
       const transactionId = generateTransactionId();
-      // Защита для моков и нестандартных executor'ов: trx может быть
-      // функцией (jest mock), объектом или примитивом.
+      // trx всегда объект/функция (WeakMap-ключ); защита для примитивных моков.
       if (trx && (typeof trx === 'object' || typeof trx === 'function')) {
-        (trx as unknown as Record<typeof TRANSACTION_ID_KEY, symbol>)[
-          TRANSACTION_ID_KEY
-        ] = transactionId;
+        setExecutorIdentity(trx, transactionId);
       }
       return runWithTransactionContext(
         { transactionId, trx, db: this.db, signal: attemptSignal, ambient },
