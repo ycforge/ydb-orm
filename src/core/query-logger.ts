@@ -233,14 +233,23 @@ export class ConsoleQueryLogger implements QueryLogger {
   }
 }
 
-/** Приватный ключ: логгер, привязанный к обёрнутому executor'у (#206). */
-const executorLoggerSymbol = Symbol('ydb-orm.executorLogger');
+/**
+ * Приватный реестр логгеров executor'ов (#206), по образцу identity-подхода
+ * #217: связь «executor → логгер» — модульно-локальная метаданные, она не
+ * должна лежать в изменяемом свойстве, которое потребитель может перезаписать.
+ * WeakMap не даёт внешнему коду (в т.ч. hold'ящему обёртку) подменить логгер
+ * конфигурации и не ломает frozen/sealed executor'ы.
+ */
+const executorLoggers = new WeakMap<YdbExecutor, QueryLogger>();
 
 /** Возвращает логгер, привязанный к executor'у в wrapExecutorWithLogging. */
 export function getExecutorLogger(
   executor: YdbExecutor | undefined,
 ): QueryLogger | undefined {
-  return (executor as any)?.[executorLoggerSymbol] as QueryLogger | undefined;
+  if (!executor) {
+    return undefined;
+  }
+  return executorLoggers.get(executor);
 }
 
 /**
@@ -364,8 +373,10 @@ export function wrapExecutorWithLogging(
   // Логгер путешествует вместе с executor'ом (#206): операции сущности могут
   // достать его через getExecutorLogger/resolveExecutorLogger, поэтому
   // предупреждения (warnOutsideTransaction) попадают в логгер СВОЕЙ
-  // конфигурации, а не в чужой или напрямую в консоль.
-  wrapped[executorLoggerSymbol] = logger;
+  // конфигурации, а не в чужой или напрямую в консоль. Регистрация идёт
+  // в приватный реестр, а не в свойство обёртки — перезаписать логгер
+  // извне нельзя (см. executorLoggers).
+  executorLoggers.set(wrapped as YdbExecutor, logger);
 
   return wrapped as YdbExecutor;
 }

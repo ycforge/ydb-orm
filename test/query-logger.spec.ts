@@ -578,4 +578,79 @@ describe('getExecutorLogger / resolveExecutorLogger (#206)', () => {
       expect(getExecutorLogger(trx)).toBe(logger);
     });
   });
+
+  it('is not affected by overwriting arbitrary properties/symbols on the wrapped executor', () => {
+    const mock = createMockExecutor([[]]);
+    const logger: QueryLogger = { log: () => undefined, warn: () => undefined };
+    const imposter: QueryLogger = {
+      log: () => undefined,
+      warn: () => undefined,
+    };
+    const logging = wrapExecutorWithLogging(mock.executor, logger);
+
+    // Потребитель, владеющий обёрткой, не может подменить логгер записью
+    // в своё свойство/символ (в т.ч. в «похожие» имена) — источник истины
+    // приватный реестр, а не состояние обёртки (#206, #217).
+    (logging as any)['ydb-orm.executorLogger'] = imposter;
+    (logging as any)[Symbol('ydb-orm.executorLogger')] = imposter;
+    Object.assign(logging as any, { executorLogger: imposter });
+
+    expect(getExecutorLogger(logging)).toBe(logger);
+    expect(resolveExecutorLogger(logging)).toBe(logger);
+  });
+
+  it('keeps two wrapped executors bound to their separate loggers', () => {
+    const loggerA: QueryLogger = {
+      log: () => undefined,
+      warn: () => undefined,
+    };
+    const loggerB: QueryLogger = {
+      log: () => undefined,
+      warn: () => undefined,
+    };
+    const wrappedA = wrapExecutorWithLogging(
+      createMockExecutor([[]]).executor,
+      loggerA,
+    );
+    const wrappedB = wrapExecutorWithLogging(
+      createMockExecutor([[]]).executor,
+      loggerB,
+    );
+
+    expect(getExecutorLogger(wrappedA)).toBe(loggerA);
+    expect(getExecutorLogger(wrappedB)).toBe(loggerB);
+    // Повторная обёртка создаёт новый объект с новым логгером и не трогает
+    // реестровые записи исходных обёрток.
+    const reWrappedB = wrapExecutorWithLogging(wrappedB, loggerA);
+    expect(getExecutorLogger(wrappedB)).toBe(loggerB);
+    expect(getExecutorLogger(reWrappedB)).toBe(loggerA);
+    expect(getExecutorLogger(wrappedA)).toBe(loggerA);
+  });
+
+  it('works with frozen and sealed wrapped executors', async () => {
+    const mock = createMockExecutor([[]]);
+    const logger: QueryLogger = { log: () => undefined, warn: () => undefined };
+    const frozen = wrapExecutorWithLogging(mock.executor, logger);
+    Object.freeze(frozen);
+    const sealed = wrapExecutorWithLogging(mock.executor, logger);
+    Object.seal(sealed);
+
+    expect(getExecutorLogger(frozen)).toBe(logger);
+    expect(getExecutorLogger(sealed)).toBe(logger);
+
+    // Логирование через замороженную обёртку не ломается.
+    await frozen(['SELECT 1'] as unknown as TemplateStringsArray);
+    await sealed(['SELECT 1'] as unknown as TemplateStringsArray);
+  });
+
+  it('resolves the original logger consistently on repeat lookups', () => {
+    const mock = createMockExecutor([[]]);
+    const logger: QueryLogger = { log: () => undefined, warn: () => undefined };
+    const logging = wrapExecutorWithLogging(mock.executor, logger);
+
+    for (let i = 0; i < 5; i += 1) {
+      expect(getExecutorLogger(logging)).toBe(logger);
+      expect(resolveExecutorLogger(logging)).toBe(logger);
+    }
+  });
 });
