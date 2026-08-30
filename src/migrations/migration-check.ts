@@ -13,7 +13,8 @@
  *  - `schema-drift` — схема БД расходится с метаданными сущностей
  *    (проверяется только если в конфиге CLI заданы entities).
  *
- * Прерванные и изменённые миграции НЕ считаются успешно применёнными.
+ * Прерванные и изменённые миграции НЕ считаются успешно применёнными —
+ * у таких статусов `applied=false` (флаг «причина» сохранён, #212).
  * Orphan-записи (файл удалён после применения) — информационные: сами по
  * себе готовность не ломают, но всегда выводятся в отчёте.
  */
@@ -75,6 +76,16 @@ export function migrationStateExitCode(state: MigrationCheckState): number {
 }
 
 /**
+ * Здоровая «применённая» миграция (#212): единственная точка истины для
+ * «applied=true не означает проблему». Изменённая после применения и
+ * прерванная миграции сюда не проходят в любой форме входных данных —
+ * и новые (applied=false + флаг), и legacy/ручные (applied=true + флаг).
+ */
+function isHealthilyApplied(status: YdbMigrationStatus): boolean {
+  return status.applied && !status.interrupted && !status.contentChanged;
+}
+
+/**
  * Сводит статусы миграций (+ опциональные issues схемы) к вердикту.
  * Приоритет при нескольких состояниях: interrupted > modified >
  * pending > schema-drift — сначала то, что блокирует повторный запуск
@@ -100,8 +111,8 @@ export function evaluateMigrationCheck(
     }
     if (status.interrupted) interrupted.push(status.name);
     else if (status.contentChanged) modified.push(status.name);
-    else if (!status.applied) pending.push(status.name);
-    else appliedCount++;
+    else if (isHealthilyApplied(status)) appliedCount++;
+    else pending.push(status.name);
   }
 
   const found = new Set<Exclude<MigrationCheckState, 'ok'>>();

@@ -1277,6 +1277,8 @@ export default {
 
 `YdbMigrationRunner` (run/revert/status, восстановление после сбоев — `markMigrationApplied`/`removeMigrationRecord`), `loadMigrationsFromDir`, `planMigration`, `executeSql` экспортируются из пакета — можно встроить миграции в свой пайплайн.
 
+В `YdbMigrationStatus` поле `applied` равно `true` **только** для здорово применённой миграции: изменённая после применения (`contentChanged`) и прерванная (`interrupted`) миграции — не `applied` (флаг несёт истинную причину); orphan-записи информационны. Не полагайтесь на `applied` как на «есть запись учёта» — проверяйте готовность через `evaluateMigrationCheck`/`migration:check`.
+
 ---
 
 ## Разработка

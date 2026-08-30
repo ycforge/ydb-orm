@@ -273,6 +273,9 @@ export function buildJsonReport(
 ): Record<string, unknown> {
   const migrations: JsonMigrationEntry[] = statuses.map((s) => ({
     name: s.name,
+    // `applied` в отчёте — только здорово применённая (#212): изменённая
+    // после применения и прерванная миграции не считаются applied
+    // независимо от значения поля статуса (producer уже даёт false).
     applied: s.applied && !s.interrupted && !s.contentChanged,
     appliedAt: isoOrNull(s.appliedAt),
     interrupted: s.interrupted === true,

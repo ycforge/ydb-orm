@@ -991,7 +991,8 @@ describe('YdbMigrationRunner (#101)', () => {
         },
         {
           name: '2-Interrupted',
-          applied: true,
+          // #212: прерванная миграция не считается применённой.
+          applied: false,
           appliedAt: new Date(2000),
           interrupted: true,
         },
@@ -1042,7 +1043,8 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(statuses).toEqual([
         {
           name: '1-Edited',
-          applied: true,
+          // #212: содержимое изменилось — это не «здорово применённая».
+          applied: false,
           appliedAt: new Date(5000),
           interrupted: false,
           contentChanged: true,
@@ -1070,6 +1072,61 @@ describe('YdbMigrationRunner (#101)', () => {
           contentChanged: undefined,
         },
       ]);
+    });
+
+    it('#212: never reports applied=true together with contentChanged/interrupted', async () => {
+      const cleanHash = sha256('clean');
+      const tampered = sha256('tampered');
+      const halfHash = sha256('halfway');
+      const mock = createStatefulExecutor({
+        rows: [
+          { timestamp: 1000, name: '1-Edited', hash: sha256('original') },
+          {
+            timestamp: 2000,
+            name: '2-Halfway',
+            hash: halfHash,
+            state: 'started',
+          },
+          { timestamp: 3000, name: '3-Clean', hash: cleanHash },
+        ],
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+
+      const statuses = await runner.status([
+        migrationFactory('1-Edited', { hash: tampered }).migration,
+        migrationFactory('2-Halfway', { hash: halfHash }).migration,
+        migrationFactory('3-Clean', { hash: cleanHash }).migration,
+      ]);
+
+      for (const status of statuses) {
+        if (status.contentChanged || status.interrupted) {
+          expect(status.applied).toBe(false);
+        }
+      }
+      const edited = statuses.find((s) => s.name === '1-Edited');
+      expect(edited).toMatchObject({ applied: false, contentChanged: true });
+      const halfway = statuses.find((s) => s.name === '2-Halfway');
+      expect(halfway).toMatchObject({ applied: false, interrupted: true });
+      const clean = statuses.find((s) => s.name === '3-Clean');
+      expect(clean).toMatchObject({ applied: true });
+    });
+
+    it('#212: a changed migration cannot satisfy the healthy-applied condition', async () => {
+      const mock = createStatefulExecutor({
+        rows: [{ timestamp: 7000, name: '1-Edited', hash: sha256('original') }],
+      });
+      const runner = new YdbMigrationRunner(mock.executor);
+
+      const [status] = await runner.status([
+        migrationFactory('1-Edited', { hash: sha256('tampered') }).migration,
+      ]);
+
+      expect(status.contentChanged).toBe(true);
+      expect(status.interrupted).toBe(false);
+      // Нормальное «здорово применено» такому статусу не подходит.
+      expect(
+        status.applied && !status.contentChanged && !status.interrupted,
+      ).toBe(false);
     });
   });
 
