@@ -128,16 +128,27 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
    * Батчинг и guard-ы (#86): пустой список владельцев — ноль запросов;
    * дубликаты PK владельцев убираются; join-select чанкуется по
    * MAX_IN_CLAUSE_VALUES (чанки по owner-PK не пересекаются, поэтому
-   * link-строки уникальны без дополнительной дедупликации); выборка
-   * инверсных сущностей идёт через fetchByColumnIn (дедупликация FK,
-   * чанкинг, слияние без дубликатов).
+   * каждый владелец встречается ровно в одном чанке).
    *
-   * Память ограничена (#209): для многочанковых запросов (>1 чанка)
-   * join-строки не материализуются полностью — два прохода по чанкам:
-   * 1) собираем уникальные inverse FK, 2) после загрузки инверсных
-   * сущностей снова стримим чанки и сразу заполняем result Map.
-   * Для однчанковых запросов используется классический однопроходной
-   * алгоритм (совместимость с существующим поведением и тестами).
+   * Память ограничена (#209) и семантика эквивалентна одному согласованному
+   * чтению (#224): join-таблица читается ровно ОДИН раз на чанк — для
+   * каждого чанка сразу собираются уникальные inverse FK, по ним выбираются
+   * (только ещё не загруженные) инверсные сущности, и результат заполняется.
+   * Полный `links[]` не материализуется, повторного чтения изменяемого
+   * состояния join-таблицы нет — рассинхронизации «pass 1 vs pass 2», когда
+   * ссылка появляется во втором чтении, но отсутствует в собранных FK (и
+   * потому молча теряется), не существует: каждый inverse FK результата
+   * получен ровно из того же чтения, что и его ссылка.
+   *
+   * Общие инстансы между чанками: инверсные сущности кешируются по PK в
+   * `byInversePk` — один тег, общий для нескольких владельцев в разных
+   * чанках, гидратируется (и получает afterFind) ровно один раз и разделяется
+   * между владельцами по ссылке. Инверсный FK, уже загруженный в другом
+   * чанке, не выбирается повторно (без N+1 и без дублей инстансов).
+   *
+   * Кардинальность и порядок совпадают с одиночным чтением join-таблицы:
+   * одинаковые (owner, inverse) строки не дедуплицируются, порядок сущностей
+   * владельца — порядок строк его чанка из БД.
    */
   private async loadManyToManyRelation(
     items: YdbBaseEntity[],
@@ -160,136 +171,15 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     const ownerPkType = joinTable.ownerColumnType;
     const inverseColumn = joinTable.inverseColumn;
     const ownerColumn = joinTable.ownerColumn;
-
-    const chunks = chunkInValues(uniqueOwnerPks);
-    const isMultiChunk = chunks.length > 1;
-
-    if (isMultiChunk) {
-      // Two-pass для больших связей: ограничиваем память (#209).
-      return this.loadManyToManyRelationTwoPass(
-        Target,
-        joinTable,
-        chunks,
-        ownerPkType,
-        ownerColumn,
-        inverseColumn,
-        options,
-        hydration,
-      );
-    }
-
-    // Single-pass для совместимости и малого объема.
-    return this.loadManyToManyRelationSinglePass(
-      Target,
-      joinTable,
-      chunks[0],
-      ownerPkType,
-      ownerColumn,
-      inverseColumn,
-      options,
-      hydration,
-    );
-  }
-
-  /**
-   * Классический однопроходной алгоритм (как было до #209).
-   * Материализует все link-строки одного чанка в памяти.
-   */
-  private async loadManyToManyRelationSinglePass(
-    Target: typeof YdbBaseEntity,
-    joinTable: ResolvedJoinTable,
-    chunk: any[],
-    ownerPkType: any,
-    ownerColumn: string,
-    inverseColumn: string,
-    options?: QueryOptions,
-    hydration?: { afterFind?: boolean },
-  ): Promise<Map<any, YdbBaseEntity[]>> {
-    const exec = this.getExecutor(options?.trx);
-    if (!exec) {
-      throw new Error(
-        `YDB executor not set for entity ${this.entityClass.name}`,
-      );
-    }
-
-    const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
-
-    const sql =
-      `SELECT ${quoteIdentifier(ownerColumn)}, ` +
-      `${quoteIdentifier(inverseColumn)} ` +
-      `FROM ${quoteIdentifier(joinTable.tableName)} ` +
-      `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
-
-    const joinQuery = exec([sql] as unknown as TemplateStringsArray);
-    chunk.forEach((value, i) => {
-      joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
-    });
-
-    const chunkRows = await this.executeQuery(joinQuery, options);
-    const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
-
-    const inverseFks = rows
-      .map((row) => row[inverseColumn])
-      .filter((v) => v !== undefined && v !== null);
-
     const targetPkField = getPrimaryKey(Target);
-    const relatedEntities = await this.fetchByColumnIn(
-      Target,
-      targetPkField,
-      inverseFks,
-      options,
-      hydration,
-    );
-
-    const byInversePk = new Map<string, YdbBaseEntity>();
-    for (const entity of relatedEntities) {
-      byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
-    }
 
     const result = new Map<string, YdbBaseEntity[]>();
-    for (const row of rows) {
-      const ownerFk = row[ownerColumn];
-      const inverseFk = row[inverseColumn];
-      if (inverseFk === undefined || inverseFk === null) continue;
-      const entity = byInversePk.get(relationKey(inverseFk));
-      if (!entity) continue;
-      const group = result.get(relationKey(ownerFk));
-      if (group) {
-        group.push(entity);
-      } else {
-        result.set(relationKey(ownerFk), [entity]);
-      }
-    }
+    // Общий кеш инверсных сущностей: общий инстанс на PK между чанками.
+    // Растёт до числа различных инверсных сущностей (масштаб результата),
+    // а не до числа повторений ссылок.
+    const byInversePk = new Map<string, YdbBaseEntity>();
 
-    return result;
-  }
-
-  /**
-   * Двухпроходной алгоритм для многочанковых запросов (#209).
-   * Pass 1: собираем уникальные inverse FK.
-   * Pass 2: после загрузки инверсных сущностей заполняем result Map.
-   */
-  private async loadManyToManyRelationTwoPass(
-    Target: typeof YdbBaseEntity,
-    joinTable: ResolvedJoinTable,
-    chunks: any[][],
-    ownerPkType: any,
-    ownerColumn: string,
-    inverseColumn: string,
-    options?: QueryOptions,
-    hydration?: { afterFind?: boolean },
-  ): Promise<Map<any, YdbBaseEntity[]>> {
-    const exec = this.getExecutor(options?.trx);
-    if (!exec) {
-      throw new Error(
-        `YDB executor not set for entity ${this.entityClass.name}`,
-      );
-    }
-
-    // Pass 1: stream join-table chunks, collect unique inverse FKs
-    // with their original values (key -> original value).
-    const inverseFkMap = new Map<string, any>();
-    for (const chunk of chunks) {
+    for (const chunk of chunkInValues(uniqueOwnerPks)) {
       const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
 
       const sql =
@@ -305,74 +195,51 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
 
       const chunkRows = await this.executeQuery(joinQuery, options);
       const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+
+      // Уникальные inverse FK этого чанка (для выборки сущностей).
+      const inverseFkValues: any[] = [];
+      const seenFk = new Set<string>();
       for (const row of rows) {
         const inverseFk = row[inverseColumn];
-        if (inverseFk !== undefined && inverseFk !== null) {
-          const key = relationKey(inverseFk);
-          if (!inverseFkMap.has(key)) {
-            inverseFkMap.set(key, inverseFk);
-          }
+        if (inverseFk === undefined || inverseFk === null) continue;
+        const key = relationKey(inverseFk);
+        if (!seenFk.has(key)) {
+          seenFk.add(key);
+          inverseFkValues.push(inverseFk);
         }
       }
-    }
 
-    // Fetch inverse entities (batched, deduped via fetchByColumnIn).
-    const targetPkField = getPrimaryKey(Target);
-    const inverseFks = [...inverseFkMap.values()];
-    const relatedEntities = await this.fetchByColumnIn(
-      Target,
-      targetPkField,
-      inverseFks,
-      options,
-      hydration,
-    );
+      // Выбираем только те инверсные сущности, которых ещё нет в кеше:
+      // общие инстансы между чанками, без повторной гидратации и без N+1.
+      const missing = inverseFkValues.filter(
+        (fk) => !byInversePk.has(relationKey(fk)),
+      );
+      if (missing.length) {
+        const relatedEntities = await this.fetchByColumnIn(
+          Target,
+          targetPkField,
+          missing,
+          options,
+          hydration,
+        );
+        for (const entity of relatedEntities) {
+          byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
+        }
+      }
 
-    const byInversePk = new Map<string, YdbBaseEntity>();
-    for (const entity of relatedEntities) {
-      byInversePk.set(relationKey((entity as any)[targetPkField]), entity);
-    }
-
-    // Pass 2: stream join-table chunks again, directly populate result Map.
-    const result = new Map<string, YdbBaseEntity[]>();
-    // Для защиты от дублей на случай некорректных данных в join-таблице
-    // или проблем с моками в тестах: отслеживаем добавленные inverseKey на owner.
-    const addedPerOwner = new Map<string, Set<string>>();
-    for (const chunk of chunks) {
-      const inParams = chunk.map((_, i) => `$p${i}`).join(', ');
-
-      const sql =
-        `SELECT ${quoteIdentifier(ownerColumn)}, ` +
-        `${quoteIdentifier(inverseColumn)} ` +
-        `FROM ${quoteIdentifier(joinTable.tableName)} ` +
-        `WHERE ${quoteIdentifier(ownerColumn)} IN (${inParams})`;
-
-      const joinQuery = exec([sql] as unknown as TemplateStringsArray);
-      chunk.forEach((value, i) => {
-        joinQuery.parameter(`p${i}`, mapToYdb(ownerPkType, value, ownerColumn));
-      });
-
-      const chunkRows = await this.executeQuery(joinQuery, options);
-      const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
+      // Заполняем результат по строкам этого единственного чтения join-
+      // таблицы: порядок и кардинальность — как у базового SELECT'а.
       for (const row of rows) {
         const ownerFk = row[ownerColumn];
         const inverseFk = row[inverseColumn];
         if (inverseFk === undefined || inverseFk === null) continue;
         const entity = byInversePk.get(relationKey(inverseFk));
         if (!entity) continue;
-        const ownerKey = relationKey(ownerFk);
-        const inverseKey = relationKey(inverseFk);
-        let added = addedPerOwner.get(ownerKey);
-        if (!added) {
-          added = new Set();
-          addedPerOwner.set(ownerKey, added);
-        }
-        if (added.has(inverseKey)) continue;
-        added.add(inverseKey);
-        const group = result.get(ownerKey);
+        const group = result.get(relationKey(ownerFk));
         if (group) {
           group.push(entity);
         } else {
-          result.set(ownerKey, [entity]);
+          result.set(relationKey(ownerFk), [entity]);
         }
       }
     }

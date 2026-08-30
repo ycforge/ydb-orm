@@ -18,6 +18,7 @@ import {
   configureTransactionContext,
 } from '../src/transaction/transaction-context.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
+import { createScriptedExecutor } from './helpers/ydb-mock.js';
 
 /**
  * Регрессионные тесты #86: батчинг явной загрузки связей (loadRelations),
@@ -286,19 +287,25 @@ describe('#86: батчинг loadRelations', () => {
 
       // Все ссылки ведут на ОДНИ те же три тега → после дедупликации
       // инверсных FK выборка тегов укладывается в один запрос.
-      const linkRows = photos.flatMap((p) =>
-        ['tag-a', 'tag-b', 'tag-c'].map((tag) => ({
-          photo_uuid: p.uuid,
-          tag_uuid: tag,
-        })),
-      );
+      // Реалистичные данные: каждый join-чанк возвращает ссылки ТОЛЬКО
+      // своих владельцев (как YDB по IN (...)), а не весь набор.
+      const linkRowsFor = (owners: BatchPhotoEntity[]) =>
+        owners.flatMap((p) =>
+          ['tag-a', 'tag-b', 'tag-c'].map((tag) => ({
+            photo_uuid: p.uuid,
+            tag_uuid: tag,
+          })),
+        );
+      const chunk1Links = linkRowsFor(photos.slice(0, 500));
+      const chunk2Links = linkRowsFor(photos.slice(500, 1000));
+      const chunk3Links = linkRowsFor(photos.slice(1000));
 
-      // Two-pass: pass1 (3 chunks) -> tags -> pass2 (3 chunks) = 7 queries total
+      // Один проход на чанк (#224): join1 → tags (все 3, первый чанк) →
+      // join2 → join3. Все ссылки ведут на одни три тега, поэтому выборка
+      // тегов происходит в первом чанке, остальные чанки берут общий кеш.
       const mock = createMockExecutor(
         [
-          [linkRows], // pass1 chunk 1
-          [linkRows], // pass1 chunk 2
-          [linkRows], // pass1 chunk 3
+          [chunk1Links], // join chunk 1
           [
             [
               { uuid: 'tag-a', label: 'A' },
@@ -306,9 +313,8 @@ describe('#86: батчинг loadRelations', () => {
               { uuid: 'tag-c', label: 'C' },
             ],
           ], // tags
-          [linkRows], // pass2 chunk 1
-          [linkRows], // pass2 chunk 2
-          [linkRows], // pass2 chunk 3
+          [chunk2Links], // join chunk 2 (всё в кеше, без выборки)
+          [chunk3Links], // join chunk 3 (всё в кеше, без выборки)
         ],
         { sequential: true },
       );
@@ -320,19 +326,15 @@ describe('#86: батчинг loadRelations', () => {
         ['tags'],
       );
 
-      // 1200 владельцев → 3 join-чанка pass1 + 1 tags + 3 join-чанка pass2 = 7 запросов.
-      expect(mock.queries).toHaveLength(7);
-      // Join queries at indices 0,1,2 (pass1) and 4,5,6 (pass2)
-      const pass1JoinQueries = mock.queries.slice(0, 3);
-      const pass2JoinQueries = mock.queries.slice(4, 7);
-      expect(pass1JoinQueries.map((q) => Object.keys(q.params).length)).toEqual(
-        [500, 500, 200],
-      );
-      expect(pass2JoinQueries.map((q) => Object.keys(q.params).length)).toEqual(
-        [500, 500, 200],
-      );
-      // Tags query at index 3
-      expect(Object.keys(mock.queries[3].params)).toHaveLength(3);
+      // 4 запроса: 3 join-чанка (одно чтение каждый) + 1 tags.
+      expect(mock.queries).toHaveLength(4);
+      // Индексы join-чанков: 0, 2, 3; tags — индекс 1.
+      expect(
+        [mock.queries[0], mock.queries[2], mock.queries[3]].map(
+          (q) => Object.keys(q.params).length,
+        ),
+      ).toEqual([500, 500, 200]);
+      expect(Object.keys(mock.queries[1].params)).toHaveLength(3);
 
       for (const photo of photos) {
         expect(photo.tags?.map((t) => t.uuid).sort()).toEqual([
@@ -343,7 +345,7 @@ describe('#86: батчинг loadRelations', () => {
       }
     });
 
-    it('large many-to-many: two-pass limits memory (no full links materialization) #209', async () => {
+    it('large many-to-many: per-chunk single-read limits memory (no full links materialization) #209/#224', async () => {
       // Create a large relation: 1500 owners, each linked to 10 tags.
       // Total join rows = 15,000. With single-pass this would materialize
       // all 15,000 link rows in memory. Two-pass avoids this by streaming.
@@ -360,29 +362,39 @@ describe('#86: батчинг loadRelations', () => {
         return photo;
       });
 
-      // Each owner linked to 10 tags (cycling through 100 tags)
-      const linkRows = photos.flatMap((p, i) =>
-        Array.from({ length: tagsPerOwner }, (_, j) => ({
-          photo_uuid: p.uuid,
-          tag_uuid: `tag-${(i * tagsPerOwner + j) % tagCount}`,
-        })),
-      );
+      // Each owner linked to 10 tags (cycling through 100 tags).
+      // Реалистично: каждый join-чанк возвращает ссылки только своих
+      // владельцев (как YDB по IN (...)).
+      const linkRowsFor = (owners: BatchPhotoEntity[]) =>
+        owners
+          .map((p) => ({
+            p,
+            globalIdx: Number(p.uuid.replace('p', '')),
+          }))
+          .flatMap(({ p, globalIdx }) =>
+            Array.from({ length: tagsPerOwner }, (_, j) => ({
+              photo_uuid: p.uuid,
+              tag_uuid: `tag-${(globalIdx * tagsPerOwner + j) % tagCount}`,
+            })),
+          );
+      const chunk1Links = linkRowsFor(photos.slice(0, 500));
+      const chunk2Links = linkRowsFor(photos.slice(500, 1000));
+      const chunk3Links = linkRowsFor(photos.slice(1000));
 
       const tagRows = Array.from({ length: tagCount }, (_, i) => ({
         uuid: `tag-${i}`,
         label: `Tag ${i}`,
       }));
 
-      // Two-pass: pass1 (3 chunks of 500) -> tags -> pass2 (3 chunks of 500) = 7 queries
+      // Один проход на чанк (#224): join1 → tags (все 100) → join2 → join3.
+      // Первый join-чанк покрывает всё множество тегов, остальные чанки
+      // используют общий кеш (одна выборка, без повторной гидратации).
       const mock = createMockExecutor(
         [
-          [linkRows],       // pass1 chunk 1
-          [linkRows],       // pass1 chunk 2
-          [linkRows],       // pass1 chunk 3
-          [tagRows],        // tags
-          [linkRows],       // pass2 chunk 1
-          [linkRows],       // pass2 chunk 2
-          [linkRows],       // pass2 chunk 3
+          [chunk1Links], // join chunk 1
+          [tagRows], // tags
+          [chunk2Links], // join chunk 2 (всё в кеше)
+          [chunk3Links], // join chunk 3 (всё в кеше)
         ],
         { sequential: true },
       );
@@ -394,17 +406,15 @@ describe('#86: батчинг loadRelations', () => {
         ['tags'],
       );
 
-      // Verify two-pass query pattern: 3 pass1 + 1 tags + 3 pass2 = 7 queries
-      expect(mock.queries).toHaveLength(7);
-      const pass1Chunks = mock.queries.slice(0, 3);
-      const pass2Chunks = mock.queries.slice(4, 7);
-      expect(pass1Chunks.map((q) => Object.keys(q.params).length)).toEqual([
-        500, 500, 500,
-      ]);
-      expect(pass2Chunks.map((q) => Object.keys(q.params).length)).toEqual([
-        500, 500, 500,
-      ]);
-      expect(Object.keys(mock.queries[3].params)).toHaveLength(tagCount);
+      // Verify per-chunk single-read query pattern: 3 join reads + 1 tags = 4 queries.
+      expect(mock.queries).toHaveLength(4);
+      // Join chunks at indices 0, 2, 3; tags at index 1.
+      expect(
+        [mock.queries[0], mock.queries[2], mock.queries[3]].map(
+          (q) => Object.keys(q.params).length,
+        ),
+      ).toEqual([500, 500, 500]);
+      expect(Object.keys(mock.queries[1].params)).toHaveLength(tagCount);
 
       // Verify results are correct
       for (const photo of photos) {
@@ -413,11 +423,93 @@ describe('#86: батчинг loadRelations', () => {
 
       // Spot-check a few owners
       expect(photos[0].tags?.map((t) => t.uuid).sort()).toEqual(
-        Array.from({ length: tagsPerOwner }, (_, j) => `tag-${j % tagCount}`).sort(),
+        Array.from(
+          { length: tagsPerOwner },
+          (_, j) => `tag-${j % tagCount}`,
+        ).sort(),
       );
       expect(photos[999].tags?.map((t) => t.uuid).sort()).toEqual(
-        Array.from({ length: tagsPerOwner }, (_, j) => `tag-${(999 * tagsPerOwner + j) % tagCount}`).sort(),
+        Array.from(
+          { length: tagsPerOwner },
+          (_, j) => `tag-${(999 * tagsPerOwner + j) % tagCount}`,
+        ).sort(),
       );
+    });
+
+    it('почанковое чтение join-таблицы ровно один раз и каждый inverse FK резолвится (#224)', async () => {
+      // 600 владельцев → 2 чанка (500 + 100).
+      const ownerCount = 600;
+      const photos = Array.from({ length: ownerCount }, (_, i) => {
+        const photo = new BatchPhotoEntity();
+        photo.uuid = `p${String(i).padStart(4, '0')}`;
+        photo.title = '';
+        photo.user_uuid = '';
+        photo.profile_uuid = '';
+        return photo;
+      });
+
+      // Чанк 1: первые 500 владельцев → tag-A/B/C.
+      // Чанк 2: остальные 100 владельцев → tag-C/D/E. tag-C общий (проверка
+      // общего инстанса между чанками), tag-D/E появляются ТОЛЬКО во втором
+      // чтении — если бы сущности выбирались до перечитывания (старый
+      // двухпроходной алгоритм), эти FK были бы потеряны/не резолвились.
+      const chunk1Rows = photos.slice(0, 500).flatMap((p) =>
+        ['tag-A', 'tag-B', 'tag-C'].map((tag) => ({
+          photo_uuid: p.uuid,
+          tag_uuid: tag,
+        })),
+      );
+      const chunk2Rows = photos.slice(500).flatMap((p) =>
+        ['tag-C', 'tag-D', 'tag-E'].map((tag) => ({
+          photo_uuid: p.uuid,
+          tag_uuid: tag,
+        })),
+      );
+
+      const fromIds = (ids: string[]) =>
+        ids.map((uuid) => ({ uuid, label: uuid }));
+
+      // Строгая сценарная очередь: каждый join-чанк читается РОВНО один раз
+      // (нет второго прохода → нет гонки pass1/pass2), а выборка тегов
+      // резолвит каждый встреченный inverse FK (в т.ч. C/D/E из чанка 2).
+      // Порядок исполнения: join1 → tags(A,B,C) → join2 → tags(D,E).
+      const db = createScriptedExecutor({ label: 'm2m' });
+      db.expect('FROM `batch86_photo_tag`').returnsRows(...chunk1Rows);
+      db.expect('FROM `batch86_tags`').returnsRows(
+        ...fromIds(['tag-A', 'tag-B', 'tag-C']),
+      );
+      db.expect('FROM `batch86_photo_tag`').returnsRows(...chunk2Rows);
+      db.expect('FROM `batch86_tags`').returnsRows(
+        ...fromIds(['tag-D', 'tag-E']),
+      );
+      BatchPhotoEntity.setExecutor(db.executor);
+      BatchTagEntity.setExecutor(db.executor);
+
+      await getOrCreateRepository(BatchPhotoEntity).relations.loadRelations(
+        photos,
+        ['tags'],
+      );
+      db.assertComplete();
+
+      // Результат эквивалентен согласованному одиночному чтению: ни один
+      // встреченный inverse FK (включая tag-D/E из второго чанка) не потерян.
+      expect(photos[0].tags?.map((t) => t.uuid)).toEqual([
+        'tag-A',
+        'tag-B',
+        'tag-C',
+      ]);
+      expect(photos[599].tags?.map((t) => t.uuid)).toEqual([
+        'tag-C',
+        'tag-D',
+        'tag-E',
+      ]);
+
+      // Общий инверсный FK (tag-C) разделяется между владельцами из РАЗНЫХ
+      // чанков одним инстансом (общий кеш по PK, без повторной гидратации).
+      const chunk1TagC = photos[0].tags!.find((t) => t.uuid === 'tag-C');
+      const chunk2TagC = photos[500].tags!.find((t) => t.uuid === 'tag-C');
+      expect(chunk1TagC).toBeDefined();
+      expect(chunk2TagC).toBe(chunk1TagC);
     });
   });
 
@@ -523,6 +615,58 @@ describe('#86: батчинг loadRelations', () => {
       expect(trxMock.queries[0].sql).toContain('FROM `batch86_photo_tag`');
       expect(trxMock.queries[1].sql).toContain('FROM `batch86_tags`');
       expect(photos[0].tags?.[0]?.uuid).toBe('tag-x');
+    });
+
+    it('явный { trx } многочанкового m2m: и join-чтения, и выборки тегов — в транзакции (#224)', async () => {
+      // 600 владельцев → 2 join-чанка; разные теги в каждом чанке → 2 выборки
+      // тегов. Все 4 запроса обязаны уйти в { trx }, не в executor БД.
+      const ownerCount = 600;
+      const photos = Array.from({ length: ownerCount }, (_, i) => {
+        const photo = new BatchPhotoEntity();
+        photo.uuid = `p${String(i).padStart(4, '0')}`;
+        photo.title = '';
+        photo.user_uuid = '';
+        photo.profile_uuid = '';
+        return photo;
+      });
+
+      const chunk1Rows = photos.slice(0, 500).map((p) => ({
+        photo_uuid: p.uuid,
+        tag_uuid: 'tag-A',
+      }));
+      const chunk2Rows = photos.slice(500).map((p) => ({
+        photo_uuid: p.uuid,
+        tag_uuid: 'tag-B',
+      }));
+
+      const dbMock = createMockExecutor([[]]);
+      // Порядок исполнения: join1 → tags(A) → join2 → tags(B) — все в { trx }.
+      const trxMock = createMockExecutor(
+        [
+          [chunk1Rows], // join chunk 1
+          [[{ uuid: 'tag-A', label: 'A' }]], // tags chunk1
+          [chunk2Rows], // join chunk 2
+          [[{ uuid: 'tag-B', label: 'B' }]], // tags chunk2
+        ],
+        { sequential: true },
+      );
+      BatchPhotoEntity.setExecutor(dbMock.executor);
+      BatchTagEntity.setExecutor(dbMock.executor);
+
+      await getOrCreateRepository(BatchPhotoEntity).relations.loadRelations(
+        photos,
+        ['tags'],
+        { trx: trxMock.executor },
+      );
+
+      expect(dbMock.queries).toHaveLength(0);
+      expect(trxMock.queries).toHaveLength(4);
+      expect(trxMock.queries[0].sql).toContain('FROM `batch86_photo_tag`');
+      expect(trxMock.queries[1].sql).toContain('FROM `batch86_tags`');
+      expect(trxMock.queries[2].sql).toContain('FROM `batch86_photo_tag`');
+      expect(trxMock.queries[3].sql).toContain('FROM `batch86_tags`');
+      expect(photos[0].tags?.[0]?.uuid).toBe('tag-A');
+      expect(photos[599].tags?.[0]?.uuid).toBe('tag-B');
     });
 
     it('ambient-контекст: батч-запрос one-to-many идёт в активную транзакцию без { trx }', async () => {
