@@ -290,4 +290,61 @@ describe('YdbQueryBuilder', () => {
     const { sql } = await QbPhotoEntity.query().limit(5000).offset(-5).toYql();
     expect(sql).toContain('LIMIT 1000 OFFSET 0');
   });
+
+  describe('select projection semantics (#202)', () => {
+    it('omitted select() uses the default projection of all declared columns', async () => {
+      mockRuntime();
+      const { sql } = await QbPhotoEntity.query().toYql();
+      expect(sql).toContain(
+        'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos`',
+      );
+      expect(sql).not.toContain('SELECT *');
+    });
+
+    it('rejects select([]) explicitly instead of falling back to default projection', () => {
+      mockRuntime();
+      expect(() => QbPhotoEntity.query().select([])).toThrow(
+        /Invalid select: expected a non-empty array of column names/,
+      );
+      expect(() => QbPhotoEntity.query().select([]).getMany()).toThrow(
+        /Invalid select/,
+      );
+    });
+
+    it('rejects non-array select value passed via any', () => {
+      const qb = QbPhotoEntity.query() as any;
+      expect(() => qb.select(undefined)).toThrow(/Invalid select/);
+      expect(() => qb.select(null)).toThrow(/Invalid select/);
+      expect(() => qb.select('uuid')).toThrow(/Invalid select/);
+    });
+
+    it('select([field]) builds a non-empty explicit projection', async () => {
+      mockRuntime();
+      const { sql } = await QbPhotoEntity.query().select(['title']).toYql();
+      expect(sql).toContain('SELECT `title` FROM `qb_photos`');
+      expect(sql).not.toContain('SELECT *');
+    });
+
+    it('chained/overwritten select keeps the last non-empty projection', async () => {
+      mockRuntime();
+      const { sql } = await QbPhotoEntity.query()
+        .select(['title'])
+        .select(['uuid', 'rating'])
+        .toYql();
+      expect(sql).toContain('SELECT `uuid`, `rating` FROM `qb_photos`');
+      expect(sql).not.toContain('SELECT `title`');
+    });
+
+    it('select survives builder cloning used by getOne', async () => {
+      mockRuntime([[{ title: 'x' }], [{ title: 'y' }]]);
+      const builder = QbPhotoEntity.query()
+        .select(['title'])
+        .where({ rating: 5 });
+      const one = await builder.getOne();
+      expect(one).not.toBeNull();
+      const many = await builder.getMany();
+      expect(many).toHaveLength(1);
+      expect(builder).toBeDefined();
+    });
+  });
 });
