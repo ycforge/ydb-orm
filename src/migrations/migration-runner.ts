@@ -9,54 +9,58 @@ import {
 } from '../schema/schema-sync.js';
 import { YdbMigration, executeSql } from './migration.interface.js';
 
-/** Таблица учёта применённых миграций. */
+/** Bookkeeping table recording applied migrations. */
 export const MIGRATIONS_TABLE = 'ydb_migrations';
 
-/** Состояние записи учёта миграции (#101). */
+/** State of a migration's bookkeeping record (#101). */
 export type MigrationRecordState = 'applied' | 'started';
 
+/** One bookkeeping record of an applied migration. */
 export interface AppliedMigration {
   id: number;
   timestamp: number;
   name: string;
   /**
-   * Стабильный идентификатор содержимого (SHA-256, #101).
-   * Отсутствует у записей старого формата (до появления колонки `hash`).
+   * Stable content-based identity (SHA-256, #101).
+   * Absent for old-format records (created before the `hash` column existed).
    */
   hash?: string;
   /**
-   * `started` — миграция начата, но не завершена: маркер частичного
-   * применения после сбоя (DDL в YDB не транзакционен).
-   * У записей старого формата подразумевается `applied`.
+   * `started` — the migration was begun but not finished: a marker of a
+   * partially applied migration after a failure (DDL in YDB is
+   * non-transactional). For old-format records `applied` is implied.
    */
   state: MigrationRecordState;
 }
 
+/** Status of one migration relative to the bookkeeping table. */
 export interface YdbMigrationStatus {
   name: string;
   /**
-   * Только «здорово применённая» миграция (#212): запись учёта есть,
-   * состояние не `started` и содержимое не менялось. Изменённая после
-   * применения (`contentChanged`) и прерванная (`interrupted`) миграции
-   * НЕ считаются applied — флаг несёт истинную причину, чтобы
-   * консьюмеры, проверяющие только `applied`, не приняли их за здоровые.
+   * True only for a "healthily applied" migration (#212): a bookkeeping
+   * record exists, the state is not `started`, and the content is unchanged.
+   * Migrations modified after being applied (`contentChanged`) and
+   * interrupted (`interrupted`) ones are NOT counted as applied — the flag
+   * carries the true reason so consumers that check only `applied` do not
+   * mistake them for healthy ones.
    */
   applied: boolean;
   appliedAt?: Date;
-  /** Запись есть в БД, но среди переданных миграций её нет (файл удалён). */
+  /** A record exists in the DB, but no matching migration was passed (file deleted). */
   orphan?: boolean;
-  /** Миграция помечена начатой (`state = 'started'`), но не завершена. */
+  /** The migration was marked started (`state = 'started'`) but never finished. */
   interrupted?: boolean;
   /**
-   * Содержимое файла изменилось после применения (#101): запись учёта
-   * сопоставлена по имени, но хеш различается. Для проверок готовности
-   * это «не успешно применённая» миграция (applied=false) — нужен явный
-   * reconcile (восстановить содержимое или removeMigrationRecord).
+   * The file content changed after the migration was applied (#101): the
+   * bookkeeping record was matched by name, but the hashes differ. For
+   * readiness checks this is NOT a successfully applied migration
+   * (applied=false) — an explicit reconcile is required (restore the
+   * content or call removeMigrationRecord).
    */
   contentChanged?: boolean;
 }
 
-/** Имя миграции или понятная ошибка. */
+/** Returns the migration name, or a descriptive error if it has none. */
 export function migrationName(migration: YdbMigration): string {
   if (!migration.name) {
     throw new Error(
@@ -68,30 +72,29 @@ export function migrationName(migration: YdbMigration): string {
 }
 
 /**
- * Стабильная идентичность миграции (#101): хеш содержимого, а при его
- * отсутствии — имя. Переименование файла идентичность не меняет, поэтому
- * применённая миграция не выполняется повторно под новым именем.
+ * Stable migration identity (#101): the content hash, or the name if no
+ * hash is set. Renaming a file does not change the identity, so an applied
+ * migration is not re-run under a new name.
  */
 export function migrationIdentity(migration: YdbMigration): string {
   return migration.hash ?? migrationName(migration);
 }
 
 /**
- * Детерминированный id строки учёта из идентичности миграции (#101):
- * первые 13 hex-символов SHA-256 (52 бита — диапазон безопасных целых,
- * значение не искажается при переводе в number).
+ * Deterministic bookkeeping row id derived from the migration identity (#101):
+ * the first 13 hex characters of the SHA-256 (52 bits — within the
+ * safe-integer range, so the value survives conversion to number).
  *
- * Два параллельных процесса претендуют на одну и ту же миграцию →
- * вычисляют один и тот же id → конфликт PRIMARY KEY на INSERT-claim.
- * Так защита от гонки обеспечивается атомарно на уровне БД, а не
- * внутрипроцессным локом.
+ * Two concurrent processes claiming the same migration compute the same id ->
+ * PRIMARY KEY conflict on the INSERT claim. The race guard is thus enforced
+ * atomically at the DB level rather than by an in-process lock.
  */
 export function deriveMigrationRowId(identity: string): number {
   const hex = createHash('sha256').update(identity, 'utf8').digest('hex');
   return Number.parseInt(hex.slice(0, 13), 16);
 }
 
-/** Порядок применения: по timestamp, затем по id (id больше не хронологичен). */
+/** Application order: by timestamp, then by id (ids are no longer chronological). */
 function byChronology(a: AppliedMigration, b: AppliedMigration): number {
   return a.timestamp - b.timestamp || a.id - b.id;
 }
@@ -107,15 +110,15 @@ function appliedFromRow(row: Record<string, any>): AppliedMigration {
 }
 
 /**
- * Маппинг строки таблицы учёта в запись; экспортируется для read-only
- * снимка (migration-bookkeeping.ts). Отсутствующие hash/state — легаси-
- * формат до #101: подразумевается applied, сопоставление по имени.
+ * Maps a bookkeeping table row into a record; exported for the read-only
+ * snapshot (migration-bookkeeping.ts). Missing hash/state is the legacy
+ * pre-#101 format: `applied` is implied and matching is by name.
  */
 export const appliedRecordFromRow = appliedFromRow;
 
 /**
- * Дубликаты во входном массиве — ошибка (#101): раньше второй дубликат
- * молча skip-ался (или применялся повторно).
+ * Duplicates in the input array are an error (#101): previously the second
+ * duplicate was silently skipped (or applied again).
  */
 function assertNoDuplicates(migrations: YdbMigration[]): void {
   const byName = new Map<string, YdbMigration>();
@@ -165,11 +168,12 @@ type MatchResult =
   | { kind: 'pending' };
 
 /**
- * Сопоставляет миграцию с записью учёта (#101):
- *  1. по стабильному хешу содержимого — переименование файла не страшно;
- *  2. по имени, если у записи нет хеша (legacy-записи старого формата);
- *  3. имя совпадает, а хеши различаются → содержимое изменили после
- *     применения — выполнение такой миграции опасно, нужен явный reconcile.
+ * Matches a migration against a bookkeeping record (#101):
+ *  1. by the stable content hash — file renames are harmless;
+ *  2. by name, when the record has no hash (legacy old-format records);
+ *  3. names match but hashes differ -> content was modified after being
+ *     applied — running such a migration is unsafe, an explicit reconcile
+ *     is required.
  */
 function matchAppliedRecord(
   index: AppliedIndex,
@@ -191,7 +195,7 @@ function matchAppliedRecord(
   return { kind: 'pending' };
 }
 
-/** Ищет класс миграции для записи учёта (приоритет — точное совпадение хеша). */
+/** Finds the migration class for a bookkeeping record (prefers an exact hash match). */
 function findMigrationForRecord(
   migrations: YdbMigration[],
   record: AppliedMigration,
@@ -199,11 +203,11 @@ function findMigrationForRecord(
   if (record.hash) {
     return migrations.find((m) => m.hash === record.hash);
   }
-  // Legacy-записи без хеша сопоставляем только по имени.
+  // Legacy records without a hash are matched by name only.
   return migrations.find((m) => migrationName(m) === record.name);
 }
 
-/** Есть ли у записи учёта соответствие среди переданных миграций. */
+/** Whether the record has a matching migration among the passed ones. */
 function recordMatchesMigration(
   record: AppliedMigration,
   migrations: YdbMigration[],
@@ -216,9 +220,10 @@ function recordMatchesMigration(
 }
 
 /**
- * Чистое сопоставление «файлы миграций ↔ записи учёта» без обращения к БД:
- * используется и YdbMigrationRunner.status (обслуживающий путь с ensure),
- * и read-only проверка готовности (#152, снимок из readBookkeepingSnapshot).
+ * Pure matching of "migration files <-> bookkeeping records" without touching
+ * the DB: used both by YdbMigrationRunner.status (the serving path with
+ * ensure) and by the read-only readiness check (#152, snapshot from
+ * readBookkeepingSnapshot).
  */
 export function computeMigrationStatuses(
   migrations: YdbMigration[],
@@ -235,21 +240,21 @@ export function computeMigrationStatuses(
     }
     return {
       name,
-      // `applied` — только здорово применённая (#212): изменённая после
-      // применения или прерванная миграция applied не считается.
+      // `applied` — only healthily applied (#212): a modified-after-application
+      // or interrupted migration is not considered applied.
       applied: match.kind === 'matched' && match.record.state !== 'started',
       appliedAt: new Date(match.record.timestamp),
       interrupted: match.record.state === 'started',
-      // Имя совпадает, а хеш содержимого различается (#101): файл меняли
-      // после применения. Для проверки готовности это не «успешно
-      // применённая» миграция — состояние фиксируется явно.
+      // The name matches but the content hash differs (#101): the file was
+      // modified after being applied. For the readiness check this is not a
+      // successfully applied migration — the state is flagged explicitly.
       contentChanged: match.kind === 'changed' || undefined,
     };
   });
 
-  // Orphan-записи (#101): применены, но файла миграции уже нет.
-  // Чистый orphan — информационный (applied=true); orphan в состоянии
-  // `started` — прерванный, applied=false (#212).
+  // Orphan records (#101): applied, but the migration file no longer exists.
+  // A clean orphan is informational (applied=true); an orphan in the
+  // `started` state is interrupted, applied=false (#212).
   for (const record of applied) {
     if (recordMatchesMigration(record, migrations)) continue;
     statuses.push({
@@ -270,41 +275,43 @@ const RECOVERY_HINT =
   `markMigrationApplied(...) or removeMigrationRecord(...).`;
 
 /**
- * Исполнитель миграций: ведёт таблицу `ydb_migrations`,
- * применяет новые миграции по порядку и откатывает последнюю.
+ * Migration executor: maintains the `ydb_migrations` bookkeeping table,
+ * applies new migrations in order, and reverts the latest one.
  *
- * DDL в YDB не транзакционен, поэтому миграции выполняются последовательно
- * без обёртки в транзакцию (#101):
- *  - перед `up()`/`down()` в таблицу учёта пишется маркер `state='started'`;
- *  - сбой посреди миграции оставляет этот маркер — повторный `run()` не
- *    начнёт миграцию заново вслепую, пока состояние не разрешат явно через
- *    `markMigrationApplied()` / `removeMigrationRecord()`;
- *  - claim на применение — INSERT с детерминированным id (из хеша
- *    содержимого): параллельные процессы сталкиваются на PRIMARY KEY,
- *    двойное применение невозможно.
+ * DDL in YDB is non-transactional, so migrations run sequentially without a
+ * wrapping transaction (#101):
+ *  - a `state='started'` marker is written to the bookkeeping table before
+ *    `up()`/`down()`;
+ *  - a failure mid-migration leaves that marker — a subsequent `run()` will
+ *    not blindly re-start the migration until the state is explicitly resolved
+ *    via `markMigrationApplied()` / `removeMigrationRecord()`;
+ *  - claiming an application is an INSERT with a deterministic id (derived
+ *    from the content hash): concurrent processes collide on PRIMARY KEY,
+ *    so double application is impossible.
  */
 export class YdbMigrationRunner {
-  /** Кеш ensure: один round-trip на инстанс вместо каждого чтения (#101). */
+  /** Ensure cache: one round-trip per instance instead of per read (#101). */
   private ensurePromise?: Promise<void>;
 
   constructor(
     private readonly executor: YdbExecutor,
     /**
-     * Драйвер нужен для гарантированного апгрейда легаси-таблицы учёта
-     * (#176): DescribeTable через Table service отличает «колонки нет»
-     * от транзиентной ошибки, SELECT-проба этого не умела.
+     * The driver is required for a guaranteed upgrade of the legacy
+     * bookkeeping table (#176): DescribeTable through the Table service
+     * distinguishes "column missing" from a transient error, which a
+     * SELECT probe could not.
      */
     private readonly driver?: Driver,
     /**
-     * Шов для тестов поверх пути DescribeTable.
-     * Возвращает null, если таблицы не существует (или схему читать нельзя).
+     * Test seam over the DescribeTable path.
+     * Returns null when the table does not exist (or the schema is unreadable).
      */
     private readonly describeTable?: (
       tableName: string,
     ) => Promise<YdbTableDescription | null>,
   ) {}
 
-  /** Создаёт таблицу учёта миграций, если её ещё нет (один раз на инстанс). */
+  /** Creates the migration bookkeeping table if it is missing (once per instance). */
   async ensureMigrationsTable(): Promise<void> {
     this.ensurePromise ??= this.doEnsureMigrationsTable().catch((error) => {
       this.ensurePromise = undefined;
@@ -322,13 +329,13 @@ export class YdbMigrationRunner {
         ')',
     );
 
-    // Апгрейд таблицы старого формата (созданной до #101): колонок
-    // `hash`/`state` может не быть. Колонки добавляются ТОЛЬКО по реальным
-    // метаданным DescribeTable (#176): Select-проба не отличала отсутствие
-    // колонки от транзиентной/авторизационной ошибки, а безусловная пара
-    // ALTER не переживала частичного апгрейда (сбой между ALTER оставлял
-    // таблицу в состоянии, при котором повторный запуск падал на
-    // дубликате колонки и никогда не доходил до второй).
+    // Upgrade of an old-format table (created before #101): the `hash`/`state`
+    // columns may be absent. Columns are added ONLY based on real DescribeTable
+    // metadata (#176): a SELECT probe could not tell a missing column from a
+    // transient/authorization error, and an unconditional ALTER pair could not
+    // survive a partial upgrade (a failure between the ALTERs left the table so
+    // that a re-run crashed on the duplicate column and never reached the
+    // second one).
     let description: YdbTableDescription | null = null;
     if (this.driver || this.describeTable) {
       description = await this.describeMigrationsTable();
@@ -343,13 +350,13 @@ export class YdbMigrationRunner {
       return;
     }
 
-    // Легаси-путь для раннеров, созданных без driver (программный вызов):
-    // DescribeTable недоступен, поэтому SELECT-проба не отличает «колонки
-    // нет» от транзиентной/авторизационной ошибки. Делать ALTER после
-    // произвольного падения пробы небезопасно (#186): без надёжно
-    // подтверждённого отсутствия колонки ошибка пробрасывается без DDL.
-    // В CLI и NestJS-путях всегда передаётся driver — там апгрейд
-    // выполняется по реальным метаданным DescribeTable.
+    // Legacy path for runners created without a driver (programmatic use):
+    // DescribeTable is unavailable, so a SELECT probe cannot tell a missing
+    // column from a transient/authorization error. Running ALTER after an
+    // arbitrary probe failure is unsafe (#186): without a reliably confirmed
+    // absence of the column, the error is rethrown without any DDL.
+    // The CLI and NestJS paths always pass a driver — there the upgrade runs
+    // on real DescribeTable metadata.
     try {
       await executeSql(
         this.executor,
@@ -369,12 +376,12 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Добавляет отсутствующую колонку с идемпотентным исходом при гонке (#186):
-   * если ALTER упал, но колонка по факту уже есть (её добавил конкурентный
-   * процесс или предыдущий заход), результат читается из реальных метаданных
-   * DescribeTable, а не из текста ошибки. Любая иная ошибка (нет прав,
-   * транзиентная) пробрасывается без изменений — таблица остаётся в исходном
-   * состоянии, повторный запуск восстановит апгрейд.
+   * Adds a missing column with an idempotent outcome under a race (#186):
+   * if the ALTER failed but the column actually exists already (added by a
+   * concurrent process or a previous attempt), the result is read from the
+   * real DescribeTable metadata rather than from the error text. Any other
+   * error (missing privileges, transient) is rethrown unchanged — the table
+   * stays in its original state and a re-run restores the upgrade.
    */
   private async addColumnIfMissing(column: string): Promise<void> {
     try {
@@ -386,16 +393,16 @@ export class YdbMigrationRunner {
     } catch (error) {
       const now = await this.describeMigrationsTable().catch(() => null);
       if (now && now.columns.has(column)) {
-        return; // конкурент уже привёл таблицу к цели
+        return; // a concurrent process already brought the table to the target state
       }
       throw error;
     }
   }
 
   /**
-   * Метаданные таблицы учёта через существующий путь DescribeTable.
-   * Ошибки DescribeTable (нет прав, транзиентные) пробрасываются наверх
-   * без ALTER — только явное отсутствие колонки ведёт к ALTER (#176).
+   * Metadata of the bookkeeping table via the existing DescribeTable path.
+   * DescribeTable errors (missing privileges, transient) propagate without
+   * any ALTER — only a clearly missing column leads to ALTER (#176).
    */
   private async describeMigrationsTable(): Promise<YdbTableDescription | null> {
     if (this.describeTable) {
@@ -409,7 +416,7 @@ export class YdbMigrationRunner {
     return null;
   }
 
-  /** Список применённых миграций в порядке применения. */
+  /** Applied migrations in application order. */
   async getAppliedMigrations(): Promise<AppliedMigration[]> {
     await this.ensureMigrationsTable();
     const sets = (await this.executor([
@@ -420,8 +427,8 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Применяет все неприменённые миграции по порядку.
-   * Возвращает имена выполненных миграций.
+   * Applies all unapplied migrations in order.
+   * Returns the names of the executed migrations.
    */
   async run(migrations: YdbMigration[]): Promise<string[]> {
     assertNoDuplicates(migrations);
@@ -459,8 +466,8 @@ export class YdbMigrationRunner {
       try {
         await migration.up(this.executor);
       } catch (error) {
-        // Маркер `started` остаётся: следующему запуску запрещено
-        // выполнять up() заново вслепую (#101).
+        // The `started` marker remains: the next run is forbidden from
+        // executing up() again blindly (#101).
         throw new Error(
           `Migration "${name}" failed mid-way and was left in "started" state — ` +
             `the database may be partially migrated. ${RECOVERY_HINT}`,
@@ -474,10 +481,10 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Откатывает последнюю применённую миграцию.
-   * Возвращает её имя или null, если откатывать нечего.
-   * Отказывается работать, если последняя запись в состоянии `started`
-   * (прерванный up()/упавший down()) — сначала разрешите её явно через
+   * Reverts the most recently applied migration.
+   * Returns its name, or null when there is nothing to revert.
+   * Refuses to run if the latest record is in the `started` state
+   * (an interrupted up()/a failed down()) — resolve it explicitly first via
    * markMigrationApplied()/removeMigrationRecord().
    */
   async revert(migrations: YdbMigration[]): Promise<string | null> {
@@ -487,8 +494,8 @@ export class YdbMigrationRunner {
 
     const last = applied[applied.length - 1];
     if (last.state === 'started') {
-      // Прерванный up()/упавший down(): схема в неизвестном состоянии,
-      // слепой повторный down() запрещён (#101).
+      // Interrupted up()/failed down(): the schema is in an unknown state,
+      // a blind re-run of down() is forbidden (#101).
       throw new Error(
         `Cannot revert "${last.name}": its bookkeeping record is in "started" state — ` +
           `a previous run was interrupted mid-way, so the database state is unknown. ` +
@@ -504,8 +511,9 @@ export class YdbMigrationRunner {
       );
     }
 
-    // Маркер намерения до down(): падение между down() и DELETE записи
-    // оставит запись в "started" — состояние придётся разрешить явно (#101).
+    // Intent marker before down(): a failure between down() and the record
+    // DELETE leaves the record in "started" — the state then has to be
+    // resolved explicitly (#101).
     await this.startRecord(last.id);
     try {
       await migration.down(this.executor);
@@ -522,12 +530,12 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Статус по всем переданным миграциям (+ orphan/interrupted записи).
+   * Status across all passed migrations (plus orphan/interrupted records).
    *
-   * ВНИМАНИЕ: это «обслуживающий» путь — он создаёт таблицу учёта, если её
-   * нет (ensureMigrationsTable). Read-only потребители (проверка готовности
-   * #152) должны использовать computeMigrationStatuses поверх снимка из
-   * readBookkeepingSnapshot — без DDL.
+   * NOTE: this is a "serving" path — it creates the bookkeeping table if it
+   * is missing (ensureMigrationsTable). Read-only consumers (readiness check
+   * #152) should use computeMigrationStatuses over a snapshot from
+   * readBookkeepingSnapshot — without DDL.
    */
   async status(migrations: YdbMigration[]): Promise<YdbMigrationStatus[]> {
     const applied = await this.getAppliedMigrations();
@@ -535,10 +543,10 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Механизм восстановления (#101): явно помечает миграцию применённой.
-   * Вызывается, когда схема БД приведена в целевое состояние вручную
-   * после прерванного запуска.
-   * Принимает объект миграции или строку (хеш либо имя).
+   * Recovery mechanism (#101): explicitly marks a migration as applied.
+   * Use it when the database schema has been brought to the target state
+   * manually after an interrupted run.
+   * Accepts a migration object or a string (hash or name).
    */
   async markMigrationApplied(target: YdbMigration | string): Promise<void> {
     const record = await this.resolveRecord(target);
@@ -546,17 +554,17 @@ export class YdbMigrationRunner {
   }
 
   /**
-   * Механизм восстановления (#101): удаляет запись учёта — миграция
-   * считается полностью откаченной вручную. Осторожно: удаление записи
-   * применённой миграции приведёт к повторному выполнению up().
-   * Принимает объект миграции или строку (хеш либо имя).
+   * Recovery mechanism (#101): deletes a bookkeeping record — the migration
+   * is considered fully rolled back manually. Caution: deleting the record
+   * of an applied migration will cause up() to run again.
+   * Accepts a migration object or a string (hash or name).
    */
   async removeMigrationRecord(target: YdbMigration | string): Promise<void> {
     const record = await this.resolveRecord(target);
     await this.deleteRecord(record.id);
   }
 
-  /** Резервирует применение миграции: INSERT с state='started'. */
+  /** Claims the migration for application: INSERT with state='started'. */
   private async claim(id: number, migration: YdbMigration): Promise<void> {
     const name = migrationName(migration);
     try {
@@ -620,7 +628,7 @@ export class YdbMigrationRunner {
     await query;
   }
 
-  /** Находит запись учёта по объекту миграции или строке (хеш либо имя). */
+  /** Finds a bookkeeping record by a migration object or a string (hash or name). */
   private async resolveRecord(
     target: YdbMigration | string,
   ): Promise<AppliedMigration> {

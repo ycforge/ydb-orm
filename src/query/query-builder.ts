@@ -8,16 +8,18 @@ import {
   resolveRetrieveOffset,
 } from '../core/query-limits.js';
 
-// Константы живут в core/query-limits.ts (единая точка семантики LIMIT/OFFSET
-// для билдера и persistence); реэкспорт сохраняет публичный API.
+// The canonical constants live in core/query-limits.ts (single definition point
+// of LIMIT/OFFSET semantics for the builder and persistence); re-export keeps
+// the public API intact.
 export {
   DEFAULT_RETRIEVE_LIMIT,
   MAX_RETRIEVE_LIMIT,
 } from '../core/query-limits.js';
 
+/** Sort direction for ORDER BY clauses. */
 export type OrderDirection = 'ASC' | 'DESC';
 
-/** Результат toYql(): собранный SQL и значения параметров (до маппинга в типы YDB). */
+/** Result of toYql(): the assembled SQL and parameter values (before mapping to YDB types). */
 export interface BuiltQuery {
   sql: string;
   values: Record<string, any>;
@@ -33,16 +35,16 @@ type EntityClass<T extends YdbBaseEntity> = {
 } & typeof YdbBaseEntity;
 
 /**
- * Цепочный query builder поверх Active Record сущности.
- * Условия where/andWhere — только равенство, объединяются через AND
- * (повторное поле в andWhere перезаписывает предыдущее). JSON-предикаты
- * (andWhereJsonExists/andWhereJsonValue) для одной колонки НЕ перезаписывают
- * друг друга, а компонуются через AND (#201).
- * Зашифрованные поля с blind index поддерживаются так же, как в find/findAll.
+ * Chainable query builder over an Active Record entity.
+ * where/andWhere conditions are equality-only and combined with AND
+ * (repeating a field in andWhere overwrites the previous value). JSON
+ * predicates (andWhereJsonExists/andWhereJsonValue) for the same column do
+ * NOT overwrite each other — they compose via AND (#201).
+ * Encrypted fields with a blind index are supported just like in find/findAll.
  *
- * Билдер переиспользуем: методы-строители (where/orderBy/limit/... ) и методы
- * выполнения (getMany/getOne/toYql) не мутируют состояние друг друга.
- * Один и тот же билдер можно выполнить несколько раз — результат одинаковый.
+ * The builder is reusable: builder methods (where/orderBy/limit/... ) and
+ * execution methods (getMany/getOne/toYql) do not mutate each other's state.
+ * The same builder can be executed multiple times — the result is identical.
  *
  * @example
  *   const photos = await PhotoEntity.query()
@@ -61,35 +63,35 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   constructor(private readonly entity: EntityClass<T>) {}
 
-  /** Добавить условия равенства (AND). Повторный вызов дополняет условия. */
+  /** Adds equality conditions (AND). Repeated calls append to the conditions. */
   where(criteria: Record<string, any>): this {
     this.whereValues = { ...this.whereValues, ...criteria };
     return this;
   }
 
-  /** Синоним where() для читаемости цепочек. */
+  /** Alias of where() for readable chains. */
   andWhere(criteria: Record<string, any>): this {
     return this.where(criteria);
   }
 
   /**
-   * Добавить условие, объединённое со ВСЕМ накопленным предикатом через OR
-   * (#173): `.where(A).orWhere(B)` — `A OR B`, а не `A AND (B)`.
+   * Adds a condition OR-ed with the ENTIRE accumulated predicate
+   * (#173): `.where(A).orWhere(B)` yields `A OR B`, not `A AND (B)`.
    *
-   * Повторные orWhere выстраивают плоскую цепочку `A OR B OR C`; следующий
-   * andWhere/where связывается через AND: `(A OR B OR C) AND D`.
+   * Repeated orWhere calls build a flat chain `A OR B OR C`; a subsequent
+   * andWhere/where is combined via AND: `(A OR B OR C) AND D`.
    */
   orWhere(criteria: Record<string, any>): this {
     const keys = Object.keys(this.whereValues).filter(
       (key) => this.whereValues[key] !== undefined,
     );
-    // Накопленного предиката нет — первый orWhere задаёт просто предикат.
+    // No accumulated predicate — the first orWhere just sets the predicate.
     if (keys.length === 0) {
       this.whereValues = criteria;
       return this;
     }
-    // Накопленный предикат — ровно $or: дополняем существующий список,
-    // сохраняя плоскую цепочку `A OR B OR C` без вложенности.
+    // The accumulated predicate is exactly $or: append to the existing list,
+    // keeping the flat `A OR B OR C` chain without nesting.
     if (keys.length === 1 && keys[0] === '$or') {
       const existing = this.whereValues.$or;
       const list = Array.isArray(existing) ? existing : [existing];
@@ -101,23 +103,23 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Добавить условие JSON_EXISTS для JSON-колонки (#201).
-   * Колонка должна быть объявлена как `@YdbColumn('Json')`, `@YdbColumn('JsonDocument')`
-   * или `@YdbJson()`.
+   * Adds a JSON_EXISTS condition for a JSON column (#201).
+   * The column must be declared as `@YdbColumn('Json')`, `@YdbColumn('JsonDocument')`
+   * or `@YdbJson()`.
    *
-   * Несколько JSON-предикатов для одной колонки сохраняются и объединяются
-   * через AND (композиция через `$and`), а не перезаписывают друг друга.
+   * Multiple JSON predicates for the same column are preserved and combined
+   * via AND (`$and` composition), not overwriting each other.
    */
   andWhereJsonExists(column: string, path: string): this {
     return this.appendJsonCondition(column, { $jsonExists: path });
   }
 
   /**
-   * Добавить условие JSON_VALUE = значение для JSON-колонки (#201).
-   * Значение сравнивается как строка (Utf8).
+   * Adds a JSON_VALUE = value condition for a JSON column (#201).
+   * The value is compared as a string (Utf8).
    *
-   * Несколько JSON-предикатов для одной колонки сохраняются и объединяются
-   * через AND (композиция через `$and`), а не перезаписывают друг друга.
+   * Multiple JSON predicates for the same column are preserved and combined
+   * via AND (`$and` composition), not overwriting each other.
    */
   andWhereJsonValue(column: string, path: string, value: any): this {
     return this.appendJsonCondition(column, {
@@ -126,9 +128,9 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Накопить JSON-предикат для колонки (#201). Существующий предикат той же
-   * колонки не перезаписывается: первым задаётся как есть, каждый следующий
-   * присоединяется через `$and` (явная AND-семантика).
+   * Accumulates a JSON predicate for a column (#201). An existing predicate
+   * for the same column is not overwritten: the first is stored as-is, every
+   * subsequent one is appended via `$and` (explicit AND semantics).
    */
   private appendJsonCondition(
     column: string,
@@ -145,17 +147,18 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     if (existing === undefined) {
       next = predicate;
     } else if (isJsonGroup) {
-      // Уже накопленная группа — дополняем плоский список `$and`.
+      // Already-accumulated group — append to the flat `$and` list.
       const members = (existing as { $and: unknown[] }).$and;
       next = { $and: [...members, predicate] };
     } else {
-      // Любое предыдущее значение той же колонки сохраняется в группу.
+      // Any previous value of the same column is preserved into the group.
       next = { $and: [existing, predicate] };
     }
     this.whereValues = { ...this.whereValues, [column]: next };
     return this;
   }
 
+  /** Sets the ORDER BY clause, replacing any previously set order. */
   orderBy(field: string, direction: OrderDirection = 'ASC'): this {
     this.orderClauses = [
       { field, direction: this.normalizeDirection(direction) },
@@ -163,6 +166,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return this;
   }
 
+  /** Appends an additional ORDER BY clause. */
   addOrderBy(field: string, direction: OrderDirection = 'ASC'): this {
     this.orderClauses.push({
       field,
@@ -172,9 +176,9 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Рантайм-валидация направления сортировки: trim + uppercase,
-   * whitelist ASC|DESC. Защита от SQL-инъекции через direction,
-   * переданный как any/из JS в обход TS-типа OrderDirection.
+   * Runtime validation of the sort direction: trim + uppercase,
+   * whitelist ASC|DESC. Protects against SQL injection via a direction
+   * passed as any/from JS, bypassing the TS OrderDirection type.
    */
   private normalizeDirection(direction: unknown): OrderDirection {
     if (typeof direction !== 'string') {
@@ -192,11 +196,12 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Указать конкретные колонки для SELECT (вместо SELECT *).
+   * Selects specific columns for the query (instead of SELECT *).
    *
-   * Семантика пустой проекции (#202): `select([])` явно отклоняется ошибкой,
-   * а не молчаливо превращается в дефолтную проекцию. Пропущенный `select()`
-   * продолжает использовать дефолтную проекцию всех объявленных колонок (#164).
+   * Empty-projection semantics (#202): `select([])` is explicitly rejected
+   * with an error rather than silently falling back to the default
+   * projection. Omitting `select()` keeps the default projection of all
+   * declared columns (#164).
    */
   select(columns: string[]): this {
     if (!Array.isArray(columns) || columns.length === 0) {
@@ -211,42 +216,43 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /**
-   * Ограничить количество возвращаемых строк (LIMIT).
+   * Limits the number of returned rows (LIMIT).
    *
-   * Явная семантика (без молчаливого clamp в диапазон 1..1000):
-   * - `limit(0)` — `LIMIT 0`: гарантированно пустой результат `[]`;
-   * - положительное целое значение `n` — до `n` строк, сверху обрезается до
-   *   MAX_RETRIEVE_LIMIT (защитный потолок);
-   * - лимит вообще не задан — действует защитный дефолт
-   *   DEFAULT_RETRIEVE_LIMIT (см. resolveLimit);
-   * - отрицательное, дробное или неконечное значение — ошибка.
+   * Explicit semantics (no silent clamp into the 1..1000 range):
+   * - `limit(0)` — `LIMIT 0`: guaranteed empty result `[]`;
+   * - positive integer `n` — up to `n` rows, capped at
+   *   MAX_RETRIEVE_LIMIT (safety ceiling);
+   * - limit not set — the safety default DEFAULT_RETRIEVE_LIMIT applies
+   *   (see resolveLimit);
+   * - negative, fractional or non-finite value — error.
    *
-   * Значение сохраняется в билдере и не меняется при выполнении:
-   * getOne()/getMany()/toYql() его читают, но не перезаписывают.
+   * The value is stored on the builder and does not change during execution:
+   * getOne()/getMany()/toYql() read it but never overwrite it.
    */
   limit(limit: number): this {
     this.limitValue = limit;
     return this;
   }
 
+  /** Sets the offset for the query. Fractional values are floored; negatives become 0. */
   offset(offset: number): this {
     this.offsetValue = offset;
     return this;
   }
 
-  /** QueryOptions: trx, signal, timeout. limit/offset из билдера приоритетнее. */
+  /** QueryOptions: trx, signal, timeout. Builder limit/offset take precedence. */
   options(options: QueryOptions): this {
     this.queryOptions = options;
     return this;
   }
 
-  /** Собирает SQL и значения параметров без выполнения. */
+  /** Assembles the SQL and parameter values without executing. */
   async toYql(): Promise<BuiltQuery> {
     const { sql, values } = await this.build();
     return { sql, values };
   }
 
-  /** Выполняет запрос и возвращает сущности (с eager relations). */
+  /** Executes the query and returns entities (with eager relations). */
   async getMany(): Promise<T[]> {
     const { sql, values, keys, dbSchema } = await this.build();
     const rows = await this.entity._executeSelect(
@@ -259,23 +265,23 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return rows as T[];
   }
 
-  /** Алиас getMany(). */
+  /** Alias of getMany(). */
   execute(): Promise<T[]> {
     return this.getMany();
   }
 
   /**
-   * Первая запись или null.
+   * Returns the first row or null.
    *
-   * Не мутирует исходный билдер: LIMIT 1 применяется к копии. Повторный
-   * getMany()/toYql() на этом же билдере сохранит заданный пользователем лимит.
+   * Does not mutate the source builder: LIMIT 1 is applied to a clone.
+   * A later getMany()/toYql() on the same builder keeps the user-set limit.
    */
   async getOne(): Promise<T | null> {
     const result = await this.clone().limit(1).getMany();
     return result[0] ?? null;
   }
 
-  /** COUNT(*) по тем же условиям (без limit/offset/order). */
+  /** COUNT(*) over the same conditions (ignores limit/offset/order). */
   async getCount(): Promise<number> {
     const meta = this.getMeta();
     const { whereClause, values, keys, dbSchema } =
@@ -292,7 +298,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     );
   }
 
-  /** Копия билдера: выполнение на копии не меняет состояние исходника. */
+  /** Clone of the builder: executing the clone does not change the source's state. */
   private clone(): YdbQueryBuilder<T> {
     const copy = new YdbQueryBuilder<T>(this.entity);
     copy.whereValues = { ...this.whereValues };
@@ -322,8 +328,8 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
     const selectClause = this.selectColumns?.length
       ? this.selectColumns.map(quoteIdentifier).join(', ')
-      : // Дефолтная проекция — только объявленные колонки (#164):
-        // SELECT * утянул бы и столбцы, выпиленные из метаданных.
+      : // Default projection — only declared columns (#164):
+        // SELECT * would also pull columns removed from the metadata.
         Object.keys(meta.schema).map(quoteIdentifier).join(', ');
 
     const sql =
@@ -374,9 +380,9 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return Object.keys(dbSchema).join(', ');
   }
 
-  // Семантика LIMIT/OFFSET — общая с persistence (core/query-limits.ts):
-  // limit() билдера приоритетнее queryOptions.limit; 0 → LIMIT 0;
-  // отрицательные/дробные — ошибка; потолок MAX_RETRIEVE_LIMIT.
+  // LIMIT/OFFSET semantics are shared with persistence (core/query-limits.ts):
+  // builder limit() takes precedence over queryOptions.limit; 0 → LIMIT 0;
+  // negative/fractional → error; ceiling MAX_RETRIEVE_LIMIT.
   private resolveLimit(): number {
     return resolveRetrieveLimit(this.limitValue ?? this.queryOptions?.limit);
   }

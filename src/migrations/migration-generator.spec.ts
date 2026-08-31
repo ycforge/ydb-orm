@@ -131,7 +131,7 @@ describe('planMigration', () => {
       'ALTER TABLE `photos` ADD INDEX `photos__title` GLOBAL SYNC ON (`title`)',
       'ALTER TABLE `photos` ADD INDEX `photos__title_width` GLOBAL SYNC ON (`title`, `width`)',
     ]);
-    // down в обратном порядке: индексы удаляются до прочих откатов
+    // down in reverse order: indexes are dropped before other rollbacks
     expect(plan.down).toEqual([
       'ALTER TABLE `photos` DROP INDEX `photos__title_width`',
       'ALTER TABLE `photos` DROP INDEX `photos__title`',
@@ -290,7 +290,7 @@ describe('planMigration', () => {
     expect(plan.up).toEqual([
       'ALTER TABLE `photos` SET (TTL = Interval("P1D") ON `title`)',
     ]);
-    // down восстанавливает прежние настройки TTL из DescribeTable
+    // down restores the previous TTL settings from DescribeTable
     expect(plan.down).toEqual([
       'ALTER TABLE `photos` SET (TTL = Interval("PT2H") ON `width_col` AS SECONDS)',
     ]);
@@ -319,9 +319,9 @@ describe('planMigration', () => {
     expect(plan.up).toEqual([
       'ALTER TABLE `photos` SET (TTL = Interval("P1D") ON `title`)',
     ]);
-    // Регрессия микросекундной точности YDB Interval: прежняя конверсия
-    // через secondsToIsoDuration округляла 1.5s до "PT2S" и ломала откат.
-    // down обязан восстановить дробный TTL ровно ("PT1.5S").
+    // Regression of YDB Interval microsecond precision: the previous
+    // conversion via secondsToIsoDuration rounded 1.5s to "PT2S" and broke
+    // rollback. down must restore the fractional TTL exactly ("PT1.5S").
     expect(plan.down).toEqual([
       'ALTER TABLE `photos` SET (TTL = Interval("PT1.5S") ON `width_col`)',
     ]);
@@ -387,7 +387,7 @@ describe('planMigration composite primary key order (#89)', () => {
 
     expect(plan.up).toEqual([]);
     expect(plan.down).toEqual([]);
-    // Ручная миграция вместо опасного автогенерируемого DDL
+    // A manual migration instead of dangerous auto-generated DDL
     expect(plan.warnings).toEqual([
       'Table "tenant_objects": primary key column order mismatch: ' +
         'expected [tenant_id, id], actual [id, tenant_id] — ' +
@@ -449,10 +449,10 @@ describe('planMigration input validation (#102)', () => {
 });
 
 /**
- * #23: вероятные переименования колонок в migration:generate.
+ * #23: probable column renames in migration:generate.
  */
 describe('planMigration: rename suggestions (#23)', () => {
-  // Сущность переименовала label -> title (тип сохранён)
+  // The entity renamed label -> title (type preserved)
   const renameExpected: ExpectedTableSchema = {
     tableName: 'photos',
     columns: { uuid: 'Uuid', title: 'Utf8' },
@@ -470,13 +470,13 @@ describe('planMigration: rename suggestions (#23)', () => {
     expect(plan.suggestions).toEqual([
       'ALTER TABLE `photos` RENAME COLUMN `label` TO `title`',
     ]);
-    // ADD для переименованной колонки не генерируется
+    // No ADD is generated for the renamed column
     expect(plan.up).toEqual([]);
     expect(plan.down).toEqual([]);
     expect(
       plan.warnings.some((w) => w.includes('may have been renamed to "title"')),
     ).toBe(true);
-    // Лишняя колонка по-прежнему честно числится лишней и не удаляется
+    // The extra column is still honestly listed as extra and not dropped
     expect(plan.warnings.some((w) => w.includes('extra column "label"'))).toBe(
       true,
     );
@@ -541,8 +541,8 @@ describe('planMigration: rename suggestions (#23)', () => {
     );
 
     expect(plan.suggestions).toEqual([]);
-    // Подсказки нет — расхождение PK обрабатывается прежним путём:
-    // колонка добавляется обычным ADD, PK требует ручной миграции.
+    // No hint — the PK mismatch is handled the previous way:
+    // the column is added with a plain ADD, the PK requires a manual migration.
     expect(plan.up).toEqual(['ALTER TABLE `photos` ADD COLUMN `title` Utf8']);
     expect(plan.down).toEqual(['ALTER TABLE `photos` DROP COLUMN `title`']);
     expect(plan.warnings.some((w) => w.includes('primary key mismatch'))).toBe(
@@ -563,7 +563,7 @@ describe('planMigration: rename suggestions (#23)', () => {
     );
 
     expect(plan.suggestions).toEqual([]);
-    // Обычный путь: ADD колонки + установка TTL из метаданных
+    // The normal path: ADD column + set TTL from metadata
     expect(plan.up).toEqual([
       'ALTER TABLE `photos` ADD COLUMN `title` Utf8',
       'ALTER TABLE `photos` SET (TTL = Interval("PT1H") ON `title`)',
@@ -639,7 +639,7 @@ describe('renderMigrationFile', () => {
       suggestions: ['ALTER TABLE `photos` RENAME COLUMN `label` TO `title`'],
     });
 
-    // Подсказка видна в обоих направлениях и явно помечена как неприменённая
+    // The hint is visible in both directions and explicitly marked as not applied
     expect(content).toContain(
       '// SUGGESTION (not applied automatically): possible column rename detected.',
     );
@@ -648,9 +648,9 @@ describe('renderMigrationFile', () => {
         /\/\/ {3}ALTER TABLE `photos` RENAME COLUMN `label` TO `title`;/g,
       ),
     ).toHaveLength(2);
-    // RENAME не исполняется автоматически
+    // RENAME is not executed automatically
     expect(content.match(/await executeSql/g) ?? []).toHaveLength(0);
-    // Плейсхолдер «no statements» не нужен — тело занято подсказкой
+    // The "no statements" placeholder is not needed — the body is taken by the hint
     expect(content).not.toContain('no statements');
   });
 
@@ -670,7 +670,7 @@ describe('renderMigrationFile', () => {
     expect(content).toContain(
       'await executeSql(executor, "ALTER TABLE `photos` DROP INDEX',
     );
-    // Ни один executeSql не содержит RENAME COLUMN
+    // No executeSql contains RENAME COLUMN
     for (const line of content.split('\n')) {
       if (line.includes('await executeSql')) {
         expect(line.includes('RENAME COLUMN')).toBe(false);

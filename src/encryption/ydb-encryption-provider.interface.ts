@@ -1,3 +1,7 @@
+/**
+ * Context describing where encryption/decryption is being applied. Helps a
+ * key-management provider derive or select per-field keys.
+ */
 export interface YdbEncryptionContext {
   entityName: string;
   tableName: string;
@@ -8,8 +12,8 @@ export interface YdbEncryptionContext {
 
 export interface YdbEncryptionProvider {
   /**
-   * Шифрует plaintext и возвращает raw ciphertext (Uint8Array).
-   * Значение хранится в YDB-колонке `Bytes` (без base64-кодирования).
+   * Encrypts the plaintext and returns the raw ciphertext (Uint8Array).
+   * The value is stored in a YDB `Bytes` column (no base64 encoding).
    */
   encrypt(
     plaintext: string,
@@ -17,7 +21,8 @@ export interface YdbEncryptionProvider {
     context: YdbEncryptionContext,
   ): Promise<Uint8Array>;
   /**
-   * Дешифрует ciphertext (Uint8Array из колонки `Bytes`) и возвращает plaintext.
+   * Decrypts the ciphertext (Uint8Array read from a `Bytes` column) and
+   * returns the plaintext.
    */
   decrypt(
     ciphertext: Uint8Array,
@@ -26,6 +31,10 @@ export interface YdbEncryptionProvider {
   ): Promise<string>;
 }
 
+/**
+ * Computes a deterministic hash over the plaintext for a blind index,
+ * allowing equality lookups without exposing the value.
+ */
 export interface YdbBlindIndexProvider {
   hash(plaintext: string, context: YdbEncryptionContext): Promise<string>;
 }

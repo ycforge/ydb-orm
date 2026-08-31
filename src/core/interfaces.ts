@@ -13,42 +13,50 @@ import type { YdbRetryPolicyInput } from './retry.js';
 export type { QueryOptions } from './query-options.js';
 export type { QueryLogger, QueryLogEntry } from './query-logger.js';
 
+/**
+ * Configuration options for the YDB ORM module (used by
+ * YdbCoreModule.forRootAsync() and createDriver()).
+ *
+ * @see createDriver
+ * @see resolveCredentialsProvider
+ * @see withRetryPolicy
+ * @see wrapExecutorWithLogging
+ */
 export interface YdbModuleOptions {
   endpoint: string;
   /**
-   * Готовый CredentialsProvider (#96) — паттерн useExisting: передаётся
-   * как есть (OAuth-токен, тестовые реализации, переиспользование
-   * провайдера из другого модуля).
+   * A ready-made CredentialsProvider (#96) — the useExisting pattern: passed
+   * through as is (an OAuth token, test implementations, reusing a provider
+   * from another module).
    *
-   * Приоритет источников провайдера (детерминированный, см.
-   * resolveCredentialsProvider):
-   *   credentialsProvider → auth (AuthManager из @ycforge/auth) →
-   *   DI-провайдер YDB_CREDENTIALS_PROVIDER →
+   * Deterministic provider-source priority (see resolveCredentialsProvider):
+   *   credentialsProvider → auth (AuthManager from @ycforge/auth) →
+   *   DI provider YDB_CREDENTIALS_PROVIDER →
    *   driverOptions.credentialsProvider.
-   * Задание одновременно credentialsProvider и
-   * driverOptions.credentialsProvider — ошибка конфигурации:
-   * молчаливый выбор одного из них запрещён.
+   * Setting both credentialsProvider and
+   * driverOptions.credentialsProvider is a configuration error: silently
+   * picking one of them is not allowed.
    */
   credentialsProvider?: CredentialsProvider;
   /**
-   * Готовый AuthManager из пакета `@ycforge/auth` — единая точка
-   * стратегий аутентификации (iam_token / metadata / auth_key /
-   * access_token / anonymous / static). Адаптируется в CredentialsProvider
-   * через `createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из
-   * `@ycforge/auth/ydb`.
+   * A ready-made AuthManager from the `@ycforge/auth` package — the single
+   * entry point for authentication strategies (iam_token / metadata /
+   * auth_key / access_token / anonymous / static). Adapted to a
+   * CredentialsProvider via `createYdbCredentialsProvider(auth, YDB_AUTH_USAGE,
+   * options)` from `@ycforge/auth/ydb`.
    *
-   * Приоритет: сразу после явного `credentialsProvider` и перед
-   * DI-провайдером `YDB_CREDENTIALS_PROVIDER` /
+   * Priority: immediately after the explicit `credentialsProvider` and before
+   * the DI provider `YDB_CREDENTIALS_PROVIDER` /
    * `driverOptions.credentialsProvider`.
-   * Задание одновременно `auth` и `driverOptions.credentialsProvider` —
-   * ошибка конфигурации (`Conflicting YDB credentials configuration`).
+   * Setting both `auth` and `driverOptions.credentialsProvider` is a
+   * configuration error (`Conflicting YDB credentials configuration`).
    */
   auth?: AuthManager;
   /**
-   * Кастомная фабрика драйвера: если задана, используется вместо создания
-   * Driver по endpoint/driverOptions. Удобно для тестов и нестандартных
-   * транспортов. Драйвер, возвращённый фабрикой, считается принадлежащим
-   * модулю: при graceful shutdown модуль закроет его через driver.close().
+   * Custom driver factory: if set, used instead of building the Driver from
+   * endpoint/driverOptions. Convenient for tests and non-standard transports.
+   * The driver returned by the factory is considered owned by the module:
+   * on graceful shutdown the module closes it via driver.close().
    */
   driverFactory?: () => Driver | Promise<Driver>;
   driverOptions?: DriverOptions;
@@ -60,117 +68,126 @@ export interface YdbModuleOptions {
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
   /**
-   * Формат сериализации Security AAD (#165): 'v2' (по умолчанию) — каноническая
-   * self-delimiting сериализация без коллизий от вложенных разделителей, или
-   * 'legacy' — исторический `name=value;...` ТОЛЬКО для переходного периода:
-   * смена формата меняет аутентифицированные байты, поэтому старый ciphertext
-   * под v2 не расшифруется. Миграция: пока в БД есть записи, написанные в
-   * legacy, читайте/шифруйте в 'legacy' и перешифруйте их (save/скрипт),
-   * затем переключитесь на 'v2'.
+   * Security AAD serialization format (#165): 'v2' (default) — canonical
+   * self-delimiting serialization with no collisions from nested delimiters,
+   * or 'legacy' — the historical `name=value;...` ONLY for the transition
+   * period: changing the format changes the authenticated bytes, so old
+   * ciphertext will not decrypt under v2. Migration: while the DB still holds
+   * rows written in legacy, read/encrypt in 'legacy' and re-encrypt them
+   * (save/script), then switch to 'v2'.
    */
   aadFormat?: AadFormat;
   /**
-   * Автоматическое определение формата Security AAD при дешифровке (#165):
-   * true (по умолчанию) — при сбое расшифровки основным форматом пробуется
-   * второй. Это единственный безопасный путь апгрейда существующей БД:
-   * строки, написанные до появления `v2`, остаются читаемыми после смены
-   * дефолта. false — строгий режим, пригодный только после того, как все
-   * данные перешифрованы в один формат (сбой формата падает сразу).
-   * Поля с `aadOverride` от падения формата не зависят — повтор не делается.
+   * Automatic Security AAD format detection on decryption (#165):
+   * true (default) — if the primary format fails to decrypt, the second one
+   * is tried. This is the only safe upgrade path for an existing database:
+   * rows written before `v2` existed remain readable after the default
+   * changes. false — strict mode, viable only after all data has been
+   * re-encrypted into a single format (a format failure fails immediately).
+   * Fields with `aadOverride` do not depend on format fallbacks — no retry.
    */
   aadReadFallback?: boolean;
   /**
-   * Провайдер валидации сущностей перед записью (save/insert/insertMany/update).
-   * Например, ClassValidatorProvider. Без него валидация не выполняется.
+   * Entity validation provider invoked before writes (save/insert/insertMany/update).
+   * For example, ClassValidatorProvider. Without it no validation runs.
    */
   validationProvider?: YdbValidationProvider;
   /**
-   * Версия генерируемых UUID для первичных ключей: v7 (по умолчанию,
-   * время-сортируемые) или v4 (случайные, для переходного периода).
+   * Version of generated UUIDs for primary keys: v7 (default, time-sortable)
+   * or v4 (random, for the transition period).
    */
   uuidVersion?: 'v4' | 'v7';
   /**
-   * Как в TypeORM synchronize: при старте приложения подстроить схему БД
-   * под метаданные всех сущностей (создать недостающие таблицы и колонки).
-   * Только для dev-стендов — в проде используйте миграции.
+   * Like TypeORM synchronize: on application startup align the DB schema
+   * with the metadata of all entities (create missing tables and columns).
+   * Dev-only — use migrations in production.
    */
   sync?: boolean;
   /**
-   * Логирование запросов: true (консоль по умолчанию) или экземпляр QueryLogger.
-   * Логирует SQL, имена параметров, безопасную метаинформацию значений
-   * (тип и класс размера, raw скрыт по умолчанию) и длительность.
+   * Query logging: true (default console) or a QueryLogger instance.
+   * Logs SQL, parameter names, safe value metadata (type and size class; raw
+   * is hidden by default) and duration.
    */
   logQueries?: boolean | QueryLogger;
   /**
-   * Раскрытие raw-значений параметров в логах (#168). По умолчанию
-   * (undefined/false) значения не логируются вовсе — только безопасная
-   * метаинформация (тип и укрупнённый класс размера, например
-   * `<string:1-31>` или `<bytes:128-511>`; точная длина скрыта), поэтому
-   * чувствительные данные с произвольными именами не попадают в журналы.
-   * «Значения скрыты по умолчанию» — intentional behavior change c 1.0.
-   * raw-раскрытие — явный opt-in: true (все значения), string[] / RegExp /
-   * предикат (только подходящие имена параметров). Бинарные значения
-   * маскируются всегда, даже при `true`.
+   * Raw parameter value disclosure in logs (#168). By default
+   * (undefined/false) values are not logged at all — only safe metadata
+   * (type and a coarse size class, e.g. `<string:1-31>` or `<bytes:128-511>`;
+   * the exact length is hidden), so sensitive data with arbitrary names never
+   * reaches the logs.
+   * "Values hidden by default" is an intentional behavior change since 1.0.
+   * Raw disclosure is an explicit opt-in: true (all values), string[] /
+   * RegExp / predicate (only matching parameter names). Binary values are
+   * always masked, even with `true`.
    */
   logParamValues?: YdbLogParamValues;
   /**
-   * Настройки транзакций (#98):
-   * - ambient — включить ambient-контекст транзакций (AsyncLocalStorage):
-   *   операции репозиториев внутри runInTransaction() без явного { trx }
-   *   автоматически используют активную транзакцию. По умолчанию выключено.
-   * - warnOutsideTransaction — предупреждать, когда запрос выполняется вне
-   *   какой бы то ни было транзакции. Предупреждение уходит в логгер (#206):
-   *   в `QueryLogger.warn` (опция `logQueries`) или в консольный фолбэк
-   *   `ConsoleQueryLogger`, если кастомный логгер не настроен. По умолчанию
-   *   выключено (чтобы не шуметь); включайте осознанно, например в dev-окружении.
+   * Transaction settings (#98):
+   * - ambient — enable the ambient transaction context (AsyncLocalStorage):
+   *   repository operations inside runInTransaction() without an explicit
+   *   { trx } automatically use the active transaction. Off by default.
+   * - warnOutsideTransaction — warn when a query runs outside any
+   *   transaction. The warning goes to the logger (#206): to
+   *   `QueryLogger.warn` (the `logQueries` option) or to the console
+   *   fallback `ConsoleQueryLogger` if no custom logger is configured. Off
+   *   by default (to avoid noise); enable deliberately, e.g. in dev.
    */
   transactions?: YdbTransactionsSettings;
   /**
-   * Retry-политика по типу ошибки (#27) для операций executor'а.
+   * Error-type retry policy (#27) for executor operations.
    *
-   * - `undefined` / `false` (по умолчанию) — политика выключена: повторами
-   *   одиночных запросов владеет только внутренний ретрай SDK (как в #98);
-   * - `true` — политика с дефолтами (maxAttempts: 3, bounded backoff
-   *   100..5000 мс, jitter 0.25);
-   * - объект `YdbRetryPolicyOptions` — кастомная политика.
+   * - `undefined` / `false` (default) — policy disabled: retries of single
+   *   queries are handled only by the SDK internal retry (as in #98);
+   * - `true` — policy with defaults (maxAttempts: 3, bounded backoff
+   *   100..5000 ms, jitter 0.25);
+   * - a `YdbRetryPolicyOptions` object — custom policy.
    *
-   * ПРАВИЛО ИДЕМПОТЕНТНОСТИ (fail-safe): политика повторяет только
-   * запросы, явно помеченные идемпотентными — `.idempotent(true)` на
-   * цепочке или `{ idempotent: true }` в QueryOptions. Непомеченный
-   * запрос (включая все записи по умолчанию) выполняется ровно один раз:
-   * внутренний цикл SDK гасится, двусмысленный сбой транспорта не
-   * приводит к повтору записи. Для транзакций — отдельная опция retry
-   * в runInTransaction() (колбэк обязан быть идемпотентным, #98).
-   * Когда политика включена и запрос помечен, ORM владеет ретраями
-   * через этот executor и ГАСИТ внутренний цикл SDK (одна попытка SDK
-   * на попытку ORM) — попытки не перемножаются. Статусы повтора:
-   * только ABORTED/UNAVAILABLE/OVERLOADED. См. README «Retry-политика».
+   * IDEMPOTENCY RULE (fail-safe): the policy retries only queries explicitly
+   * marked idempotent — `.idempotent(true)` on the chain or
+   * `{ idempotent: true }` in QueryOptions. An unmarked query (including all
+   * writes by default) runs exactly once: the SDK inner loop is suppressed,
+   * so an ambiguous transport failure cannot duplicate a write. For
+   * transactions there is a separate retry option in runInTransaction() (the
+   * callback must be idempotent, #98).
+   * When the policy is enabled and the query is marked, the ORM owns retries
+   * through this executor and SUPPRESSES the SDK inner loop (one SDK attempt
+   * per ORM attempt) — attempts do not multiply. Retry statuses: only
+   * ABORTED/UNAVAILABLE/OVERLOADED. See README "Retry policy".
    */
   retry?: YdbRetryPolicyInput;
 }
 
+/**
+ * Transaction-related settings of a configuration (#98): `ambient` enables
+ * the ambient transaction context, `warnOutsideTransaction` warns about
+ * queries running outside any transaction. Both are off by default.
+ */
 export interface YdbTransactionsSettings {
   ambient?: boolean;
   warnOutsideTransaction?: boolean;
 }
 
+/**
+ * A builder-style YDB query that is thenable (awaitable). Mirrors the subset
+ * of the @ydbjs/query client API used by the ORM.
+ */
 export interface YdbQuery {
   parameter(name: string, value: unknown): YdbQuery;
   timeout(timeout: number): YdbQuery;
   signal(signal: AbortSignal): YdbQuery;
   /**
-   * Пометка идемпотентности одиночного запроса (#27): разрешает
-   * retry-политике ORM (и условно-retryable статусам SDK) повторять
-   * этот запрос. По умолчанию запросы НЕ считаются идемпотентными:
-   * без пометки политика ORM выполняет запрос ровно один раз.
+   * Idempotency marker for a single query (#27): allows the ORM retry policy
+   * (and the SDK's conditionally-retryable statuses) to retry this query.
+   * By default queries are NOT considered idempotent: without the marker the
+   * ORM policy runs the query exactly once.
    */
   idempotent(flag?: boolean): YdbQuery;
   cancel(): YdbQuery;
   /**
-   * SDK-события запроса (#27): у реального Query из @ydbjs/query есть
-   * `.on('retry', ctx)` — политика ORM использует его, чтобы гасить
-   * внутренний ретрай SDK и забирать управление повторами себе.
-   * Опционально: моки и другие реализации могут её не предоставлять.
+   * SDK query events (#27): the real Query from @ydbjs/query exposes
+   * `.on('retry', ctx)` — the ORM policy uses it to suppress the SDK inner
+   * retry and take retry ownership itself. Optional: mocks and other
+   * implementations may omit it.
    */
   on?(
     event: 'retry',
@@ -180,25 +197,25 @@ export interface YdbQuery {
 }
 
 /**
- * Уровень изоляции транзакции YDB (см. TransactionExecuteOptions в @ydbjs/query).
+ * YDB transaction isolation level (see TransactionExecuteOptions in @ydbjs/query).
  */
 export type YdbIsolationLevel =
   'serializableReadWrite' | 'snapshotReadOnly' | 'snapshotReadWrite';
 
 /**
- * Опции исполнения транзакции (#98).
+ * Transaction execution options (#98).
  *
- * - isolation — уровень изоляции YDB (по умолчанию 'serializableReadWrite' на
- *   стороне SDK);
- * - signal — ГЛОБАЛЬНЫЙ AbortSignal: отменяет операцию целиком, все попытки
- *   (включая idempotent-retry); пробрасывается в SDK как есть;
- * - timeout — таймаут в миллисекундах, действует НА КАЖДУЮ ПОПЫТКУ: при
- *   idempotent-retry каждая попытка получает СВЕЖЕЕ окно таймаута, а не
- *   истёкший дедлайн первой попытки. Полный дедлайн на всю операцию задаётся
- *   явно: signal: AbortSignal.timeout(ms);
- * - idempotent — разрешить SDK повторять тело транзакции при retryable-
- *   ошибках. ВНИМАНИЕ: при повторе заново выполняется весь колбэк, поэтому
- *   побочные эффекты и lifecycle hooks могут сработать больше одного раза.
+ * - isolation — YDB isolation level (defaults to 'serializableReadWrite' on
+ *   the SDK side);
+ * - signal — GLOBAL AbortSignal: aborts the whole operation, all attempts
+ *   (including idempotent-retry); passed through to the SDK as is;
+ * - timeout — timeout in milliseconds applied PER ATTEMPT: on idempotent-retry
+ *   each attempt gets a FRESH timeout window, not the expired deadline of the
+ *   first attempt. A full deadline for the whole operation is set explicitly:
+ *   signal: AbortSignal.timeout(ms);
+ * - idempotent — allow the SDK to retry the transaction body on retryable
+ *   errors. WARNING: on a retry the whole callback executes anew, so side
+ *   effects and lifecycle hooks may fire more than once.
  */
 export interface YdbTransactionOptions {
   isolation?: YdbIsolationLevel;
@@ -207,13 +224,17 @@ export interface YdbTransactionOptions {
   idempotent?: boolean;
 }
 
-/** Хэндл открытой (открываемой) транзакции. */
+/** Handle of an open (or opening) transaction. */
 export interface YdbTransactionHandle {
   execute<T>(
     fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
   ): Promise<T>;
 }
 
+/**
+ * A thenable YDB query client: callable as a tagged-template query builder,
+ * exposing `transaction()` to execute inside a transaction.
+ */
 export interface YdbExecutor {
   (strings: TemplateStringsArray, ...args: any[]): YdbQuery;
   transaction(options?: YdbTransactionOptions): YdbTransactionHandle;

@@ -19,25 +19,25 @@ import {
 } from '../transaction/transaction-context.js';
 
 /**
- * Подключение retry-политики к executor'у (#27).
+ * Wire-up of the retry policy to the executor (#27).
  *
- * Приоритет слоёв повтора (детерминированный):
- * - политика выключена — одиночные запросы ретраит только внутренний
- *   цикл SDK (@ydbjs/query), как в #98;
- * - политика включена — владение ретраями ПЕРЕХОДИТ к ORM: на каждую
- *   попытку политики приходится ровно одна попытка SDK. Внутренний цикл
- *   SDK гасится через событие `retry` запроса: ORM отменяет сигнал
- *   попытки, SDK не выполняет следующую попытку, а исходная ошибка
- *   забирается из контекста события и классифицируется политикой.
- *   Максимум обращений к БД равен maxAttempts — умножения попыток нет.
+ * Deterministic retry layering:
+ * - policy disabled — single queries are retried only by the SDK inner loop
+ *   (@ydbjs/query), as in #98;
+ * - policy enabled — retry ownership PASSES to the ORM: each policy attempt
+ *   accounts for exactly one SDK attempt. The SDK inner loop is suppressed
+ *   via the query's `retry` event: the ORM aborts the attempt signal, the SDK
+ *   does not run the next attempt, and the original error is taken from the
+ *   event context and classified by the policy. The maximum number of DB
+ *   calls equals maxAttempts — attempts do not multiply.
  */
 
-/** Ошибка вида AbortError (отмена), в отличие от прикладных ошибок. */
+/** AbortError-like error (cancellation), as opposed to application errors. */
 function isAbortLike(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-/** Объединяет сигналы отмены (undefined-ы отбрасываются). */
+/** Combines abort signals (undefined values are dropped). */
 function combineSignals(
   signals: Array<AbortSignal | undefined>,
 ): AbortSignal | undefined {
@@ -65,28 +65,27 @@ function policyToOptions(
 }
 
 /**
- * Создаёт прокси-запрос под политикой: операции билдера запоминаются и
- * воспроизводятся на КАЖДОЙ попытке политики (у SDK-запроса результат
- * выполнения кешируется в инстансе — переиспользовать его нельзя).
+ * Creates a policy-backed query proxy: builder operations are remembered and
+ * replayed on EVERY policy attempt (an SDK query instance caches its
+ * execution result — it cannot be reused).
  *
- * Прокси владеет ОДНИМ общим исполнением операции (#172): первый же
- * `.then()`/await создаёт промис исполнения и кеширует его; повторные
- * подписки того же запроса цепляются за тот же промис и НЕ вызывают
- * `makeBase()` повторно. Это касается и непомеченных (fail-safe)
- * запросов — дублирования обращения к БД из-за двух await нет.
+ * The proxy owns ONE shared execution of the operation (#172): the first
+ * `.then()`/await creates the execution promise and caches it; subsequent
+ * subscriptions of the same query attach to the same promise and do not call
+ * `makeBase()` again. This also applies to unmarked (fail-safe) queries —
+ * two awaits do not duplicate the DB call.
  *
- * Отмена (.cancel()) — тоже на уровне прокси (#172): общий AbortController
- * собирается в сигнал операции (вместе с пользовательским и политики) и
- * используется И для попыток SDK, И для backoff политики. Поэтому cancel()
- * полностью останавливает операцию: отменяет летящую попытку, прерывает
- * ожидание задержки и запрещает новые попытки.
+ * Cancellation (.cancel()) is also at the proxy level (#172): a shared
+ * AbortController is combined into the operation signal (together with the
+ * user's and the policy's) and is used BOTH for SDK attempts AND for the
+ * policy backoff. Therefore cancel() fully stops the operation: it aborts an
+ * in-flight attempt, interrupts the delay wait and forbids new attempts.
  *
- * Правило безопасности (#27): повторять можно ТОЛЬКО запрос, явно
- * помеченный идемпотентным (`.idempotent(true)` / `{ idempotent: true }`).
- * Непомеченный запрос выполняется РОВНО ОДИН раз даже при включённой
- * политике: у SDK внутренний цикл тоже гасится, чтобы двусмысленный
- * сбой транспорта не привёл к повтору записи. SDK-запросу пометка
- * пробрасывается как `.idempotent(true)`.
+ * Safety rule (#27): only a query explicitly marked idempotent
+ * (`.idempotent(true)` / `{ idempotent: true }`) may be retried. An unmarked
+ * query runs EXACTLY ONCE even with the policy enabled: its SDK inner loop is
+ * also suppressed so an ambiguous transport failure cannot duplicate a write.
+ * The marker is forwarded to the SDK query as `.idempotent(true)`.
  */
 function createPolicyQuery(
   makeBase: () => YdbQuery,
@@ -95,28 +94,30 @@ function createPolicyQuery(
   const params: Array<[string, unknown]> = [];
   let timeoutMs: number | undefined;
   let userSignal: AbortSignal | undefined;
-  // undefined = пользователь не вызывал .idempotent() — считаем НЕ
-  // идемпотентным (fail-safe); true = помечен; false = помечен явно.
+  // undefined = the user did not call .idempotent() — we treat the query as
+  // NON-idempotent (fail-safe); true = marked; false = explicitly unmarked.
   let markedIdempotent: boolean | undefined;
   let current: YdbQuery | undefined;
 
-  // Общий сигнал отмены прокси (#172): cancel() абортит его — он отменяет
-  // и текущую попытку SDK (сигнал доходит до запроса через combineSignals),
-  // и backoff политики (signal в runWithRetry), и запрещает новые попытки.
+  // Shared proxy cancellation signal (#172): cancel() aborts it — it cancels
+  // the in-flight SDK attempt (the signal reaches the query via
+  // combineSignals), the policy backoff (signal in runWithRetry), and
+  // forbids new attempts.
   const controller = new AbortController();
   const cancelError: Error = new Error('The operation was aborted');
   cancelError.name = 'AbortError';
 
-  // Единственное исполнение операции на весь прокси-запрос (#172):
-  // два .then()/await на одном запросе НЕ дублируют обращение к БД.
+  // Single execution of the operation for the whole proxy query (#172):
+  // two .then()/awaits on one query do not duplicate the DB call.
   let settled: Promise<unknown> | undefined;
-  // Флаг: исполнение начато (первый .then()/await).
-  // После этого мутирующие методы билдера запрещены.
+  // Flag: execution has started (the first .then()/await).
+  // After that the mutating builder methods are forbidden.
   let started = false;
 
   const runOnce = async (policySignal?: AbortSignal): Promise<unknown> => {
-    // Отмена до старта (cancel() до первого await) — ни одного обращения
-    // к БД (#172); для помеченных запросов дублирует проверку runWithRetry.
+    // Cancellation before start (cancel() before the first await) — no DB
+    // call at all (#172); for marked queries it duplicates the runWithRetry
+    // check.
     if (policySignal?.aborted) throw abortReasonToError(policySignal.reason);
 
     const query = makeBase();
@@ -125,11 +126,11 @@ function createPolicyQuery(
     if (timeoutMs !== undefined) query.timeout(timeoutMs);
     if (markedIdempotent === true) query.idempotent?.(true);
 
-    // Гашение внутреннего ретрая SDK: после первой неудачи SDK хочет
-    // повторить (событие 'retry' после своей задержки) — отменяем сигнал
-    // попытки, SDK бросает AbortError ДО следующего обращения к БД, а мы
-    // подменяем его исходной ошибкой из контекста события. Для
-    // непомеченного запроса это даёт строго однократное исполнение.
+    // Suppress the SDK inner retry: after its first failure the SDK wants to
+    // retry (the 'retry' event fires after its own delay) — we abort the
+    // attempt signal, the SDK throws AbortError BEFORE the next DB call, and
+    // we replace it with the original error from the event context. For
+    // unmarked queries this guarantees strictly-once execution.
     const attemptController = new AbortController();
     let captured = false;
     let capturedError: unknown;
@@ -194,15 +195,15 @@ function createPolicyQuery(
       return proxy;
     },
     cancel(): YdbQuery {
-      // Текущая попытка SDK + весь жизненный цикл операции.
+      // Cancel the in-flight SDK attempt plus the whole operation lifecycle.
       current?.cancel();
       controller.abort(cancelError);
       return proxy;
     },
     then(onFulfilled?, onRejected?) {
-      // Первый подписчик создаёт и кеширует общее исполнение операции
-      // (#172); последующие подписки цепляются за тот же промис и не
-      // трогают БД повторно.
+      // The first subscriber creates and caches the shared operation execution
+      // (#172); subsequent subscriptions attach to the same promise and do not
+      // touch the DB again.
       if (settled === undefined) {
         started = true;
         const operationSignal = combineSignals([
@@ -215,14 +216,14 @@ function createPolicyQuery(
           signal: operationSignal,
         };
 
-        // Fail-safe (#27): без явной пометки идемпотентности политика НЕ
-        // применяется — ровно одна попытка БД.
+        // Fail-safe (#27): without an explicit idempotency marker the policy
+        // is NOT applied — exactly one DB attempt.
         settled =
           markedIdempotent === true
             ? runWithRetry(runOnce, options)
             : Promise.resolve().then(() => runOnce(operationSignal));
-        // Кешированное отклонение не должно стать unhandled rejection,
-        // пока у операции нет подписчиков (#172).
+        // A cached rejection must not become an unhandled rejection while the
+        // operation has no subscribers (#172).
         settled.catch(() => {});
       }
       return settled.then(onFulfilled, onRejected);
@@ -232,24 +233,24 @@ function createPolicyQuery(
 }
 
 /**
- * Подключает retry-политику (#27) к executor'у: каждый запрос через
- * возвращённый executor выполняется под политикой (классификация по
- * статусам ABORTED/UNAVAILABLE/OVERLOADED, bounded backoff + jitter,
- * отмена сигналом). `transaction()` пробрасывается как есть — повторами
- * тела транзакции управляет опция `retry` в runInTransaction().
+ * Attaches the retry policy (#27) to an executor: every query through the
+ * returned executor runs under the policy (classification by statuses
+ * ABORTED/UNAVAILABLE/OVERLOADED, bounded backoff + jitter, signal-based
+ * cancellation). `transaction()` is passed through as is — retries of the
+ * transaction body are governed by the `retry` option in runInTransaction().
  *
- * ПРАВИЛО ИДЕМПОТЕНТНОСТИ (#27, fail-safe): политика ретраит только
- * запросы, ЯВНО помеченные идемпотентными — `.idempotent(true)` на цепочке
- * или `{ idempotent: true }` в QueryOptions. Непомеченный запрос (в т.ч.
- * любой INSERT/UPSERT/UPDATE/DELETE по умолчанию) выполняется РОВНО ОДИН
- * раз даже при включённой политике: внутренний цикл SDK для него тоже
- * гасится, чтобы двусмысленный сбой транспорта не продублировал запись.
- * Повторять можно только операции, устойчивые к повтору.
+ * IDEMPOTENCY RULE (#27, fail-safe): the policy retries only queries
+ * EXPLICITLY marked idempotent — `.idempotent(true)` on the chain or
+ * `{ idempotent: true }` in QueryOptions. An unmarked query (including any
+ * INSERT/UPSERT/UPDATE/DELETE by default) runs EXACTLY ONCE even with the
+ * policy enabled: its SDK inner loop is also suppressed, so an ambiguous
+ * transport failure cannot duplicate a write. Only retry-tolerant operations
+ * may be retried.
  *
- * Выключенная политика (`false`/`undefined`) возвращает executor без
- * изменений — поведение идентично #98.
+ * A disabled policy (`false`/`undefined`) returns the executor unchanged —
+ * behavior identical to #98.
  *
- * Оборачивайте ОДИН раз; вложение нескольких политик перемножит попытки.
+ * Wrap ONCE; nesting several policies would multiply attempts.
  */
 export function withRetryPolicy(
   executor: YdbExecutor,
@@ -275,9 +276,9 @@ export function withRetryPolicy(
     options?: YdbTransactionOptions,
   ) => executor.transaction(options);
 
-  // Identity (#207): обёртка наследует identity-токен исходника (см. также
-  // wrapExecutorWithLogging), чтобы разные обёртки одного логического
-  // executor'а распознавались как один DB-контекст.
+  // Identity (#207): the wrapper inherits the identity token of its source
+  // (see also wrapExecutorWithLogging), so different wrappers of one logical
+  // executor are recognized as one DB context.
   ensureExecutorIdentity(executor);
   inheritExecutorIdentity(executor, wrapped);
 

@@ -1,9 +1,9 @@
 /**
- * ydb-orm — TypeORM-like ORM для YDB (Yandex Database).
- * Публичный API библиотеки.
+ * ydb-orm — TypeORM-like ORM for YDB (Yandex Database).
+ * Public API of the library.
  */
 
-// Типы и интерфейсы ядра
+// Core types and interfaces
 export type { YdbPrimitive } from './core/types.js';
 export type {
   YdbModuleOptions,
@@ -30,7 +30,7 @@ export type {
   YdbLoggingOptions,
 } from './core/query-logger.js';
 
-// Декораторы
+// Decorators
 export { YdbEntity } from './decorators/entity.decorator.js';
 export { YdbColumn, YdbPrimaryColumn } from './decorators/column.decorator.js';
 export {
@@ -112,7 +112,7 @@ export {
 } from './core/query-limits.js';
 export { executeYdbQuery } from './core/execute-query.js';
 
-// Retry-политика по типу ошибки (#27)
+// Retry policy by error type (#27)
 export {
   runWithRetry,
   computeRetryDelayMs,
@@ -134,7 +134,7 @@ export type {
   YdbRetryRng,
 } from './core/retry.js';
 
-// Репозитории / EntityManager (DI-вариант поверх Active Record)
+// Repositories / EntityManager (DI variant over Active Record)
 export {
   YdbRepository,
   YdbEntityManager,
@@ -142,13 +142,13 @@ export {
 } from './repository/index.js';
 export type { YdbEntityConstructor } from './repository/index.js';
 
-// Persistence / Relations (новое ядро ORM)
+// Persistence / Relations (new ORM core)
 export { YdbEntityPersistence } from './persistence/index.js';
 export { YdbEntityRelations } from './relations/index.js';
 export type { PersistenceDeps } from './persistence/index.js';
 export type { RelationsDeps } from './relations/index.js';
 
-// Шифрование
+// Encryption
 export type {
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
@@ -161,11 +161,11 @@ export {
   DEFAULT_AAD_FORMAT,
 } from './encryption/aad.js';
 export type { AadFormat } from './encryption/aad.js';
-// Тестовая заглушка шифрования вынесена в отдельный пакет
-// @ycforge/js-dev-tools (см. README). Готовые KMS/HMAC-провайдеры —
-// в @ycforge/orm-security-providers.
+// Test encryption stub moved to a separate package
+// @ycforge/js-dev-tools (see README). Ready-to-use KMS/HMAC providers —
+// in @ycforge/orm-security-providers.
 
-// Валидация
+// Validation
 export type {
   YdbValidationProvider,
   YdbValidationOptions,
@@ -178,7 +178,7 @@ export {
   normalizeValidationIssues,
 } from './validation/validation-error.js';
 
-// Метаданные и реестр сущностей
+// Metadata and entity registry
 export { getYdbEntityMetadata } from './metadata/entity-metadata.js';
 export {
   validateEntityMetadata,
@@ -227,7 +227,7 @@ export type {
   YdbSchemaIssue,
 } from './schema/schema-sync.js';
 
-// Транзакции
+// Transactions
 export { YdbTransactionManager } from './transaction/transaction.manager.js';
 export type { RunInTransactionOptions } from './transaction/transaction.manager.js';
 export {
@@ -236,7 +236,7 @@ export {
 } from './transaction/transaction-context.js';
 export type { ActiveTransactionContext } from './transaction/transaction-context.js';
 
-// Миграции
+// Migrations
 export type {
   YdbMigration,
   YdbMigrationClass,
@@ -273,7 +273,7 @@ export {
 } from './migrations/migration-generator.js';
 export type { PlannedMigration } from './migrations/migration-generator.js';
 
-// Подключение без NestJS (CLI, скрипты)
+// Connection without NestJS (CLI, scripts)
 export {
   resolveCredentialsProvider,
   createDriver,
@@ -281,7 +281,7 @@ export {
   validateYdbModuleOptions,
 } from './core/driver.js';
 export { configureEntities } from './core/standalone.js';
-// Независимые ORM-конфигурации в одном процессе (#199).
+// Independent ORM configurations in one process (#199).
 export {
   createOrmScope,
   getDefaultOrmScope,
@@ -292,7 +292,7 @@ export {
 } from './core/orm-scope.js';
 export type { YdbOrmScope } from './core/orm-scope.js';
 export type { YdbCliConfig } from './cli/config.js';
-// Генерация сущности без CLI (#24): программный вход для скриптов/инструментов.
+// Entity generation without CLI (#24): programmatic entry for scripts/tools.
 export type {
   YdbEntitySpec,
   YdbEntityColumnSpec,
@@ -319,7 +319,7 @@ export type {
   EntityCreateWizardOptions,
 } from './cli/entity-wizard.js';
 export { PromptCancelledError } from './cli/prompt.js';
-// Дамп метаданных (#37): программный вход для внешних инструментов (#36 и др.).
+// Metadata dump (#37): programmatic entry for external tools (#36 etc.).
 export {
   buildMetadataDump,
   METADATA_DUMP_FORMAT,
@@ -338,10 +338,10 @@ export type {
   DumpedJoinTable,
   DumpedJoinTableRef,
 } from './cli/metadata-dump.js';
-// Mermaid ER-диаграмма (#36): рендер поверх канонического дампа метаданных.
+// Mermaid ER diagram (#36): render on top of canonical metadata dump.
 export { buildEntityDiagram, writeDiagramFile } from './cli/entity-diagram.js';
 
-// Базовый класс провайдера учётных данных из SDK (#96): тип реэкспортируется,
-// чтобы пользователи могли типизировать свои реализации без прямой
-// зависимости от @ydbjs/auth.
+// Base credentials provider class from SDK (#96): type is re-exported
+// so users can type their implementations without a direct
+// dependency on @ydbjs/auth.
 export type { CredentialsProvider } from '@ydbjs/auth';

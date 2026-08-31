@@ -27,8 +27,8 @@ describe('extractCliConfig (#103)', () => {
   });
 
   it('accepts a named export instead of the default one', () => {
-    // Раньше понимался только default export: файл с named экспортом
-    // давал ложную ошибку «endpoint is required».
+    // Previously only the default export was understood: a file with a named
+    // export raised a misleading "endpoint is required" error.
     const config = { endpoint };
     expect(extractCliConfig({ config }, 'cfg.ts')).toBe(config);
     expect(extractCliConfig({ cliConfig: config }, 'cfg.ts')).toBe(config);

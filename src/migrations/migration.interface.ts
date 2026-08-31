@@ -1,34 +1,34 @@
 import { YdbExecutor } from '../core/interfaces.js';
 
 /**
- * Миграция БД (аналог MigrationInterface в TypeORM).
- * Имя миграции — из имени файла: `<timestamp>-<Name>` (например,
- * `1755000000000-CreateUsers`). Порядок выполнения — по имени файла.
+ * A database migration (analogous to TypeORM's MigrationInterface).
+ * The migration name comes from the file name: `<timestamp>-<Name>` (e.g.,
+ * `1755000000000-CreateUsers`). Migrations run in file-name order.
  */
 export interface YdbMigration {
-  /** Имя миграции. Если не задано, runner возьмёт имя файла. */
+  /** Migration name. If not set, the runner falls back to the file name. */
   name?: string;
 
   /**
-   * Стабильный идентификатор содержимого (#101). Заполняется загрузчиком
-   * (SHA-256 содержимого файла), поэтому переименование файла не приводит
-   * к повторному применению миграции.
+   * Stable content-based identity (#101). Populated by the loader as the
+   * SHA-256 of the file content, so renaming the file does not re-apply
+   * an applied migration.
    */
   hash?: string;
 
-  /** Применить миграцию. */
+  /** Apply the migration. */
   up(executor: YdbExecutor): Promise<void>;
 
-  /** Откатить миграцию. */
+  /** Roll the migration back. */
   down(executor: YdbExecutor): Promise<void>;
 }
 
-/** Класс миграции (то, что экспортируется из файла миграции). */
+/** A migration class (what a migration file exports). */
 export type YdbMigrationClass = new () => YdbMigration;
 
 /**
- * Выполняет произвольный YQL (DDL/DML) через executor.
- * Вспомогательная функция для миграций.
+ * Runs arbitrary YQL (DDL/DML) through the executor.
+ * Helper function for migrations.
  */
 export async function executeSql(
   executor: YdbExecutor,

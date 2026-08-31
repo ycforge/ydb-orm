@@ -3,7 +3,7 @@ import type { YdbExecutor } from '../core/interfaces.js';
 import type { YdbTransactionsSettings } from '../core/interfaces.js';
 import type { QueryLogger } from '../core/query-logger.js';
 
-/** Параметры создания контекста активной транзакции (#208). */
+/** Parameters for creating an active-transaction context (#208). */
 export interface TransactionContextParams {
   transactionId: symbol;
   trx: YdbExecutor;
@@ -13,38 +13,38 @@ export interface TransactionContextParams {
 }
 
 /**
- * Активная транзакция в цепочке async-вызовов (#98).
+ * The active transaction in an async-call chain (#98).
  *
- * Хранится в AsyncLocalStorage и используется для двух независимых задач:
- * 1. Детекция вложенных runInTransaction() — работает ВСЕГДА, независимо от
- *    настроек (иначе вложенный вызов молча открыл бы отдельную транзакцию
- *    на другой сессии).
- * 2. Ambient auto-join: если включён (глобально через настройки модуля или
- *    локально через опцию `ambient` вызова), операции репозиториев без
- *    явного { trx } выполняются в активной транзакции.
+ * It is stored in AsyncLocalStorage and used for two independent tasks:
+ * 1. Detection of nested runInTransaction() — always works, regardless of
+ *    settings (otherwise a nested call would silently open a separate
+ *    transaction on another session).
+ * 2. Ambient auto-join: when enabled (globally through the module settings or
+ *    locally through the `ambient` call option), repository operations without
+ *    an explicit { trx } run inside the active transaction.
  *
- * Идентичность транзакции определяется `transactionId`, а не ссылкой на
- * executor, так как разные обёртки могут представлять одну и ту же
- * логическую транзакцию (например, при оборачивании executor'а для логирования).
+ * Transaction identity is determined by `transactionId`, not by an executor
+ * reference, because different wrappers may represent one logical transaction
+ * (for example, when an executor is wrapped for logging).
  *
- * Инварианты (#208) валидируются в единственной точке создания — конструкторе,
- * поэтому невалидный инстанс создать невозможно ни через фабрику
- * createTransactionContext(), ни напрямую через new. Приватное brand-поле
- * делает контекст непрозрачным для структурной типизации и защищает
- * runWithTransactionContext() от подделок через cast/instanceof.
+ * Invariants (#208) are validated at the single creation point — the
+ * constructor — so an invalid instance cannot be created either through the
+ * createTransactionContext() factory or directly via new. A private brand
+ * field makes the context opaque to structural typing and protects
+ * runWithTransactionContext() against forgeries via cast/instanceof.
  */
 export class ActiveTransactionContext {
-  /** Уникальный идентификатор транзакции (символ) — для сравнения по значению. */
+  /** Unique transaction identifier (a symbol) — for by-value comparison. */
   readonly transactionId: symbol;
-  /** Executor транзакции — передаётся в операции вместо executor'а сущности. */
+  /** Transaction executor — passed into operations instead of the entity executor. */
   readonly trx: YdbExecutor;
-  /** Executor БД, открывший транзакцию: детекция вложенности по transactionId. */
+  /** The DB executor that opened the transaction: nesting is detected by transactionId. */
   readonly db: YdbExecutor;
-  /** Сигнал отмены конкретной попытки транзакции (при retry — новый). */
+  /** Cancellation signal for the specific transaction attempt (new on retry). */
   readonly signal: AbortSignal | undefined;
-  /** Включён ли ambient auto-join для этого контекста. */
+  /** Whether ambient auto-join is enabled for this context. */
   readonly ambient: boolean;
-  /** Приватная brand-метка: есть только у инстансов, созданных через фабрику. */
+  /** Private brand mark: only present on instances created through the factory. */
   readonly #brand = Symbol('ActiveTransactionContext');
 
   constructor(params: TransactionContextParams) {
@@ -56,7 +56,7 @@ export class ActiveTransactionContext {
     this.ambient = params.ambient;
   }
 
-  /** Возвращает true только для настоящего фабричного инстанса. */
+  /** Returns true only for a genuine factory-created instance. */
   static isContext(value: unknown): value is ActiveTransactionContext {
     return typeof value === 'object' && value !== null && #brand in value;
   }
@@ -64,16 +64,16 @@ export class ActiveTransactionContext {
 
 const storage = new AsyncLocalStorage<ActiveTransactionContext>();
 
-/** Настройки транзакций процесса (заполняются из YdbModuleOptions). */
+/** The process transaction settings (filled from YdbModuleOptions). */
 let settings: Required<YdbTransactionsSettings> = {
   ambient: false,
   warnOutsideTransaction: false,
 };
 
 /**
- * Конфигурирует транзакционное поведение процесса (#98).
- * Вызывается YdbOrmModule при инициализации; доступен и standalone-пользователям.
- * Настройки глобальные для процесса — как реестр сущностей.
+ * Configures the transactional behavior of the process (#98).
+ * Called by YdbOrmModule during initialization; also available to standalone
+ * users. Settings are global for the process — like the entity registry.
  */
 export function configureTransactionContext(
   options?: YdbTransactionsSettings,
@@ -84,15 +84,15 @@ export function configureTransactionContext(
   };
 }
 
-/** Текущие настройки (для тестов и менеджера транзакций). */
+/** Current settings (for tests and the transaction manager). */
 export function getTransactionContextSettings(): Required<YdbTransactionsSettings> {
   return { ...settings };
 }
 
 /**
- * Эффективные настройки транзакций для одной операции (#199):
- * настройки конфигурации-владельца сущности, если заданы, иначе
- * процессно-глобальные (прежнее поведение одиночной конфигурации).
+ * Effective transaction settings for one operation (#199):
+ * the owning entity configuration's settings, if provided, otherwise the
+ * process-global ones (the previous single-configuration behavior).
  */
 export function resolveTransactionSettings(
   scopeSettings?: Required<YdbTransactionsSettings>,
@@ -100,17 +100,17 @@ export function resolveTransactionSettings(
   return scopeSettings ?? settings;
 }
 
-/** Активная транзакция в текущей async-цепочке, если есть. */
+/** The active transaction in the current async chain, if any. */
 export function getActiveTransaction(): ActiveTransactionContext | undefined {
   return storage.getStore();
 }
 
 /**
- * Выполняет fn с заданным контекстом активной транзакции.
+ * Runs fn with the given active-transaction context.
  *
- * Публичная граница (#208): контекст обязан быть настоящим инстансом,
- * созданным через createTransactionContext() — приватный brand-проверкой
- * исключаются и обычные объекты, и подделки через cast/instanceof.
+ * Public boundary (#208): the context must be a genuine instance created via
+ * createTransactionContext() — the private brand check excludes plain objects
+ * and forgeries via cast/instanceof alike.
  */
 export function runWithTransactionContext<T>(
   context: ActiveTransactionContext,
@@ -125,22 +125,23 @@ export function runWithTransactionContext<T>(
 }
 
 /**
- * Резолвит executor для одной операции репозитория (#98).
+ * Resolves the executor for a single repository operation (#98).
  *
- * - Явный trx всегда побеждает, НО при активном ambient-контексте другой
- *   транзакции это почти наверняка ошибка — смешивать активную ambient-
- *   транзакцию с посторонней нельзя, кидаем понятную ошибку.
- * - Без явного trx при включённом ambient auto-join возвращаем активную
- *   транзакцию.
- * - Иначе — обычный executor сущности; если настроен
- *   warnOutsideTransaction и транзакции нет вовсе — предупреждение.
+ * - An explicit trx always wins, BUT under an active ambient context of a
+ *   different transaction this is almost certainly an error — an active
+ *   ambient transaction cannot be mixed with a foreign one, so we throw a
+ *   clear error.
+ * - Without an explicit trx, when ambient auto-join is enabled, the active
+ *   transaction is returned.
+ * - Otherwise — the entity's normal executor; if warnOutsideTransaction is
+ *   configured and no transaction is active at all, a warning is emitted.
  *
- * Предупреждение уходит в логгер через опциональный хук `warn` (#206).
- * Вызывающий код передаёт логгер СВОЕЙ конфигурации (resolveExecutorLogger);
- * без переданного логгера предупреждение не эмитится вовсе — прямой записи
- * в console.warn здесь нет.
+ * The warning goes to the logger through the optional `warn` hook (#206).
+ * The caller passes the logger of ITS own configuration (resolveExecutorLogger);
+ * without a passed logger no warning is emitted at all — there is no direct
+ * console.warn here.
  *
- * Ошибки не глотаются и не заменяются фолбэками.
+ * Errors are neither swallowed nor replaced with fallbacks.
  */
 export function resolveOperationExecutor(
   explicitTrx: YdbExecutor | undefined,
@@ -171,8 +172,8 @@ export function resolveOperationExecutor(
     return active.trx;
   }
 
-  // Нет executor'а — вызывающий код сам бросит понятную ошибку «executor
-  // not set», предупреждение тут не нужно.
+  // No executor — the caller itself throws a clear "executor not set" error,
+  // so no warning is needed here.
   if (!fallback) {
     return fallback;
   }
@@ -188,44 +189,45 @@ export function resolveOperationExecutor(
 }
 
 /**
- * Приватный реестр identity (#217): executor -> символ.
+ * Private identity registry (#217): executor -> symbol.
  *
- * Источник правды для transaction/executor identity находится ЗДЕСЬ, а не в
- * мутируемом свойстве executor'а. Слабые ключи позволяют собирать объекты,
- * на которые больше нет ссылок (в т.ч. краткоживущие trx-executor'ы каждой
- * попытки), и НЕ требуют мутации объект executor'а вовсе — frozen/sealed
- * executor'ы работают без изменений. Потребители не имеют доступа к реестру,
- * поэтому не могут перезаписать чужой identity и соединить два независимых
- * контекста в один.
+ * The source of truth for transaction/executor identity lives HERE, not in a
+ * mutable property on the executor. Weak keys let objects with no remaining
+ * references be collected (including the short-lived trx executors of each
+ * attempt) and require NO mutation of the executor object at all — frozen/sealed
+ * executors work unchanged. Consumers have no access to the registry, so they
+ * cannot overwrite someone else's identity or stitch two independent contexts
+ * into one.
  */
 const identityRegistry = new WeakMap<YdbExecutor, symbol>();
 
 /**
- * Получает identity-токен из executor'а (#207/#217).
- * Возвращает символ из приватного реестра (для live-транзакции это её
- * transactionId, для логического DB-executor'а — стабильный идентификатор
- * этого executor'а), иначе сам executor для обратной совместимости
- * (сравнение по ссылке для executor'ов без identity).
+ * Gets the identity token from the executor (#207/#217).
+ * Returns the symbol from the private registry (for a live transaction that is
+ * its transactionId, for a logical DB executor — a stable identifier of that
+ * executor); otherwise the executor itself for backwards compatibility
+ * (by-reference comparison for executors without identity).
  */
 export function getTransactionId(trx: YdbExecutor): symbol | YdbExecutor {
   return identityRegistry.get(trx) ?? trx;
 }
 
 /**
- * Явно запоминает identity-токен для executor'а в приватном реестре (#217).
- * Используется, чтобы присвоить свежесозданному trx-executor'у данной попытки
- * её transactionId (см. runAttemptBody, entity-relations). Не мутирует объект.
+ * Explicitly records an identity token for an executor in the private registry
+ * (#217). Used to assign a freshly created trx executor its attempt's
+ * transactionId (see runAttemptBody, entity-relations). Does not mutate the
+ * object.
  */
 export function setExecutorIdentity(executor: YdbExecutor, id: symbol): void {
   identityRegistry.set(executor, id);
 }
 
 /**
- * Присваивает executor'у стабильный identity-токен, если его ещё нет (#207).
- * Используется для логических DB-executor'ов: разные обёртки одного и того же
- * логического executor'а разделяют этот токен, поэтому детекция вложенных
- * транзакций может сравнивать DB-контексты по значению, а не по ссылке на
- * объект. Токен хранится в приватном реестре и не мутирует executor.
+ * Assigns the executor a stable identity token if it does not have one yet
+ * (#207). Used for logical DB executors: different wrappers of one logical
+ * executor share this token, so nested-transaction detection can compare DB
+ * contexts by value rather than by object reference. The token is stored in
+ * the private registry and does not mutate the executor.
  */
 export function ensureExecutorIdentity(executor: YdbExecutor): symbol {
   const existing = identityRegistry.get(executor);
@@ -236,10 +238,10 @@ export function ensureExecutorIdentity(executor: YdbExecutor): symbol {
 }
 
 /**
- * Наследует identity-токен с внутреннего executor'а на обёртку (#207):
- * wrapExecutorWithLogging()/withRetryPolicy() создают НОВЫЕ объекты, и чтобы
- * обёртки того же логического executor'а распознавались как один DB-контекст,
- * они копируют токен с исходного executor'а в приватный реестр обёртки.
+ * Inherits the identity token from an inner executor onto a wrapper (#207):
+ * wrapExecutorWithLogging()/withRetryPolicy() create NEW objects, and so that
+ * wrappers of the same logical executor are recognized as one DB context, they
+ * copy the token from the source executor into the wrapper's private registry.
  */
 export function inheritExecutorIdentity(
   source: YdbExecutor,
@@ -252,15 +254,15 @@ export function inheritExecutorIdentity(
 }
 
 /**
- * Единственная точка валидации инвариантов ActiveTransactionContext (#208):
+ * Single point of validation for ActiveTransactionContext invariants (#208):
  *
- * - transactionId должен быть символом
- * - trx должен быть валидным executor'ом (объект или функция)
- * - db должен быть валидным executor'ом (объект или функция)
- * - signal, если задан, должен быть AbortSignal
- * - ambient должен быть boolean
+ * - transactionId must be a symbol
+ * - trx must be a valid executor (object or function)
+ * - db must be a valid executor (object or function)
+ * - signal, if provided, must be an AbortSignal
+ * - ambient must be a boolean
  *
- * @throws Error если любой инвариант нарушен
+ * @throws Error if any invariant is violated
  */
 function validateTransactionContextParams(
   params: TransactionContextParams,
@@ -297,9 +299,10 @@ function validateTransactionContextParams(
 }
 
 /**
- * Канонический способ получения ActiveTransactionContext: валидация инвариантов
- * (#208) происходит в конструкторе, brand-поле блокирует структурные подделки
- * (объектные литералы и касты в runWithTransactionContext отклоняются).
+ * Canonical way to obtain an ActiveTransactionContext: invariant validation
+ * (#208) happens in the constructor, and the brand field blocks structural
+ * forgeries (object literals and casts are rejected in
+ * runWithTransactionContext).
  */
 export function createTransactionContext(
   params: TransactionContextParams,

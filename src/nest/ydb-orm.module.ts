@@ -12,6 +12,11 @@ import { DEFAULT_CONNECTION_NAME } from './constants.js';
 
 @Module({})
 export class YdbOrmModule {
+  /**
+   * Registers the core YDB module (driver/executor/credentials) and
+   * re-exports it, so one YdbOrmModule.forRoot(...) import in the root
+   * module is enough for the whole application.
+   */
   static forRoot(options: YdbModuleAsyncOptions): DynamicModule {
     const core = YdbCoreModule.forRootAsync(options);
     return {
@@ -22,9 +27,9 @@ export class YdbOrmModule {
   }
 
   /**
-   * Подключает сущности к конфигурации connectionName (#199, по умолчанию
-   * 'default'). Один класс сущности может принадлежать только одной
-   * активной конфигурации: регистрация в чужой — ошибка при bootstrap.
+   * Attaches entities to the connectionName configuration (#199, defaults
+   * to 'default'). An entity class can belong to only one active
+   * configuration: registering it in a foreign one fails at bootstrap.
    */
   static forFeature(
     entities: (typeof YdbBaseEntity)[],

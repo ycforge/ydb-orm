@@ -1,13 +1,14 @@
 import 'reflect-metadata';
 
+/** Metadata key for secondary indexes (`@YdbIndex`). */
 export const YDB_INDEXES_KEY = 'ydb:indexes';
 
 export interface YdbIndexOptions {
-  /** Колонки индекса (порядок важен). */
+  /** Index columns (order matters). */
   columns: string[];
-  /** Явное имя индекса. По умолчанию: `{table}__{col1}_{col2}`. */
+  /** Explicit index name. Default: `{table}__{col1}_{col2}`. */
   name?: string;
-  /** Уникальный индекс. По умолчанию false. */
+  /** Unique index. Default false. */
   unique?: boolean;
 }
 
@@ -18,17 +19,20 @@ export interface YdbIndexMetadata {
 }
 
 /**
- * Декларативный вторичный индекс (GLOBAL SYNC). Класс-декоратор,
- * можно вешать несколько раз. Попадает в CREATE TABLE при schema sync
- * и в migration:generate.
+ * Declarative secondary index (GLOBAL SYNC). A class decorator that can be
+ * applied multiple times. Lands in CREATE TABLE during schema sync and in
+ * migration:generate.
  *
- * Семантика наследования (#92): индекс привязан к таблице того класса,
- * на котором объявлен, и НЕ наследуется по цепочке прототипов. Класс
- * с собственным @YdbEntity начинает с пустого списка индексов и объявляет
- * свои явно — иначе родительские индексы по чужим колонкам попали бы
- * в CREATE TABLE дочерней таблицы и уронили DDL. Повтор @YdbIndex на
- * наследнике не мутирует список индексов родителя (copy-on-write).
+ * Inheritance semantics (#92): the index is bound to the table of the class
+ * on which it is declared and is NOT inherited along the prototype chain. A
+ * class with its own @YdbEntity starts with an empty index list and declares
+ * its own explicitly — otherwise parent indexes over foreign columns would
+ * leak into the child table's CREATE TABLE and break the DDL. Re-applying
+ * @YdbIndex on a subclass does not mutate the parent's index list
+ * (copy-on-write).
  *
+ * @param options - Index options: columns, optional name, unique flag.
+ * @returns Class decorator function.
  * @example
  *   @YdbEntity('photos')
  *   @YdbIndex({ columns: ['author_email_bi'] })
@@ -37,22 +41,33 @@ export interface YdbIndexMetadata {
  */
 export function YdbIndex(options: YdbIndexOptions): ClassDecorator {
   return (target) => {
-    // Только собственные метаданные класса: иначе при декорировании
-    // наследника сюда затесались бы индексы родителя (#92).
+    // Only the class's own metadata: otherwise the parent's indexes would
+    // leak in when decorating a subclass (#92).
     const existing: YdbIndexMetadata[] =
       Reflect.getOwnMetadata(YDB_INDEXES_KEY, target) || [];
-    // Класс-декораторы применяются снизу вверх — unshift сохраняет порядок объявления.
+    // Class decorators apply bottom-up — unshift preserves declaration order.
     const indexes: YdbIndexMetadata[] = [{ ...options }, ...existing];
     Reflect.defineMetadata(YDB_INDEXES_KEY, indexes, target);
   };
 }
 
-/** Собственные индексы класса (не наследуются от родителя, #92). */
+/**
+ * Returns the class's own indexes (not inherited from the parent, #92).
+ *
+ * @param target - Entity class constructor.
+ * @returns Array of index metadata entries.
+ */
 export function getYdbIndexesMetadata(target: any): YdbIndexMetadata[] {
   return Reflect.getOwnMetadata(YDB_INDEXES_KEY, target) || [];
 }
 
-/** Имя индекса по умолчанию: `{table}__{col1}_{col2}` — группируется сортировкой. */
+/**
+ * Default index name: `{table}__{col1}_{col2}` — grouped by sorting.
+ *
+ * @param tableName - Table name.
+ * @param columns - Index columns.
+ * @returns Default index name.
+ */
 export function resolveIndexName(tableName: string, columns: string[]): string {
   return `${tableName}__${columns.join('_')}`;
 }

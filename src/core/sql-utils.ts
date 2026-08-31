@@ -7,11 +7,10 @@ export function validateIdentifier(name: string, context: string): void {
 }
 
 /**
- * Валидация имени таблицы сущности (@YdbEntity). Правила те же, что и у
- * quoteIdentifier: ASCII-буквы/цифры/подчёркивание, первый символ — буква
- * или подчёркивание. Вызывается в декораторе, поэтому невалидное имя
- * падает при загрузке модуля — до того, как из него соберут путь для
- * DescribeTable или DDL (#91).
+ * Entity table name validation (@YdbEntity). Same rules as
+ * quoteIdentifier: ASCII letters/digits/underscore, first character must be
+ * a letter or underscore. Called in the decorator, so an invalid name fails
+ * at module load — before it's used for DescribeTable or DDL (#91).
  */
 export function validateTableName(name: string): void {
   if (typeof name !== 'string' || !IDENTIFIER_REGEX.test(name)) {
@@ -22,7 +21,7 @@ export function validateTableName(name: string): void {
   }
 }
 
-/** Экранирование идентификаторов YQL (backticks) */
+/** YQL identifier escaping (backticks) */
 export function quoteIdentifier(name: string): string {
   validateIdentifier(name, 'identifier');
   return `\`${name}\``;

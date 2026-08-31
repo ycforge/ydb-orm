@@ -40,14 +40,15 @@ import {
 import { getOrCreateRepository } from '../repository/repository-resolver.js';
 
 /**
- * Провайдер, который при инициализации модуля подключает executor и
- * опциональные encryption/blind-index провайдеры СВОЕЙ конфигурации (#199)
- * к Active Record сущности (см. YdbBaseEntity.setExecutor / setEncryptionProvider).
- * Перед подключением валидирует метаданные сущности (validateEntityMetadataIssues).
- * Также создаёт `YdbRepository` для сущности и сохраняет его в entity-runtime.
+ * Provider that, on module initialization, wires the executor and the
+ * optional encryption/blind-index providers of ITS OWN configuration (#199)
+ * to the Active Record entity (see YdbBaseEntity.setExecutor /
+ * setEncryptionProvider). Validates the entity metadata beforehand
+ * (validateEntityMetadataIssues). Also creates the `YdbRepository` for the
+ * entity and stores it in the entity runtime.
  *
- * connectionName выбирает конфигурацию (#199): 'default' — прежние
- * глобальные DI-токены, именованная конфигурация — собственные токены.
+ * connectionName selects the configuration (#199): 'default' — the previous
+ * global DI tokens, a named configuration — its own tokens.
  */
 export function createActiveRecordEntityProvider(
   entityClass: typeof YdbBaseEntity,
@@ -64,17 +65,18 @@ export function createActiveRecordEntityProvider(
       entityScope?: YdbEntityAppScope,
       ormScope?: YdbOrmScope,
     ) => {
-      // forFeature явно объявляет сущности ЭТОГО приложения (#142): декоратор
-      // @YdbEntity уже отработал при первом импорте класса и больше
-      // не выполнится (кеш модулей). Скоуп приходит через DI-токен YDB_CORE_SCOPE
-      // из контейнера своего приложения, поэтому привязка корректна при любом
-      // порядке резолва провайдеров и не затрагивает чужие приложения.
+      // forFeature explicitly declares the entities of THIS application (#142):
+      // the @YdbEntity decorator already ran on the first import of the
+      // class and won't run again (module cache). The scope arrives through
+      // the YDB_CORE_SCOPE DI token from this application's container, so
+      // the binding stays correct regardless of provider resolution order
+      // and never touches foreign applications.
       if (entityScope) {
         requestEntitiesForApp(entityScope, [entityClass]);
       }
 
-      // Валидируем ДО привязки к скоупу: невалидная сущность не получает
-      // executor/провайдеры и не оставляет владения (#199 + атомарность).
+      // Validate BEFORE binding to the scope: an invalid entity gets no
+      // executor/providers and leaves no ownership behind (#199 + atomicity).
       const issues = validateEntityMetadataIssues(entityClass, {
         encryptionProviderConfigured: Boolean(encryptionProvider),
         blindIndexProviderConfigured: Boolean(blindIndexProvider),
@@ -88,9 +90,10 @@ export function createActiveRecordEntityProvider(
         );
       }
 
-      // Владение сущностью (#199): один класс — одна активная конфигурация.
-      // Регистрация в чужой конфигурации — детерминированная ошибка.
-      // Запоминаем ново заявленные сущности для отката при ошибке конфигурации.
+      // Entity ownership (#199): one class — one active configuration.
+      // Registering in a foreign configuration is a deterministic error.
+      // Remember newly claimed entities for a rollback on configuration
+      // failure.
       let newlyClaimed: (new (...args: any[]) => any)[] = [];
       if (ormScope) {
         newlyClaimed = claimEntitiesForScopeWithTracking(ormScope, [
@@ -98,22 +101,23 @@ export function createActiveRecordEntityProvider(
         ]);
       }
 
-      // Снимок runtime-конфигурации для атомарного отката при ошибке.
+      // Snapshot of the runtime configuration for atomic rollback on error.
       const runtimeSnapshot = snapshotEntityRuntime(entityClass);
 
       try {
         const runtime = getEntityRuntime(entityClass);
         runtime.uuidGenerator = opts.uuidVersion === 'v4' ? uuidv4 : uuidv7;
-        // Привязка к конфигурации (#199): per-scope настройки транзакций.
+        // Binding to the configuration (#199): per-scope transaction settings.
         if (ormScope) {
           runtime.scope = ormScope;
           runtime.transactions = ormScope.transactions;
         }
 
         entityClass.setExecutor(db);
-        // Провайдеры перезаписываются безусловно: повторный бутстрап без них
-        // (тесты, hot-restart) не должен оставлять провайдеры прошлой
-        // конфигурации — undefined сбрасывает предыдущее значение.
+        // Providers are overwritten unconditionally: a repeated bootstrap without
+        // them (tests, hot-restart) must not leave the previous
+        // configuration's providers behind — undefined resets the previous
+        // value.
         entityClass.setEncryptionProvider(encryptionProvider);
         entityClass.setBlindIndexProvider(blindIndexProvider);
         entityClass.setValidationProvider(validationProvider);
@@ -122,7 +126,7 @@ export function createActiveRecordEntityProvider(
 
         getOrCreateRepository(entityClass as any);
       } catch (e) {
-        // Откат runtime-конфигурации сущности к снимку перед изменением.
+        // Roll the entity's runtime configuration back to the pre-change snapshot.
         restoreEntityRuntime(entityClass, runtimeSnapshot);
         if (ormScope && newlyClaimed.length > 0) {
           releaseEntitiesFromScope(ormScope, newlyClaimed);
@@ -147,8 +151,9 @@ export function createActiveRecordEntityProvider(
         token: getScopedToken(YDB_VALIDATION_PROVIDER, connectionName),
         optional: true,
       },
-      // Скоуп опционален для устойчивости к экзотическим контейнерам без
-      // ядра: без него привязка невозможна, но executor всё равно отсутствует
+      // The scope is optional for robustness against exotic containers without
+      // a core: without it binding is impossible, but the executor is
+      // absent anyway
       { token: getScopedToken(YDB_CORE_SCOPE, connectionName), optional: true },
       { token: getScopedToken(YDB_ORM_SCOPE, connectionName), optional: true },
     ],

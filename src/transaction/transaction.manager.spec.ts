@@ -29,9 +29,9 @@ import type {
 } from '../core/interfaces.js';
 
 /**
- * Юнит-тесты менеджера транзакций (#98): валидация опций, проброс опций
- * в SDK-вызов, детекция вложенности, reuse, ambient-контекст, retry-
- * семантика. Сети нет — используется фейковый executor.
+ * Unit tests for the transaction manager (#98): option validation, option
+ * propagation to the SDK call, nesting detection, reuse, ambient context,
+ * retry semantics. No network — a fake executor is used.
  */
 
 interface RecordedTransaction {
@@ -42,13 +42,13 @@ interface RecordedTransaction {
 interface FakeDb {
   executor: YdbExecutor;
   transactions: RecordedTransaction[];
-  /** Сколько раз transaction() открывал транзакцию. */
+  /** How many times transaction() opened a transaction. */
   count(): number;
 }
 
 function makeFakeDb(
   opts: {
-    /** Имитировать idempotent-retry SDK: колбэк execute вызывается N раз. */
+    /** Simulate SDK idempotent-retry: the execute callback is invoked N times. */
     attemptsPerTransaction?: number;
   } = {},
 ): FakeDb {
@@ -84,8 +84,8 @@ function makeFakeDb(
     const trxExecutors = Array.from({ length: attempts }, () =>
       makeQueryExecutor(),
     );
-    // Каждая попытка — свой сигнал отмены (как linkSignals в @ydbjs/query),
-    // связанный с глобальным пользовательским сигналом из опций.
+    // Each attempt has its own cancellation signal (like linkSignals in
+    // @ydbjs/query), linked to the global user signal from the options.
     const attemptControllers = Array.from(
       { length: attempts },
       () => new AbortController(),
@@ -93,8 +93,8 @@ function makeFakeDb(
     transactions.push({ options: options ?? {}, trx: trxExecutors[0] });
     return {
       async execute(fn) {
-        // Имитация @ydbjs/query: каждая попытка — новый session/tx executor
-        // и новый сигнал попытки.
+        // Simulation of @ydbjs/query: each attempt is a new session/tx executor
+        // and a new attempt signal.
         let result: unknown;
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           const ownSignal = attemptControllers[attempt].signal;
@@ -207,7 +207,7 @@ describe('runInTransaction(): options propagation to the SDK call (#98)', () => 
       signal: controller.signal,
     });
 
-    // Пользовательский сигнал уходит в SDK без изменений — он глобальный.
+    // The user signal goes to the SDK unchanged — it is global.
     expect(db.transactions[0].options.signal).toBe(controller.signal);
   });
 
@@ -225,9 +225,9 @@ describe('runInTransaction(): options propagation to the SDK call (#98)', () => 
       { timeout: 30 },
     );
 
-    // Таймаут НЕ попадает в SDK как общий дедлайн...
+    // The timeout does NOT reach the SDK as a shared deadline...
     expect(db.transactions[0].options.signal).toBeUndefined();
-    // ...а применяется к сигналу конкретной попытки.
+    // ...but is applied to the specific attempt's signal.
     expect(attemptSignal).toBeInstanceOf(AbortSignal);
     expect(attemptSignal?.aborted).toBe(true);
   }, 5000);
@@ -260,7 +260,7 @@ describe('timeout semantics across retries (#98)', () => {
       async (_trx, signal) => {
         received.push(signal!);
         if (received.length === 1) {
-          // Первая попытка «зависла» дольше таймаута.
+          // The first attempt "hung" longer than the timeout.
           await new Promise((resolve) => setTimeout(resolve, 90));
         }
         return Promise.resolve('ok');
@@ -269,12 +269,12 @@ describe('timeout semantics across retries (#98)', () => {
     );
 
     expect(received.length).toBe(2);
-    // Первая попытка упёрлась в таймаут...
+    // The first attempt hit the timeout...
     expect(received[0].aborted).toBe(true);
-    // ...но retry получил СВЕЖИЙ сигнал, а не уже истёкший дедлайн.
+    // ...but the retry got a FRESH signal, not the already-expired deadline.
     expect(received[1].aborted).toBe(false);
     expect(received[1]).not.toBe(received[0]);
-    // Таймаут не просочился в SDK как общий дедлайн операции.
+    // The timeout did not leak into the SDK as the operation's shared deadline.
     expect(db.transactions[0].options.signal).toBeUndefined();
   }, 5000);
 
@@ -288,20 +288,20 @@ describe('timeout semantics across retries (#98)', () => {
       async (_trx, signal) => {
         received.push(signal!);
         if (received.length === 1) {
-          // Глобальный дедлайн истекает, пока выполняется первая попытка.
+          // The global deadline expires while the first attempt is running.
           await new Promise((resolve) => setTimeout(resolve, 90));
         }
         return Promise.resolve('ok');
       },
-      // Полный дедлайн на всю операцию задаётся пользователем явно.
+      // The full operation-wide deadline is set by the user explicitly.
       { idempotent: true, signal: AbortSignal.timeout(30) },
     );
 
     expect(received.length).toBe(2);
-    // Оба сигнала прерваны: глобальный дедлайн распространяется на retry.
+    // Both signals are aborted: the global deadline propagates to retry.
     expect(received[0].aborted).toBe(true);
     expect(received[1].aborted).toBe(true);
-    // При этом сигнал SDK в опциях — именно пользовательский.
+    // The signal in the SDK options is exactly the user's.
     expect(db.transactions[0].options.signal).toBeDefined();
   }, 5000);
 });
@@ -317,7 +317,7 @@ describe('runInTransaction(): nested call detection (#98)', () => {
       }),
     ).rejects.toThrow(/Nested runInTransaction\(\) detected/);
 
-    // Вторая транзакция не была открыта.
+    // The second transaction was not opened.
     expect(db.count()).toBe(1);
   });
 
@@ -337,7 +337,7 @@ describe('runInTransaction(): nested call detection (#98)', () => {
     });
 
     expect(result).toBe('joined');
-    // Открыта ровно одна транзакция — внешняя.
+    // Exactly one transaction is opened — the outer one.
     expect(db.count()).toBe(1);
   });
 
@@ -350,13 +350,13 @@ describe('runInTransaction(): nested call detection (#98)', () => {
       (outerTrx, outerSignal) =>
         manager.runInTransaction(
           () => {
-            // Вложенный ambient-контекст указывает на ТУ ЖЕ транзакцию.
+            // The nested ambient context points to the SAME transaction.
             const active = getActiveTransaction();
             expect(active?.trx).toBe(outerTrx);
             expect(active?.signal).toBe(outerSignal);
             expect(active?.ambient).toBe(true);
-            // Операции без явного { trx } попадают в переиспользованную
-            // транзакцию, а не во внешний executor.
+            // Operations without an explicit { trx } go into the reused
+            // transaction, not the outer executor.
             expect(
               resolveOperationExecutor(undefined, db.executor, 'UserEntity'),
             ).toBe(outerTrx);
@@ -367,7 +367,7 @@ describe('runInTransaction(): nested call detection (#98)', () => {
       { ambient: false },
     );
 
-    // Новая БД-транзакция не открывалась.
+    // No new DB transaction was opened.
     expect(db.count()).toBe(1);
   }, 5000);
 
@@ -380,7 +380,7 @@ describe('runInTransaction(): nested call detection (#98)', () => {
       manager.runInTransaction(
         () => {
           const active = getActiveTransaction();
-          // Контекст внешний — без создания вложенного.
+          // The context is the outer one — no nested context is created.
           expect(active?.trx).toBe(outerTrx);
           expect(active?.ambient).toBe(true);
           return Promise.resolve();
@@ -399,8 +399,8 @@ describe('runInTransaction(): nested call detection (#98)', () => {
 
     let outerContextBeforeInner: ReturnType<typeof getActiveTransaction>;
     let trxExecutorSeenInside: unknown;
-    // При attemptsPerTransaction > 1 фейковый SDK повторяет ВЕСЬ колбэк,
-    // поэтому эталонный executor фиксируем на верхнем уровне той же попытки.
+    // With attemptsPerTransaction > 1 the fake SDK replays the WHOLE callback,
+    // so the reference executor is captured at the top level of the same attempt.
     let outerLevelTrx: unknown;
 
     await manager.runInTransaction(
@@ -416,12 +416,12 @@ describe('runInTransaction(): nested call detection (#98)', () => {
               },
               { reuse: true, ambient: true },
             );
-            // После завершения внутреннего вызова контекст восстановлен:
-            // снова активен ВНЕШНИЙ (не ambient-обёртка с тем же trx).
+            // After the inner call finishes, the context is restored:
+            // the OUTER (non-ambient wrapper with the same trx) is active again.
             const restored = getActiveTransaction();
             expect(restored?.trx).toBe(outerContextBeforeInner?.trx);
             expect(restored).toBe(outerContextBeforeInner);
-            // Транзакция всё ещё активна — внутренний вызов её не завершил.
+            // The transaction is still active — the inner call did not finish it.
             expect(db.count()).toBe(1);
             return Promise.resolve();
           },
@@ -431,7 +431,7 @@ describe('runInTransaction(): nested call detection (#98)', () => {
       { ambient: false },
     );
 
-    // Ровно одна транзакция и один executor попытки на все уровни reuse.
+    // Exactly one transaction and one attempt executor across all reuse levels.
     expect(db.count()).toBe(1);
     expect(trxExecutorSeenInside).toBe(outerLevelTrx);
     expect(getActiveTransaction()).toBeUndefined();
@@ -471,7 +471,7 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
   it('recognizes nested runInTransaction across different wrappers of the same logical DB', async () => {
     const db = makeFakeDb();
     const managerA = new YdbTransactionManager(db.executor);
-    // Вторая обёртка того же логического executor'а (логирование).
+    // A second wrapper of the same logical executor (logging).
     const managerB = new YdbTransactionManager(
       wrapExecutorWithLogging(db.executor, noopLogger),
     );
@@ -482,7 +482,7 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
       ),
     ).rejects.toThrow(/Nested runInTransaction\(\) detected/);
 
-    // Вторая независимая транзакция не открылась — вложенность распознана.
+    // No second independent transaction was opened — nesting is recognized.
     expect(db.count()).toBe(1);
   });
 
@@ -496,8 +496,8 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
     const result = await managerA.runInTransaction((outerTrx) =>
       managerB.runInTransaction(
         (innerTrx) => {
-          // reuse присоединяется к активной транзакции внешнего вызова —
-          // тот же trx, новая БД-транзакция не открывается.
+          // reuse joins the outer call's active transaction —
+          // the same trx, no new DB transaction is opened.
           expect(innerTrx).toBe(outerTrx);
           return Promise.resolve('joined');
         },
@@ -506,7 +506,7 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
     );
 
     expect(result).toBe('joined');
-    // Открыта ровно одна транзакция — внешняя.
+    // Exactly one transaction is opened — the outer one.
     expect(db.count()).toBe(1);
   });
 
@@ -517,8 +517,8 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
     await manager.runInTransaction(
       (trx) => {
         const wrappedTrx = wrapExecutorWithLogging(trx, noopLogger);
-        // Обёртка активной транзакции как явный { trx } при ambient —
-        // это та же логическая транзакция, ошибки смешивания быть не должно.
+        // A wrapper of the active transaction as an explicit { trx } under
+        // ambient — it is the same logical transaction, so no mixing error.
         expect(() =>
           resolveOperationExecutor(wrappedTrx, db.executor, 'UserEntity'),
         ).not.toThrow();
@@ -540,8 +540,8 @@ describe('nested detection and mixing with executor wrappers (#207)', () => {
         ).runInTransaction((otherTrx) =>
           Promise.resolve(wrapExecutorWithLogging(otherTrx, noopLogger)),
         );
-        // Посторонняя транзакция (хоть и обёрнутая) при активной ambient —
-        // смешивание, ошибка сохраняется.
+        // A foreign transaction (even wrapped) under an active ambient —
+        // mixing, the error is preserved.
         expect(() =>
           resolveOperationExecutor(other, db.executor, 'UserEntity'),
         ).toThrow(/mixing detected.*different transaction is active/s);
@@ -560,18 +560,18 @@ describe('identity registry (#217): private, non-mutable source of truth', () =>
     const executor = db.executor;
     const manager = new YdbTransactionManager(executor);
 
-    // Пытаемся «подделать» identity, записав произвольный символ в свойства
-    // executor'а, в т.ч. по прежнему глобальному ключу Symbol.for(...).
+    // Try to "forge" the identity by writing an arbitrary symbol into the
+    // executor's properties, including the old global Symbol.for(...) key.
     const forged = Symbol('forged');
     (executor as unknown as Record<PropertyKey, unknown>)[
       Symbol.for('ydb.transaction.id')
     ] = forged;
     (executor as unknown as Record<string, unknown>).anyOtherProp = forged;
 
-    // Реестр identity не читает свойства объекта — identity не изменился.
+    // The identity registry does not read object properties — identity unchanged.
     expect(getTransactionId(executor)).not.toBe(forged);
 
-    // Вложенная детекция по-прежнему работает по registry-identity.
+    // Nested detection still works via the registry identity.
     await expect(
       manager.runInTransaction(() =>
         manager.runInTransaction(() => Promise.resolve()),
@@ -604,7 +604,7 @@ describe('identity registry (#217): private, non-mutable source of truth', () =>
     const id = ensureExecutorIdentity(db.executor);
     expect(getTransactionId(db.executor)).toBe(id);
 
-    // Вложенная детекция на frozen-executor'е работает (никаких записей в объект).
+    // Nested detection works on a frozen executor (no writes into the object).
     await expect(
       manager.runInTransaction(() =>
         manager.runInTransaction(() => Promise.resolve()),
@@ -618,12 +618,12 @@ describe('identity registry (#217): private, non-mutable source of truth', () =>
 
     await manager.runInTransaction(
       (trx) => {
-        // Обёртка ТОЙ ЖЕ транзакции — не смешивание.
+        // A wrapper of the SAME transaction — not mixing.
         const wrapped = wrapExecutorWithLogging(trx, noopLogger);
         expect(() =>
           resolveOperationExecutor(wrapped, db.executor, 'UserEntity'),
         ).not.toThrow();
-        // Чужой executor — смешивание при активной ambient-транзакции.
+        // A foreign executor — mixing under an active ambient transaction.
         const stranger = makeFakeDb().executor;
         expect(() =>
           resolveOperationExecutor(stranger, db.executor, 'UserEntity'),
@@ -637,7 +637,7 @@ describe('identity registry (#217): private, non-mutable source of truth', () =>
 
 describe('ambient transaction context (#98)', () => {
   afterEach(() => {
-    // Сбрасываем глобальные настройки, чтобы не влиять на другие тесты файла.
+    // Reset the global settings so other tests in the file are not affected.
     configureTransactionContext({});
   });
 
@@ -686,11 +686,11 @@ describe('resolveOperationExecutor semantics via repository resolution (#98)', (
 
     await manager.runInTransaction(
       (trx) => {
-        // Совпадает с активной ambient — ок.
+        // Matches the active ambient — ok.
         expect(resolveOperationExecutor(trx, db.executor, 'UserEntity')).toBe(
           trx,
         );
-        // Посторонний trx при активной ambient-транзакции — ошибка смешивания.
+        // A foreign trx under an active ambient transaction — mixing error.
         expect(() =>
           resolveOperationExecutor(stranger, db.executor, 'UserEntity'),
         ).toThrow(/mixing detected.*different transaction is active/s);
@@ -706,8 +706,8 @@ describe('resolveOperationExecutor semantics via repository resolution (#98)', (
     const stranger = makeFakeDb().executor;
 
     await manager.runInTransaction(() => {
-      // Ambient выключен: явный { trx } — легитимный паттерн (обратная
-      // совместимость), никакой ошибки быть не должно.
+      // Ambient is off: an explicit { trx } is a legitimate pattern (backwards
+      // compatibility), no error should be raised.
       expect(
         resolveOperationExecutor(stranger, db.executor, 'UserEntity'),
       ).toBe(stranger);
@@ -735,10 +735,10 @@ describe('retry semantics are surfaced, not hidden (#98)', () => {
     );
 
     expect(result).toBe('done');
-    // Колбэк выполнен дважды: побочные эффекты повторяются при retry.
+    // The callback ran twice: side effects repeat on retry.
     expect(seen.length).toBe(2);
     expect(sideEffectCount).toBe(2);
-    // Каждая попытка получает СВОЙ executor транзакции и свой контекст.
+    // Each attempt gets ITS OWN transaction executor and context.
     expect(seen[0]).not.toBe(seen[1]);
   });
 
@@ -753,7 +753,7 @@ describe('retry semantics are surfaced, not hidden (#98)', () => {
     });
 
     expect(calls).toBe(1);
-    // Без явного флага менеджер не включает повторное выполнение колбэка.
+    // Without the explicit flag the manager does not enable callback replay.
     expect(db.transactions[0].options.idempotent).toBeUndefined();
   });
 });
@@ -820,8 +820,8 @@ describe('warnOutsideTransaction (#98) through the ORM logger (#206)', () => {
       '[ydb-orm] UserEntity: query executed outside any transaction ' +
         '(warnOutsideTransaction is enabled).',
     );
-    // Предупреждение не требует прямого console.warn: кастомный логгер
-    // получает сообщение, консоль не задействована.
+    // The warning does not require a direct console.warn: the custom logger
+    // receives the message and the console is not involved.
     expect(warnSpy).not.toHaveBeenCalled();
   });
 

@@ -1,9 +1,9 @@
 /**
- * Каркасно-нейтральный логгер ядра.
+ * Framework-neutral core logger.
  *
- * Используется там, где раньше применялся Logger из @nestjs/common (schema
- * sync и т.п.), чтобы основной пакет не зависел от NestJS. Формат вывода
- * близок к Nest-style: `[<context>] сообщение`.
+ * Used where Logger from @nestjs/common was previously used (schema
+ * sync etc.), so the main package doesn't depend on NestJS. Output format
+ * is close to Nest-style: `[<context>] message`.
  */
 export class YdbDevLogger {
   constructor(private readonly context: string) {}

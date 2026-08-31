@@ -1,11 +1,12 @@
 import 'reflect-metadata';
 import { YdbPrimitive } from '../core/types.js';
 
+/** Metadata key for table TTL (`@YdbTtl`). */
 export const YDB_TTL_KEY = 'ydb:ttl';
 
 /**
- * Единица измерения числовой TTL-колонки (AS <unit> в YQL).
- * Обязательна для целочисленных колонок, запрещена для Date/Datetime/Timestamp.
+ * Unit of measure for a numeric TTL column (AS <unit> in YQL).
+ * Required for integer columns, forbidden for Date/Datetime/Timestamp.
  */
 export type YdbTtlUnit =
   'seconds' | 'milliseconds' | 'microseconds' | 'nanoseconds';
@@ -17,7 +18,7 @@ const TTL_UNITS: readonly YdbTtlUnit[] = [
   'nanoseconds',
 ];
 
-/** Типы колонок, которые можно использовать как TTL без указания unit. */
+/** Column types usable as TTL without specifying a unit. */
 const DATE_LIKE_TTL_TYPES: readonly YdbPrimitive[] = [
   'Date',
   'Datetime',
@@ -25,20 +26,20 @@ const DATE_LIKE_TTL_TYPES: readonly YdbPrimitive[] = [
 ];
 
 /**
- * Числовые типы TTL-колонок по ограничениям YDB (значение трактуется как
- * Unix-время и требует указания unit). Только беззнаковые: знаковые
- * Int32/Int64 YDB для TTL не принимает.
+ * Numeric TTL column types per YDB constraints (the value is treated as
+ * Unix time and requires a unit). Only unsigned: signed Int32/Int64 are not
+ * accepted by YDB for TTL.
  */
 const NUMERIC_TTL_TYPES: readonly string[] = ['Uint32', 'Uint64', 'DyNumber'];
 
-/** ISO 8601 duration (например, "PT2H", "P30D", "P1DT2H30M"). */
+/** ISO 8601 duration (for example, "PT2H", "P30D", "P1DT2H30M"). */
 const ISO_DURATION_RE =
   /^P(?!$)(\d+Y)?(\d+M)?(\d+W)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+(\.\d+)?S)?)?$/;
 
-/** Микросекунд в секунде — внутренняя точность типа YDB Interval. */
+/** Microseconds in a second — the internal precision of the YDB Interval type. */
 export const MICROSECONDS_PER_SECOND = 1_000_000;
 
-/** Строгий разбор ISO 8601 duration по компонентам (для сравнения TTL). */
+/** Strict per-component ISO 8601 duration parse (for TTL comparison). */
 const ISO_DURATION_PARSE_RE =
   /^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)W)?(?:(\d+)D)?(?:T(?=\d)(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
 
@@ -48,19 +49,19 @@ const MICROS_PER = {
   minute: 60 * MICROSECONDS_PER_SECOND,
 };
 
-/** Результат разбора ISO duration. */
+/** Result of parsing an ISO duration. */
 interface IsoDurationParse {
-  /** Длительность в целых микросекундах (без дроби точнее µs). */
+  /** The duration in whole microseconds (no fraction past µs). */
   micros: bigint;
-  /** Есть значимые цифры дробной части за пределами микросекунд. */
+  /** Has significant fractional digits beyond microseconds. */
   subMicroRemainder: boolean;
 }
 
 /**
- * Разбор ISO 8601 duration по компонентам с точной целочисленной
- * арифметикой. Возвращает null для невалидных строк и интервалов
- * с календарными частями (годы/месяцы): они не имеют фиксированной
- * длины и не поддерживаются YDB Interval.
+ * Parses an ISO 8601 duration by component with exact integer arithmetic.
+ * Returns null for invalid strings and for intervals with calendar parts
+ * (years/months): they have no fixed length and are not supported by the YDB
+ * Interval type.
  */
 function parseIsoDuration(iso: string): IsoDurationParse | null {
   const match = ISO_DURATION_PARSE_RE.exec(iso);
@@ -68,8 +69,8 @@ function parseIsoDuration(iso: string): IsoDurationParse | null {
   const [, years, months, weeks, days, hours, minutes, seconds] = match;
   if (years || months) return null;
 
-  // Дробная часть допустима только у секунд; разбираем её по цифрам,
-  // чтобы не терять точность на float ("0.1" * 10 !== 1).
+  // A fractional part is only allowed on seconds; parse it digit by digit so
+  // precision is not lost on float ("0.1" * 10 !== 1).
   const [wholeSeconds = '0', fracSeconds = ''] = (seconds ?? '').split('.');
   let micros =
     BigInt(weeks ?? 0) * 7n * BigInt(MICROS_PER.day) +
@@ -84,12 +85,12 @@ function parseIsoDuration(iso: string): IsoDurationParse | null {
 }
 
 /**
- * Приводит ISO 8601 duration к целому числу микросекунд — внутренней
- * единице типа YDB Interval ("PT2H" → 720000000, "PT0.5S" → 500000).
- * Дробь вычисляется точно (без плавающей точки); знаки после микросекунд
- * отбрасываются детерминированно — YDB Interval хранит максимум 6 знаков.
- * Для сравнения TTL используйте isoDurationToMicrosecondsExact:
- * усечение скрывает расхождения.
+ * Converts an ISO 8601 duration to a whole number of microseconds — the
+ * internal unit of the YDB Interval type ("PT2H" → 720000000, "PT0.5S" → 500000).
+ * The fraction is computed exactly (no floating point); digits after
+ * microseconds are dropped deterministically — YDB Interval stores at most 6
+ * digits. Use isoDurationToMicrosecondsExact for TTL comparison: truncation
+ * hides divergences.
  */
 export function isoDurationToMicroseconds(iso: string): number | null {
   const parsed = parseIsoDuration(iso);
@@ -97,11 +98,11 @@ export function isoDurationToMicroseconds(iso: string): number | null {
 }
 
 /**
- * Строгий вариант isoDurationToMicroseconds: возвращает null для
- * интервалов, непредставимых в YDB Interval точно, — календарные части
- * и дробную часть точнее микросекунд ("PT0.0000001S"). Используется при
- * сравнении TTL, чтобы непредставимый интервал не «совпал» со значением
- * из БД после молчаливого усечения.
+ * The strict variant of isoDurationToMicroseconds: returns null for
+ * intervals not representable exactly in a YDB Interval — calendar parts and
+ * a fractional part finer than microseconds ("PT0.0000001S"). Used when
+ * comparing TTL so that an unrepresentable interval does not "match" a DB
+ * value after silent truncation.
  */
 export function isoDurationToMicrosecondsExact(iso: string): number | null {
   const parsed = parseIsoDuration(iso);
@@ -111,12 +112,12 @@ export function isoDurationToMicrosecondsExact(iso: string): number | null {
 }
 
 /**
- * Обратное преобразование целого числа микросекунд в ISO 8601 duration —
- * точный inverse `isoDurationToMicroseconds` (500000 → "PT0.5S",
- * 720000000 → "PT2H", 90000000000 → "P1DT1H"). Используется для
- * восстановления фактических настроек TTL из БД в down-миграциях
- * и сообщениях о расхождениях; дробная часть рендерится без потери
- * микросекундной точности YDB.
+ * Reverse conversion of a whole number of microseconds into an ISO 8601
+ * duration — the exact inverse of `isoDurationToMicroseconds` (500000 →
+ * "PT0.5S", 720000000 → "PT2H", 90000000000 → "P1DT1H"). Used to restore
+ * the actual TTL settings from the DB in down-migrations and divergence
+ * reports; the fractional part is rendered without losing YDB's
+ * microsecond precision.
  */
 export function microsecondsToIsoDuration(totalMicros: number): string {
   const micros = Math.max(0, Math.trunc(totalMicros));
@@ -146,10 +147,10 @@ export function microsecondsToIsoDuration(totalMicros: number): string {
 }
 
 /**
- * Приводит ISO 8601 duration к секундам ("PT2H" → 7200, "P30D" → 2592000).
- * Возвращает null для интервалов с календарными частями (годы/месяцы).
- * Для дробных секунд результат дробный — сравнение TTL выполняется
- * через isoDurationToMicroseconds, эта функция осталась для удобства.
+ * Converts an ISO 8601 duration to seconds ("PT2H" → 7200, "P30D" → 2592000).
+ * Returns null for intervals with calendar parts (years/months). Fractional
+ * seconds yield a fractional result — TTL comparison is done via
+ * isoDurationToMicroseconds; this function remains for convenience.
  */
 export function isoDurationToSeconds(iso: string): number | null {
   const micros = isoDurationToMicroseconds(iso);
@@ -157,10 +158,10 @@ export function isoDurationToSeconds(iso: string): number | null {
 }
 
 /**
- * Преобразует целое число секунд (формат expire_after_seconds из
- * DescribeTable) в ISO 8601 duration (7200 → "PT2H", 90000 → "P1DT1H").
- * Дробная часть округляется до секунд; для значений с долями секунды
- * используйте microsecondsToIsoDuration.
+ * Converts a whole number of seconds (the expire_after_seconds format from
+ * DescribeTable) into an ISO 8601 duration (7200 → "PT2H", 90000 → "P1DT1H").
+ * The fractional part is rounded to seconds; for values with subsecond parts
+ * use microsecondsToIsoDuration.
  */
 export function secondsToIsoDuration(totalSeconds: number): string {
   return microsecondsToIsoDuration(
@@ -169,19 +170,19 @@ export function secondsToIsoDuration(totalSeconds: number): string {
 }
 
 export interface YdbTtlOptions {
-  /** ISO 8601 duration (например, "PT2H", "P30D", "PT1H"). */
+  /** ISO 8601 duration (e.g., "PT2H", "P30D", "PT1H"). */
   interval: string;
   /**
-   * Колонка для TTL — должна быть объявлена через @YdbColumn.
-   * По ограничениям YDB тип колонки: Date/Datetime/Timestamp либо
-   * числовой Uint32/Uint64/DyNumber (трактуется как Unix-время,
-   * тогда обязателен unit). Знаковые Int32/Int64 YDB не допускает.
-   * Дефолтов нет: колонка указывается явно (см. issue #81).
+   * Column for TTL — must be declared via @YdbColumn.
+   * Per YDB constraints, column type: Date/Datetime/Timestamp or
+   * numeric Uint32/Uint64/DyNumber (treated as Unix time,
+   * then unit is required). Signed Int32/Int64 not accepted by YDB.
+   * No defaults: column must be specified explicitly (see issue #81).
    */
   column: string;
   /**
-   * Единица измерения числовой TTL-колонки (AS <unit>), например 'seconds'.
-   * Обязательна для Uint32/Uint64/DyNumber, запрещена для дат.
+   * Unit for numeric TTL column (AS <unit>), e.g., 'seconds'.
+   * Required for Uint32/Uint64/DyNumber, forbidden for date types.
    */
   unit?: YdbTtlUnit;
 }
@@ -193,32 +194,35 @@ export interface YdbTtlMetadata {
 }
 
 /**
- * Декларативный TTL таблицы (YDB table TTL).
- * Можно применить только один раз на класс.
- * Генерирует секцию WITH (TTL = Interval(...) ON column) после CREATE TABLE (...).
+ * Declarative table TTL (YDB table TTL).
+ * Can be applied only once per class.
+ * Generates WITH (TTL = Interval(...) ON column) section after CREATE TABLE (...).
  *
- * Семантика наследования (#92): TTL привязан к таблице того класса, на котором
- * объявлен, и НЕ наследуется по цепочке прототипов — класс с собственным
- * @YdbEntity объявляет свой TTL явно (или не имеет его), поэтому родительский
- * TTL по чужой колонке не попадает в DDL дочерней таблицы. Повторное
- * применение на наследнике разрешено: guard «один раз» смотрит только
- * собственные метаданные класса и не считает TTL родителя своим.
+ * Inheritance semantics (#92): TTL is bound to the table of the class on which
+ * it is declared and is NOT inherited along the prototype chain — a class with
+ * its own @YdbEntity declares its own TTL explicitly (or has none), so the
+ * parent's TTL on a foreign column does not leak into the child table's DDL.
+ * Re-application on a subclass is allowed: the "once" guard looks only at
+ * the class's own metadata and does not count the parent's TTL as its own.
  *
- * Ошибки формата (interval, column, unit) бросаются сразу при декорировании.
- * Ошибки относительно схемы сущности (неизвестная колонка, несовместимый тип,
- * лишний/недостающий unit) обнаруживаются при инициализации модуля
- * (validateEntityMetadata) и при построении схемы (buildExpectedTableSchema) —
- * до генерации DDL, см. issue #81.
+ * Format errors (interval, column, unit) are thrown immediately at decoration.
+ * Entity schema errors (unknown column, incompatible type,
+ * extra/missing unit) are detected at module initialization
+ * (validateEntityMetadata) and during schema building (buildExpectedTableSchema) —
+ * before DDL generation, see issue #81.
  *
  * @example
  *   @YdbEntity('sessions')
  *   @YdbTtl({ interval: 'PT2H', column: 'expires_at', unit: 'seconds' })
  *   class SessionEntity extends YdbBaseEntity { ... }
+ * @param options - TTL options: interval, column, optional unit.
+ * @returns Class decorator function.
+ * @throws If already applied to the same class.
  */
 export function YdbTtl(options: YdbTtlOptions): ClassDecorator {
   return (target) => {
-    // Только собственные метаданные класса (#92): TTL родителя не должен
-    // блокировать объявление собственного TTL у наследника.
+    // Only the class's own metadata (#92): parent TTL must not
+    // block declaration of own TTL on subclass.
     const existing = Reflect.getOwnMetadata(YDB_TTL_KEY, target);
     if (existing) {
       throw new Error(
@@ -230,14 +234,25 @@ export function YdbTtl(options: YdbTtlOptions): ClassDecorator {
   };
 }
 
-/** Собственный TTL класса (не наследуется от родителя, #92). */
+/**
+ * The class's own TTL (not inherited from parent, #92).
+ *
+ * @param target - Entity class constructor.
+ * @returns TTL metadata or undefined.
+ */
 export function getYdbTtlMetadata(
   target: new (...args: any[]) => any,
 ): YdbTtlMetadata | undefined {
   return Reflect.getOwnMetadata(YDB_TTL_KEY, target);
 }
 
-/** Проверяет опции декоратора без учёта схемы сущности (вызывается из @YdbTtl). */
+/**
+ * Validates decorator options without considering entity schema (called from @YdbTtl).
+ *
+ * @param className - Name of the entity class.
+ * @param options - TTL options to validate.
+ * @throws If options are invalid.
+ */
 function validateYdbTtlOptions(
   className: string,
   options: YdbTtlOptions,
@@ -272,13 +287,18 @@ function validateYdbTtlOptions(
 }
 
 /**
- * Проверяет TTL-метаданные против схемы колонок сущности по ограничениям YDB:
- * колонка должна существовать и иметь тип Date/Datetime/Timestamp (без unit)
- * либо Uint32/Uint64/DyNumber (только с unit). Знаковые Int32/Int64 YDB
- * для TTL не принимает.
+ * Validates TTL metadata against entity column schema per YDB constraints:
+ * column must exist and have type Date/Datetime/Timestamp (without unit)
+ * or Uint32/Uint64/DyNumber (only with unit). Signed Int32/Int64 not accepted
+ * by YDB for TTL.
  *
- * Возвращает список проблем (пустой, если всё в порядке) — чистая функция,
- * используется validateEntityMetadata и buildExpectedTableSchema.
+ * Returns list of issues (empty if all OK) — pure function,
+ * used by validateEntityMetadata and buildExpectedTableSchema.
+ *
+ * @param entityName - Entity name for error messages.
+ * @param ttl - TTL metadata.
+ * @param columns - Entity column schema.
+ * @returns Array of issue strings.
  */
 export function validateYdbTtlAgainstSchema(
   entityName: string,

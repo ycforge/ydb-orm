@@ -7,17 +7,17 @@ import type { YdbExecutor, YdbTransactionHandle } from '../core/interfaces.js';
 import type { YdbRetrySleepFn } from '../core/retry.js';
 
 /**
- * Интеграционные тесты retry-политики в runInTransaction() (#27):
- * политика реально применяется к исполнению транзакции, попытки НЕ
- * перемножаются с внутренним ретраем SDK, детерминированный приоритет
- * слоёв (политика задана — владеет повторами ORM; не задана — SDK).
+ * Integration tests for the retry policy in runInTransaction() (#27):
+ * the policy is really applied to transaction execution, attempts do NOT
+ * multiply with the SDK's internal retry, deterministic layer priority
+ * (policy set — the ORM owns retries; not set — the SDK).
  */
 
 function ydbErr(code: number): YDBError {
   return new YDBError(code, []);
 }
 
-/** Статусы, которые внутренний предикат SDK считает всегда-повторяемыми. */
+/** Statuses the SDK's inner predicate considers always-retryable. */
 const SDK_ALWAYS_RETRYABLE = new Set([
   Code.ABORTED,
   Code.UNAVAILABLE,
@@ -37,16 +37,16 @@ interface FakeDbResult {
 
 type BodyFn = (trx: YdbExecutor, signal?: AbortSignal) => Promise<unknown>;
 
-/** Сценарий попытки: успех (ok) либо ошибка (Error-совместимая). */
+/** Attempt outcome: success (ok) or an error (Error-compatible). */
 interface ScriptedOutcome {
   ok?: unknown;
   error?: Error;
 }
 
 /**
- * Простейшая фейковая БД: одна попытка тела на execute(), без внутреннего
- * ретрая (как если бы SDK его не имел). Колбэк пользователя не вызывается:
- * исход ошибки полностью определяется сценарием.
+ * Simplest fake DB: one body attempt per execute(), no internal retry (as if
+ * the SDK did not have one). The user callback is not invoked: the error
+ * source is fully determined by the script.
  */
 function makeSimpleDb(
   bodyScript: (invocation: number) => ScriptedOutcome,
@@ -70,10 +70,10 @@ function makeSimpleDb(
 }
 
 /**
- * Фейковая БД с ВНУТРЕННИМ retry-циклом SDK (@ydbjs/query):
- * тело вызывается повторно для всегда-повторяемых статусов,
- * бюджет неограничен; неповторяемые ошибки заворачиваются
- * в Error('Transaction failed.', { cause }) — как в реальном SDK.
+ * Fake DB with an internal SDK retry loop (@ydbjs/query):
+ * the body is re-invoked for always-retryable statuses,
+ * budget unbounded; non-retryable errors are wrapped
+ * in an Error('Transaction failed.', { cause }) — like the real SDK.
  */
 function makeSdkLikeDb(): FakeDbResult & {
   bodyInvocations: () => number;
@@ -98,7 +98,7 @@ function makeSdkLikeDb(): FakeDbResult & {
           if (!retryable) {
             throw new Error('Transaction failed.', { cause: error });
           }
-          // SDK повторяет: новая «сессия», тот же колбэк.
+          // SDK retries: a new "session", the same callback.
           return execute(fn);
         },
       );
@@ -122,8 +122,8 @@ function recordingSleep(): { sleep: YdbRetrySleepFn; delays: number[] } {
   return { sleep, delays };
 }
 
-describe('runInTransaction({ retry }): политика применяется к транзакции (#27)', () => {
-  it('транзитные ошибки ретраятся: три открытия транзакции, задержки политики', async () => {
+describe('runInTransaction({ retry }): policy applied to the transaction (#27)', () => {
+  it('transient errors retried: three transaction opens, policy delays', async () => {
     const { sleep, delays } = recordingSleep();
     const db = makeSimpleDb((n) =>
       n < 3 ? { error: ydbErr(Code.ABORTED) } : { ok: 'done' },
@@ -140,7 +140,7 @@ describe('runInTransaction({ retry }): политика применяется �
     expect(delays).toEqual([100, 200]);
   });
 
-  it('опции транзакции (isolation/idempotent/signal) пробрасываются как раньше', async () => {
+  it('transaction options (isolation/idempotent/signal) threaded through as before', async () => {
     const { sleep } = recordingSleep();
     const db = makeSimpleDb(() => ({ ok: 1 }));
     const manager = new YdbTransactionManager(db.executor);
@@ -160,7 +160,7 @@ describe('runInTransaction({ retry }): политика применяется �
     });
   });
 
-  it('детерминированная ошибка — одна попытка, исходная ошибка как есть', async () => {
+  it('deterministic error — one attempt, original error as-is', async () => {
     const { sleep } = recordingSleep();
     const boom = ydbErr(Code.BAD_REQUEST);
     const db = makeSimpleDb(() => ({ error: boom }));
@@ -174,7 +174,7 @@ describe('runInTransaction({ retry }): политика применяется �
     expect(db.bodyInvocations()).toBe(1);
   });
 
-  it('CommitError с транзитной причиной классифицируется и ретраится', async () => {
+  it('CommitError with a transient cause is classified and retried', async () => {
     const { sleep } = recordingSleep();
     let executes = 0;
     const executor = (() => ({})) as unknown as YdbExecutor;
@@ -183,7 +183,7 @@ describe('runInTransaction({ retry }): политика применяется �
         const execute = (): Promise<unknown> => {
           executes += 1;
           if (executes === 1) {
-            // Ошибка коммита: статус ABORTED в причине (как отдаёт SDK).
+            // Commit error: ABORTED status in the cause (as returned by the SDK).
             return Promise.reject(
               new CommitError(
                 'Transaction commit failed.',
@@ -205,10 +205,10 @@ describe('runInTransaction({ retry }): политика применяется �
     expect(executes).toBe(2);
   });
 
-  it('свежее окно timeout на каждую попытку политики', async () => {
+  it('a fresh timeout window on each policy attempt', async () => {
     const { sleep } = recordingSleep();
     const seenSignals: Array<AbortSignal | undefined> = [];
-    // SDK-подобная БД вызывает колбэк пользователя (гасится политикой).
+    // SDK-like DB invokes the user callback (silenced by the policy).
     const db = makeSdkLikeDb();
     const manager = new YdbTransactionManager(db.executor);
 
@@ -224,13 +224,13 @@ describe('runInTransaction({ retry }): политика применяется �
     );
 
     expect(seenSignals).toHaveLength(2);
-    // Каждая попытка получила СВЕЖЕЕ окно таймаута (новый инстанс сигнала):
+    // Each attempt got a FRESH timeout window (a new signal instance):
     expect(seenSignals[0]).not.toBe(seenSignals[1]);
     expect(seenSignals[0]?.aborted).toBe(false);
     expect(seenSignals[1]?.aborted).toBe(false);
   });
 
-  it('валидация: retry несовместим с reuse, невалидная форма отклоняется', async () => {
+  it('validation: retry incompatible with reuse, invalid form rejected', async () => {
     const db = makeSimpleDb(() => ({ ok: 1 }));
     const manager = new YdbTransactionManager(db.executor);
 
@@ -254,7 +254,7 @@ describe('runInTransaction({ retry }): политика применяется �
     ).rejects.toThrow(/maxAttempts/);
   });
 
-  it('отмена: отменённый сигнал политики запрещает обращения к БД', async () => {
+  it('cancellation: an aborted policy signal forbids DB access', async () => {
     const { sleep } = recordingSleep();
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
@@ -269,7 +269,7 @@ describe('runInTransaction({ retry }): политика применяется �
     expect(db.transactions).toHaveLength(0);
   });
 
-  it('отмена во время backoff останавливает повтор транзакции', async () => {
+  it('cancellation during backoff stops the transaction retry', async () => {
     const controller = new AbortController();
     const sleep: YdbRetrySleepFn = () => Promise.resolve();
     const db = makeSimpleDb((n) =>
@@ -294,11 +294,12 @@ describe('runInTransaction({ retry }): политика применяется �
   });
 });
 
-describe('runInTransaction({ retry }): умножение попыток исключено', () => {
-  it('внутренний цикл SDK гасится: ровно maxAttempts исполнений тела', async () => {
+describe('runInTransaction({ retry }): attempt multiplication excluded', () => {
+  it('sdk inner loop silenced: exactly maxAttempts body executions', async () => {
     const { sleep } = recordingSleep();
-    // Тело ПАДАЕТ всегда — без гашения внутреннего неограниченного цикла SDK
-    // операция никогда бы не завершилась; тест завершается = цикл погашен.
+    // The body ALWAYS fails — without silencing the SDK's unbounded inner loop
+    // the operation would never finish; the test completing means the loop was
+    // silenced.
     const alwaysAbort = ydbErr(Code.ABORTED);
     const db = makeSdkLikeDb();
     const manager = new YdbTransactionManager(db.executor);
@@ -310,17 +311,18 @@ describe('runInTransaction({ retry }): умножение попыток иск�
       }),
     ).rejects.toBe(alwaysAbort);
 
-    // Ровно по одной РЕАЛЬНОЙ попытке тела на попытку политики (+ вытесненные
-    // защитные вызовы, не доходящие до колбэка пользователя):
+    // Exactly one REAL body attempt per policy attempt (+ superseded
+    // protective invocations that never reach the user callback):
     expect(db.executes()).toBe(3);
-    // Реальных исполнений колбэка — ровно maxAttempts:
+    // Real callback executions — exactly maxAttempts:
     expect(db.bodyInvocations()).toBe(6);
   });
 
-  it('успех после транзитной неудачи: одна попытка тела на попытку политики', async () => {
+  it('success after a transient failure: one body attempt per policy attempt', async () => {
     const { sleep } = recordingSleep();
-    // Тело падает транзитно при первом вызове — внутренний предикат SDK
-    // захочет повторить, но защитный лимит политики передаёт управление ORM.
+    // The body fails transitively on the first call — the SDK's inner
+    // predicate would retry, but the policy's protective limit hands control
+    // to the ORM.
     const db = makeSdkLikeDb();
     const manager = new YdbTransactionManager(db.executor);
 
@@ -340,15 +342,15 @@ describe('runInTransaction({ retry }): умножение попыток иск�
       ),
     ).resolves.toBe('fine');
 
-    // Ровно две реальные попытки пользователя (неудача + успех после повтора
-    // политики), каждая — в СВОЕЙ транзакции: попытки не перемножились.
+    // Exactly two real user attempts (failure + success after a policy retry),
+    // each in ITS OWN transaction: attempts did not multiply.
     expect(userCalls).toBe(2);
     expect(db.executes()).toBe(2);
   });
 });
 
-describe('контракт #98 остаётся неизменным (#27)', () => {
-  it('без опции retry тело транзакции выполняется ровно один раз', async () => {
+describe('the #98 contract remains unchanged (#27)', () => {
+  it('without the retry option the transaction body runs exactly once', async () => {
     const db = makeSimpleDb((n) =>
       n === 1 ? { error: ydbErr(Code.ABORTED) } : { ok: 'nope' },
     );
@@ -357,16 +359,16 @@ describe('контракт #98 остаётся неизменным (#27)', () 
     await expect(
       manager.runInTransaction(() => Promise.resolve('x')),
     ).rejects.toBeInstanceOf(YDBError);
-    // Ни скрытого ORM-ретрая, ни требований к пометкам запросов:
-    // повторами тела владеет только SDK (#98).
+    // Neither any hidden ORM retry nor any requirement of query markings:
+    // only the SDK owns body retries (#98).
     expect(db.bodyInvocations()).toBe(1);
     expect(db.transactions).toHaveLength(1);
   });
 
-  it('retry транзакции ретраит колбэк как целое — пометки отдельных запросов не требуются', async () => {
+  it('transaction retry retries the callback as a whole — no per-query markings needed', async () => {
     const { sleep } = recordingSleep();
-    // Внутри тела никакие .idempotent() не вызываются: контракт
-    // идемпотентности относится к КОЛБЭКУ целиком (#98), а не к запросам.
+    // No .idempotent() is called inside the body: the idempotency contract
+    // applies to the CALLBACK as a whole (#98), not to individual queries.
     const db = makeSdkLikeDb();
     const manager = new YdbTransactionManager(db.executor);
 

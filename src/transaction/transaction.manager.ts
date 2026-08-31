@@ -16,36 +16,36 @@ import {
   setExecutorIdentity,
 } from './transaction-context.js';
 
-/** Генерирует уникальный идентификатор транзакции. */
+/** Generates a unique transaction identifier. */
 function generateTransactionId(): symbol {
   return Symbol('transaction');
 }
 
 /**
- * Опции runInTransaction() (#98).
+ * Options for runInTransaction() (#98).
  *
- * Наследует опции исполнения YDB-транзакции (isolation/signal/timeout/
- * idempotent) и добавляет управление контекстом:
+ * Inherits the YDB transaction execution options (isolation/signal/timeout/
+ * idempotent) and adds context control:
  *
- * - reuse — при вложенном вызове переиспользовать уже активную транзакцию
- *   вместо ошибки. Транзакция остаётся под управлением внешнего вызова:
- * внутренний колбэк не коммитит и не откатывает её самостоятельно.
- * - ambient — принудительно пробросить эту транзакцию в ambient-контекст
- *   (операции без явного { trx } будут выполняться в ней), даже если
- *   ambient выключен глобально. Работает и при вложенном `{ reuse: true }`:
- *   создаётся вложенный контекст с транзакцией внешнего вызова (коммит/
- *   откат по-прежнему у внешнего вызова). Значение false НЕ отключает
- *   глобальный ambient — используйте для этого настройки модуля.
- * - retry — retry-политика ORM по типу ошибки (#27): `true` — дефолты
- *   (maxAttempts: 3, bounded backoff + jitter), объект — кастомная политика.
- *   Когда политика задана, владение повторами тела ПЕРЕХОДИТ от SDK к ORM:
- *   на каждую попытку политики приходится ровно одна попытка тела (внутренний
- *   цикл SDK гасится), максимум исполнений колбэка равен maxAttempts —
- *   попытки не перемножаются. Без политики поведение прежнее (#98): тело
- *   ретраит SDK по своим правилам (неограниченный бюджет). Контракт
- *   идемпотентности — на КОЛБЭК целиком (#98): пометки .idempotent()
- *   отдельных запросов внутри тела SDK игнорирует и на повтор колбэка
- *   не влияют.
+ * - reuse — on a nested call, reuse the already-active transaction instead of
+ *   throwing. The transaction stays under the control of the outer call: the
+ *   inner callback neither commits nor rolls it back on its own.
+ * - ambient — force this transaction into the ambient context (operations
+ *   without an explicit { trx } run inside it), even when ambient is disabled
+ *   globally. It also works with a nested `{ reuse: true }`: a nested context
+ *   is created carrying the outer call's transaction (commit/rollback still
+ *   belong to the outer call). A value of false does NOT disable the global
+ *   ambient — use the module settings for that.
+ * - retry — the ORM retry policy by error kind (#27): `true` — defaults
+ *   (maxAttempts: 3, bounded backoff + jitter), an object — a custom policy.
+ *   When a policy is set, ownership of retrying the body PASSES from the SDK
+ *   to the ORM: exactly one body attempt per policy attempt (the SDK's inner
+ *   loop is silenced), so the callback runs at most maxAttempts times —
+ *   attempts do not multiply. Without a policy the behavior is unchanged (#98):
+ *   the SDK retries the body by its own rules (unbounded budget). The
+ *   idempotency contract applies to the CALLBACK as a whole (#98): the SDK
+ *   ignores .idempotent() markings on individual queries inside the body and
+ *   they have no effect on a callback replay.
  */
 export interface RunInTransactionOptions extends YdbTransactionOptions {
   reuse?: boolean;
@@ -53,14 +53,14 @@ export interface RunInTransactionOptions extends YdbTransactionOptions {
   retry?: YdbRetryPolicyInput;
 }
 
-/** Допустимые уровни изоляции — для fail-fast валидации опций. */
+/** Allowed isolation levels — for fail-fast option validation. */
 const ISOLATION_LEVELS: readonly YdbIsolationLevel[] = [
   'serializableReadWrite',
   'snapshotReadOnly',
   'snapshotReadWrite',
 ];
 
-/** Ключи, допустимые в RunInTransactionOptions (защита от опечаток). */
+/** Keys allowed in RunInTransactionOptions (typo protection). */
 const ALLOWED_OPTION_KEYS = new Set([
   'isolation',
   'signal',
@@ -72,10 +72,11 @@ const ALLOWED_OPTION_KEYS = new Set([
 ]);
 
 /**
- * Маркер «внутренний ретрай SDK вытеснен политикой ORM» (#27): бросается
- * телом транзакции, когда SDK пытается начать попытку сверх лимита политики.
- * Для предиката повтора SDK это заведомо неповторяемая ошибка — цикл SDK
- * завершается; наружу пробрасывается исходная ошибка последней попытки.
+ * Marker for "SDK inner retry superseded by the ORM policy" (#27): thrown by
+ * the transaction body when the SDK tries to start an attempt beyond the
+ * policy limit. To the SDK retry predicate this is guaranteed non-retryable,
+ * so the SDK loop ends; the original error from the last attempt is
+ * propagated outward.
  */
 class SdkRetrySupersededError extends Error {
   constructor(readonly lastError: unknown) {
@@ -84,14 +85,14 @@ class SdkRetrySupersededError extends Error {
   }
 }
 
-/** Глубина обхода cause-цепочки при распаковке ошибки транзакции. */
+/** Depth of the cause-chain traversal when unwrapping a transaction error. */
 const MAX_CAUSE_DEPTH = 8;
 
 /**
- * Распаковывает ошибку execute(): SDK заворачивает неповторяемые ошибки
- * транзакции в Error('Transaction failed.', { cause }). Если в цепочке
- * найден маркер вытесненного ретрая — наружу идёт ИСХОДНАЯ ошибка
- * последней попытки (для классификации политикой), иначе ошибка как есть.
+ * Unwraps the execute() error: the SDK wraps non-retryable transaction errors
+ * in an Error('Transaction failed.', { cause }). If a superseded-retry marker
+ * is found in the chain, the ORIGINAL error of the last attempt is propagated
+ * outward (for policy classification); otherwise the error is returned as is.
  */
 function unwrapTransactionError(error: unknown): unknown {
   let current = error;
@@ -113,8 +114,9 @@ function unwrapTransactionError(error: unknown): unknown {
 }
 
 /**
- * Fail-fast валидация опций транзакции: неизвестный ключ или невалидное
- * значение — ошибка конфигурации сразу, а не тихо проигнорированная опция.
+ * Fail-fast validation of transaction options: an unknown key or an invalid
+ * value raises a configuration error immediately rather than silently
+ * ignoring the option.
  */
 export function validateRunInTransactionOptions(
   options?: RunInTransactionOptions,
@@ -189,7 +191,7 @@ export function validateRunInTransactionOptions(
     );
   }
 
-  // Политика не имеет смысла при reuse: повторами управляет внешний вызов.
+  // A policy is meaningless with reuse: the outer call owns retries.
   if (reuse && options.retry !== undefined) {
     throw new Error(
       'runInTransaction(): "retry" cannot be combined with "reuse: true" — ' +
@@ -199,57 +201,57 @@ export function validateRunInTransactionOptions(
 }
 
 /**
- * Менеджер транзакций (#98).
+ * Transaction manager (#98).
  *
- * Семантика повтора по умолчанию — как в @ydbjs/query: при `idempotent:
- * true` SDK может ПОВТОРНО выполнить весь колбэк при retryable-ошибках
- * (смерть сессии, сетевые сбои). Это значит, что побочные эффекты колбэка
- * и все lifecycle hooks сущностей могут выполниться больше одного раза —
- * колбэк должен быть идемпотентным или устойчивым к повтору.
+ * Default retry semantics match @ydbjs/query: with `idempotent: true` the SDK
+ * may RE-EXECUTE the whole callback on retryable errors (session death, network
+ * failures). This means the callback's side effects and all entity lifecycle
+ * hooks may run more than once — the callback must be idempotent or tolerant of
+ * replay.
  *
- * Приоритет слоёв повтора (#27, детерминированный):
- * - опция `retry` не задана — повторами тела владеет ТОЛЬКО SDK (как в #98);
- * - опция `retry` задана (`true` или объект политики) — владение переходит
- *   к политике ORM: ровно одна попытка тела на попытку политики (внутренний
- *   цикл SDK гасится), максимум исполнений колбэка = maxAttempts, между
- *   попытками bounded backoff + jitter, повторяются только статусы
- *   ABORTED/UNAVAILABLE/OVERLOADED. Требование идемпотентности колбэка —
- *   то же, что у idempotent-транзакций #98.
- * Смешивания слоёв нет: попытки не перемножаются ни в одной из конфигураций.
+ * Retry-layer priority (#27, deterministic):
+ * - no `retry` option — only the SDK owns body retries (as in #98);
+ * - `retry` set (`true` or a policy object) — ownership passes to the ORM
+ *   policy: exactly one body attempt per policy attempt (the SDK's inner loop
+ *   is silenced), the callback runs at most maxAttempts times, bounded backoff
+ *   + jitter between attempts, and only ABORTED/UNAVAILABLE/OVERLOADED statuses
+ *   are retried. The callback idempotency requirement is the same as for the
+ *   #98 idempotent transactions.
+ * There is no layer mixing: attempts never multiply in any configuration.
  */
 export class YdbTransactionManager {
   /**
-   * @param db executor БД.
-   * @param settings настройки транзакций конфигурации-владельца (#199);
-   *   если не заданы, используются процессно-глобальные настройки
-   *   (configureTransactionContext) — прежнее поведение.
+   * @param db the DB executor.
+   * @param settings transaction settings of the owning configuration (#199);
+   *   if not provided, the process-global settings
+   *   (configureTransactionContext) are used — the previous behavior.
    */
   constructor(
     private readonly db: YdbExecutor,
     private readonly settings?: YdbTransactionsSettings,
   ) {
-    // Стабильный identity для логического DB-executor'а (#207): разные обёртки
-    // одного и того же executor'а разделяют его, поэтому детекция вложенных
-    // транзакций сравнивает контексты по значению, а не по ссылке на объект.
+    // Stable identity for a logical DB executor (#207): different wrappers of
+    // the same executor share it, so nested-transaction detection compares
+    // contexts by value rather than by object reference.
     ensureExecutorIdentity(db);
   }
 
   /**
-   * Выполняет fn внутри транзакции YDB.
+   * Executes fn inside a YDB transaction.
    *
-   * Вложенные вызовы по умолчанию запрещены: если runInTransaction()
-   * вызывается, пока активна другая транзакция того же executor'а БД,
-   * бросается ошибка — молча открыть независимую транзакцию на другой
-   * сессии нельзя. Чтобы присоединиться к активной транзакции (коммитом и
-   * откатом управляет внешний вызов), передайте `{ reuse: true }`.
-   * Вложенность на ДРУГОМ executor'е БД не считается ошибкой: это независимые
-   * базы/сессии.
+   * Nested calls are forbidden by default: if runInTransaction() is called
+   * while another transaction of the same DB executor is active, an error is
+   * thrown — silently opening an independent transaction on another session is
+   * not allowed. To join the active transaction (commit/rollback owned by the
+   * outer call), pass `{ reuse: true }`. Nesting on a DIFFERENT DB executor is
+   * not an error: those are independent databases/sessions.
    *
-   * @param fn колбэк, получающий executor транзакции и сигнал отмены текущей
-   *   попытки. При idempotent-retry вызывается повторно — см. выше.
-   * @param options см. RunInTransactionOptions. Семантика отмены:
-   *   `signal` — глобальный (отменяет все попытки), `timeout` — на каждую
-   *   попытку (retry получает свежее окно; полный дедлайн —
+   * @param fn callback receiving the transaction executor and the cancellation
+   *   signal of the current attempt. On idempotent-retry it is invoked again —
+   *   see above.
+   * @param options see RunInTransactionOptions. Cancellation semantics:
+   *   `signal` is global (cancels all attempts), `timeout` is per attempt
+   *   (each retry gets a fresh window; the full deadline is
    *   `signal: AbortSignal.timeout(ms)`).
    */
   async runInTransaction<T>(
@@ -258,20 +260,20 @@ export class YdbTransactionManager {
   ): Promise<T> {
     validateRunInTransactionOptions(options);
 
-    // Детекция вложенности работает всегда (ambient включён или нет).
+    // Nesting detection always works (whether or not ambient is enabled).
     const active = getActiveTransaction();
-    // Сравниваем по identity-токену, а не по ссылке на executor (#207).
-    // active.db === this.db — ссылочное сравнение; разные обёртки одного
-    // логического DB-executor'а (логирование/retry) разделяют токен, поэтому
-    // проверка по значению распознаёт вложенную транзакцию того же DB.
+    // Compare by identity token, not by executor reference (#207).
+    // active.db === this.db is a reference comparison; different wrappers of
+    // one logical DB executor (logging/retry) share the token, so the
+    // by-value check recognizes a nested transaction of the same DB.
     if (active && getTransactionId(active.db) === getTransactionId(this.db)) {
       if (options?.reuse) {
-        // Переиспользуем активную транзакцию: коммит/откат остаются у
-        // внешнего вызова, новая БД-транзакция не открывается. Если на
-        // внутреннем вызове явно задан ambient: true, создаём вложенный
-        // ALS-контекст с ТЕМИ ЖЕ trx/db/signal, но ambient-флагом вызова:
-        // иначе per-call ambient: true игнорировался бы, когда внешняя
-        // транзакция открыта с ambient: false.
+        // Reuse the active transaction: commit/rollback stay with the outer
+        // call and a new DB transaction is not opened. If the inner call
+        // explicitly sets ambient: true, create a nested ALS context with the
+        // SAME trx/db/signal but the call's ambient flag: otherwise a
+        // per-call ambient: true would be ignored when the outer transaction
+        // was opened with ambient: false.
         if (options.ambient === true) {
           return runWithTransactionContext(
             createTransactionContext({
@@ -293,9 +295,9 @@ export class YdbTransactionManager {
       );
     }
 
-    // Ambient auto-join для операций БЕЗ явного { trx }: opt-in per-call,
-    // настройки конфигурации-владельца (#199), либо глобальные настройки
-    // процесса (configureTransactionContext) — в порядке приоритета.
+    // Ambient auto-join for operations WITHOUT an explicit { trx }: opt-in
+    // per call, the owning configuration's settings (#199), or the process
+    // global settings (configureTransactionContext) — in priority order.
     const settings = resolveTransactionSettings(
       this.settings
         ? {
@@ -307,22 +309,22 @@ export class YdbTransactionManager {
     );
     const ambient = options?.ambient ?? settings.ambient;
 
-    // Семантика таймаута (#98): timeout действует НА КАЖДУЮ попытку.
-    // При idempotent-retry SDK выполняет колбэк повторно с новой сессией —
-    // каждая попытка получает СВЕЖЕЕ окно таймаута, а не истёкший дедлайн
-    // первой попытки. Пользовательский signal при этом ГЛОБАЛЬНЫЙ: он
-    // передаётся в SDK как есть и отменяет операцию целиком (все попытки).
-    // Полный общий дедлайн задаётся явно: signal: AbortSignal.timeout(ms).
+    // Timeout semantics (#98): a timeout applies TO EACH ATTEMPT.
+    // On idempotent-retry the SDK re-executes the callback with a new session —
+    // each attempt gets a FRESH timeout window instead of the first attempt's
+    // expired deadline. The user signal, meanwhile, is GLOBAL: it is passed to
+    // the SDK as is and cancels the whole operation (all attempts). A full
+    // shared deadline is set explicitly: signal: AbortSignal.timeout(ms).
 
     const trxOptions = {
       isolation: options?.isolation,
       idempotent: options?.idempotent,
-      // Только пользовательский сигнал: таймаут не должен попадать сюда,
-      // иначе он стал бы общим дедлайном для всех попыток.
+      // Only the user signal: a timeout must not reach here, otherwise it
+      // would become a shared deadline for all attempts.
       signal: options?.signal,
     };
 
-    /** Сигнал конкретной попытки: сигнал SDK + свежий AbortSignal.timeout. */
+    /** Signal for a specific attempt: the SDK signal + a fresh AbortSignal.timeout. */
     const composeAttemptSignal = (sdkSignal?: AbortSignal) => {
       if (options?.timeout === undefined) return sdkSignal;
       const signals = [sdkSignal, AbortSignal.timeout(options.timeout)].filter(
@@ -332,18 +334,18 @@ export class YdbTransactionManager {
     };
 
     /**
-     * Тело execute(): создаёт контекст попытки и вызывает колбэк.
-     * Используется и легаси-путём, и под политикой (#27).
+     * The execute() body: creates the attempt context and invokes the callback.
+     * Used both by the legacy path and under a policy (#27).
      */
     const runAttemptBody = (
       trx: YdbExecutor,
       sdkSignal: AbortSignal | undefined,
     ) => {
       const attemptSignal = composeAttemptSignal(sdkSignal);
-      // Генерируем уникальный ID для этой транзакции и запоминаем его для
-      // trx-executor'а данной попытки в приватном реестре identity (#217).
+      // Generate a unique ID for this transaction and remember it on this
+      // attempt's trx executor in the private identity registry (#217).
       const transactionId = generateTransactionId();
-      // trx всегда объект/функция (WeakMap-ключ); защита для примитивных моков.
+      // trx is always an object/function (a WeakMap key); guard for primitive mocks.
       if (trx && (typeof trx === 'object' || typeof trx === 'function')) {
         setExecutorIdentity(trx, transactionId);
       }
@@ -359,12 +361,12 @@ export class YdbTransactionManager {
       );
     };
 
-    // Retry-политика (#27): без неё — прежнее поведение (#98), тело ретраит
-    // только SDK по своим правилам. С ней — владение повторами переходит к
-    // ORM: на одну попытку политики приходится ровно одна попытка тела
-    // (внутренний цикл SDK гасится маркером SdkRetrySupersededError — для
-    // его предиката это заведомо неповторяемая ошибка), поэтому попытки не
-    // перемножаются, а максимум исполнений колбэка равен maxAttempts.
+    // Retry policy (#27): without it — the previous behavior (#98), the SDK
+    // alone retries the body by its own rules. With it — retry ownership passes
+    // to the ORM: exactly one body attempt per policy attempt (the SDK's inner
+    // loop is silenced via the SdkRetrySupersededError marker — which is
+    // guaranteed non-retryable for its predicate), so attempts do not multiply
+    // and the callback runs at most maxAttempts times.
     const policy = resolveYdbRetryPolicy(options?.retry);
     if (!policy) {
       return this.db

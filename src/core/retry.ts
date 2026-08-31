@@ -2,27 +2,27 @@ import { CommitError, YDBError } from '@ydbjs/error';
 import { StatusIds_StatusCode } from '@ydbjs/api/operation';
 
 /**
- * Retry-политика ORM по типу ошибки (#27).
+ * ORM error-type retry policy (#27).
  *
- * SDK (@ydbjs/query) УЖЕ ретраит одиночные запросы и тело транзакции
- * (см. «Retry-семантика» в README): у него свой неограниченный по умолчанию
- * бюджет и своя классификация ошибок. Поэтому эта политика — ЯВНАЯ утилита
- * без скрытого глобального состояния: пользователь сам решает, какие
- * составные операции обернуть в runWithRetry(). Оборачивать одиночные
- * запросы и runInTransaction() не нужно и вредно — попытки SDK и ORM
- * перемножатся.
+ * The SDK (@ydbjs/query) ALREADY retries single queries and the transaction
+ * body (see "Retry semantics" in the README): it has its own by-default
+ * unlimited budget and its own error classification. This policy is therefore
+ * an EXPLICIT utility without hidden global state: the user decides which
+ * composite operations to wrap in runWithRetry(). Wrapping single queries and
+ * runInTransaction() is not needed and is harmful — SDK and ORM attempts would
+ * multiply.
  *
- * Классификация ошибок — ТОЛЬКО по структурным признакам (статус-код YDB
- * из @ydbjs/error), никогда по тексту сообщения.
+ * Error classification is based ONLY on structural features (the YDB status
+ * code from @ydbjs/error), never on the message text.
  */
 
 /**
- * Статусы YDB, которые политика считает транзитными (#27): только
- * ABORTED / UNAVAILABLE / OVERLOADED. Всё остальное — включая статусы,
- * которые SDK считает условно-retryable (SESSION_EXPIRED, UNDETERMINED,
- * TIMEOUT) и ошибки сессий (BAD_SESSION, SESSION_BUSY) — политикой ORM
- * не ретраится: это либо детерминированные ошибки, либо внутренняя
- * забота SDK-ретрая.
+ * YDB statuses the policy treats as transient (#27): only
+ * ABORTED / UNAVAILABLE / OVERLOADED. Everything else — including statuses
+ * the SDK considers conditionally-retryable (SESSION_EXPIRED, UNDETERMINED,
+ * TIMEOUT) and session errors (BAD_SESSION, SESSION_BUSY) — is not retried
+ * by the ORM policy: these are either deterministic errors or the SDK
+ * internal retry's concern.
  */
 export const TRANSIENT_YDB_STATUSES: ReadonlySet<number> = new Set([
   StatusIds_StatusCode.ABORTED,
@@ -30,88 +30,92 @@ export const TRANSIENT_YDB_STATUSES: ReadonlySet<number> = new Set([
   StatusIds_StatusCode.OVERLOADED,
 ] as const);
 
-/** Результат классификации ошибки. */
+/** Result of error classification. */
 export type YdbErrorKind = 'transient' | 'fatal';
 
-/** Сигнатура функции задержки (инъецируется в тестах). */
+/** Signature of the sleep function (injected in tests). */
 export type YdbRetrySleepFn = (
   ms: number,
   signal?: AbortSignal,
 ) => Promise<void>;
 
-/** Сигнатура генератора случайных чисел [0, 1) для jitter. */
+/** Signature of the random number generator (0..1) used for jitter. */
 export type YdbRetryRng = () => number;
 
 /**
- * Контекст попытки для хука onRetry: вызывается перед каждой повторной
- * попыткой (после отработки задержки).
+ * Attempt context passed to the onRetry hook: called before each retry
+ * (after the delay has elapsed).
  */
 export interface YdbRetryAttemptContext {
-  /** Номер НЕУДАЧНОЙ попытки (начиная с 1). */
+  /** Number of the FAILED attempt (1-based). */
   attempt: number;
-  /** Ошибка, приведшая к повтору. */
+  /** Error that caused the retry. */
   error: unknown;
-  /** Задержка перед повторной попыткой, мс. */
+  /** Delay before the retry, ms. */
   delayMs: number;
 }
 
 /**
- * Опции retry-политики (#27).
+ * Retry policy options (#27).
  *
- * Все поля опциональны; значения по умолчанию см.
- * DEFAULT_YDB_RETRY_POLICY_OPTIONS. Опции валидируются fail-fast:
- * невалидное значение — ошибка сразу, а не тихо проигнорированная опция.
+ * All fields are optional; the defaults live in DEFAULT_YDB_RETRY_POLICY_OPTIONS.
+ * Options are validated fail-fast: an invalid value is an immediate error,
+ * not a silently ignored option.
  */
 export interface YdbRetryPolicyOptions {
   /**
-   * Максимум попыток ВКЛЮЧАЯ первую (по умолчанию 3). Целое число ≥ 1.
+   * Maximum number of attempts INCLUDING the first (default 3). Integer >= 1.
    */
   maxAttempts?: number;
   /**
-   * Базовая задержка экспоненциального backoff, мс (по умолчанию 100).
-   * Попытка N (с единицы) ждёт baseDelayMs * 2^(N-1), ограничено maxDelayMs.
+   * Base exponential-backoff delay, ms (default 100). Attempt N (1-based)
+   * waits baseDelayMs * 2^(N-1), capped at maxDelayMs.
    */
   baseDelayMs?: number;
   /**
-   * Верхняя граница задержки, мс (по умолчанию 5000). Bounded backoff:
-   * рост экспоненты останавливается на этом значении.
+   * Upper delay bound, ms (default 5000). Bounded backoff: exponential
+   * growth stops at this value.
    */
   maxDelayMs?: number;
   /**
-   * Доля jitter в [0, 1] (по умолчанию 0.25): итоговая задержка равномерно
-   * распределена в [(1 - ratio) * raw, raw], где raw — задержка до jitter.
-   * 0 — отключить jitter; 1 — «полный» jitter (от 0 до raw).
+   * Jitter share in [0, 1] (default 0.25): the final delay is uniformly
+   * distributed in [(1 - ratio) * raw, raw], where raw is the delay before
+   * jitter. 0 disables jitter; 1 is "full" jitter (from 0 to raw).
    */
   jitterRatio?: number;
   /**
-   * Сигнал отмены: отменяет ожидание текущей задержки и запрещает старт
-   * новых попыток. Отмена НЕ превращается в повтор — операция завершается
-   * причиной отмены (signal.reason).
+   * Cancellation signal: aborts the current delay wait and forbids new
+   * attempts. Cancellation does NOT turn into a retry — the operation
+   * finishes with the cancellation reason (signal.reason).
    */
   signal?: AbortSignal;
   /**
-   * Хук перед каждой повторной попыткой (после задержки): логирование,
-   * метрики. Ошибки хука не глотаются — пробрасываются как есть.
+   * Hook called before each retry (after the delay): logging, metrics. Hook
+   * errors are not swallowed — they propagate as is.
    */
   onRetry?: (ctx: YdbRetryAttemptContext) => void;
   /**
-   * Кастомный предикат повторяемости: замещает классификацию по умолчанию
-   * (classifyYdbError). Расширение точки для нестандартных обёрток ошибок;
-   * дефолт строго ретраит только ABORTED/UNAVAILABLE/OVERLOADED.
+   * Custom retryability predicate: replaces the default classification
+   * (classifyYdbError). Extension point for non-standard error wrappers; the
+   * default strictly retries only ABORTED/UNAVAILABLE/OVERLOADED.
    */
   shouldRetry?: (error: unknown) => boolean;
-  /** Шов для тестов: подмена ожидания (по умолчанию setTimeout+signal). */
+  /** Test seam: replaces the wait (default setTimeout+signal). */
   sleep?: YdbRetrySleepFn;
-  /** Шов для тестов: детерминированный источник случайности для jitter. */
+  /** Test seam: deterministic randomness source for jitter. */
   rng?: YdbRetryRng;
 }
 
+/** Default maximum number of attempts (including the first). */
 export const RETRY_DEFAULT_MAX_ATTEMPTS = 3;
+/** Default base backoff delay in milliseconds. */
 export const RETRY_DEFAULT_BASE_DELAY_MS = 100;
+/** Default upper backoff delay bound in milliseconds. */
 export const RETRY_DEFAULT_MAX_DELAY_MS = 5_000;
+/** Default jitter ratio. */
 export const RETRY_DEFAULT_JITTER_RATIO = 0.25;
 
-/** Значения по умолчанию политики (заморожены). */
+/** Policy default values (frozen). */
 export const DEFAULT_YDB_RETRY_POLICY_OPTIONS: Readonly<
   Required<
     Pick<
@@ -127,14 +131,14 @@ export const DEFAULT_YDB_RETRY_POLICY_OPTIONS: Readonly<
 });
 
 /**
- * Классифицирует ошибку по структурным признакам (#27):
+ * Classifies an error by structural features (#27):
  *
- * - CommitError (ошибка коммита из @ydbjs/query) — раскрывается в cause;
- * - YDBError — transient только при коде ABORTED/UNAVAILABLE/OVERLOADED;
- * - всё остальное (включая обычные Error приложения/валидации/схемы и
- *   AbortError/TimeoutError) — fatal, повтор запрещён.
+ * - CommitError (a commit error from @ydbjs/query) — unwrapped into its cause;
+ * - YDBError — transient only for codes ABORTED/UNAVAILABLE/OVERLOADED;
+ * - anything else (including ordinary application/validation/schema Errors
+ *   and AbortError/TimeoutError) — fatal, retry is forbidden.
  *
- * Текст сообщения не анализируется никогда.
+ * The message text is never analyzed.
  */
 export function classifyYdbError(error: unknown): YdbErrorKind {
   if (error instanceof CommitError) {
@@ -146,19 +150,18 @@ export function classifyYdbError(error: unknown): YdbErrorKind {
   return 'fatal';
 }
 
-/** true, если ошибка транзитная по умолчательной политике (#27). */
+/** true if the error is transient under the default policy (#27). */
 export function isTransientYdbError(error: unknown): boolean {
   return classifyYdbError(error) === 'transient';
 }
 
 /**
- * Входной формат политики в конфигурации (#27): `false`/`undefined` —
- * выключено (ретраит только SDK), `true` — значения по умолчанию,
- * объект — кастомная политика.
+ * Policy input format for configuration (#27): `false`/`undefined` — disabled
+ * (only the SDK retries), `true` — defaults, an object — custom policy.
  */
 export type YdbRetryPolicyInput = boolean | YdbRetryPolicyOptions;
 
-/** Политика с разрешёнными значениями по умолчанию (результат резолва). */
+/** Policy with resolved defaults (the result of resolution). */
 export interface YdbResolvedRetryPolicy extends Required<
   Pick<
     YdbRetryPolicyOptions,
@@ -173,10 +176,10 @@ export interface YdbResolvedRetryPolicy extends Required<
 }
 
 /**
- * Разрешает вход политики (`boolean | YdbRetryPolicyOptions`) в полную
- * конфигурацию с дефолтами (#27). `undefined`/`false` → null (политика
- * выключена — ретраит только SDK, поведение #98 не меняется).
- * Невалидные опции — fail-fast ошибка.
+ * Resolves a policy input (`boolean | YdbRetryPolicyOptions`) into a full
+ * configuration with defaults (#27). `undefined`/`false` → null (policy
+ * disabled — only the SDK retries, #98 behavior unchanged).
+ * Invalid options are a fail-fast error.
  */
 export function resolveYdbRetryPolicy(
   input?: YdbRetryPolicyInput,
@@ -203,9 +206,9 @@ export function resolveYdbRetryPolicy(
 }
 
 /**
- * Fail-fast валидация опций политики: неизвестных ключей нет (структура
- * типизирована), проверяются значения диапазонов. Невалидное значение —
- * ошибка конфигурации сразу.
+ * Fail-fast validation of policy options: there are no unknown keys (the
+ * structure is typed), value ranges are checked. An invalid value is an
+ * immediate configuration error.
  */
 export function validateYdbRetryPolicyOptions(
   options?: YdbRetryPolicyOptions,
@@ -259,13 +262,13 @@ export function validateYdbRetryPolicyOptions(
 }
 
 /**
- * Чистая функция расчёта задержки перед повторной попыткой (#27):
+ * Pure function computing the delay before a retry (#27):
  *
  *   raw     = min(baseDelayMs * 2^(attempt-1), maxDelayMs)
  *   delayMs = round(raw * (1 - jitterRatio + jitterRatio * rng()))
  *
- * Результат всегда ограничен maxDelayMs (bounded backoff), детерминирован
- * при фиксированных опциях и rng. `attempt` нумеруется с единицы.
+ * The result is always capped at maxDelayMs (bounded backoff), deterministic
+ * given fixed options and rng. `attempt` is 1-based.
  */
 export function computeRetryDelayMs(
   attempt: number,
@@ -288,11 +291,11 @@ export function computeRetryDelayMs(
 }
 
 /**
- * Нормализует причину отмены к Error: причина abort() может быть любым
- * значением (в т.ч. строкой или undefined) — не-Error заворачивается,
- * исходное значение сохраняется в cause. Строковые/числовые причины
- * попадают и в сообщение; произвольные объекты не строковятся
- * (небезопасно) — они видны только через cause.
+ * Normalizes a cancellation reason to an Error: the abort() reason may be any
+ * value (including a string or undefined) — non-Errors are wrapped, the
+ * original value is kept in cause. String/numeric reasons also end up in the
+ * message; arbitrary objects are not stringified (unsafe) — they are visible
+ * only via cause.
  */
 export function abortReasonToError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
@@ -310,7 +313,7 @@ export function abortReasonToError(reason: unknown): Error {
   );
 }
 
-/** Задержка по умолчанию: setTimeout, прерываемый сигналом отмены. */
+/** Default delay: setTimeout, interruptible by an abort signal. */
 function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
@@ -335,29 +338,28 @@ function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Выполняет fn под retry-политикой по типу ошибки (#27).
+ * Runs fn under the error-type retry policy (#27).
  *
- * Семантика:
- * - максимум `maxAttempts` попыток ВКЛЮЧАЯ первую; между попытками —
- *   экспоненциальный backoff с jitter, ограниченный maxDelayMs;
- * - повторяются ТОЛЬКО транзитные ошибки (по умолчанию — статус-коды
- *   ABORTED/UNAVAILABLE/OVERLOADED, классификация структурная);
- *   детерминированные/прикладные ошибки пробрасываются немедленно;
- * - исчерпание попыток пробрасывает ПОСЛЕДНЮЮ ошибку как есть (без
- *   заворачивания) — структура YDBError сохраняется для вызывающего;
- * - `signal` отменяет ожидание задержки и запрещает новые попытки;
- *   операция завершается причиной отмены: если signal.reason — не Error,
- *   он заворачивается в Error (исходное значение — в cause);
- * - колбэк должен быть идемпотентным или устойчивым к повтору: при
- *   повторе заново выполняется вся fn (те же требования, что к
- *   idempotent-транзакциям #98);
- * - fn получает сигнал отмены политики (для связывания с сигналами
- *   нижележащих операций — так сигнал попытки доходит до БД).
+ * Semantics:
+ * - at most `maxAttempts` attempts INCLUDING the first; between attempts —
+ *   exponential backoff with jitter, capped at maxDelayMs;
+ * - retried are ONLY transient errors (by default — status codes
+ *   ABORTED/UNAVAILABLE/OVERLOADED, structural classification);
+ *   deterministic/application errors propagate immediately;
+ * - exhausting attempts rethrows the LAST error as is (without wrapping) —
+ *   the YDBError structure is preserved for the caller;
+ * - `signal` aborts the delay wait and forbids new attempts; the operation
+ *   finishes with the cancellation reason: if signal.reason is not an Error,
+ *   it is wrapped in an Error (the original value — in cause);
+ * - the callback must be idempotent or retry-tolerant: on a retry the whole
+ *   fn runs anew (the same requirement as for idempotent transactions #98);
+ * - fn receives the policy's cancellation signal (to wire it into the signals
+ *   of underlying operations — so the attempt's signal reaches the DB).
  *
- * Интеграция с executor/транзакциями (#27): используйте withRetryPolicy()
- * и опцию retry runInTransaction() — они применяют эту политику к операциям,
- * НЕ дублируя внутренний ретрай SDK (детерминированный приоритет слоёв
- * описан в README «Retry-политика по типу ошибки»).
+ * Executor/transaction integration (#27): use withRetryPolicy() and the retry
+ * option of runInTransaction() — they apply this policy to operations WITHOUT
+ * duplicating the SDK internal retry (the deterministic layer priority is
+ * described in the README "Error-type retry policy").
  */
 export async function runWithRetry<T>(
   fn: (signal?: AbortSignal) => Promise<T>,
@@ -390,6 +392,6 @@ export async function runWithRetry<T>(
     }
   }
 
-  /* istanbul ignore next: цикл всегда возвращается или бросает выше */
+  /* istanbul ignore next: the loop above always returns or throws */
   throw new Error('unreachable');
 }

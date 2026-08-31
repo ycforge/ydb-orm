@@ -1,28 +1,28 @@
 import { YdbExecutor } from './interfaces.js';
 
 export interface QueryOptions {
-  /** Транзакция / executor */
+  /** Transaction / executor */
   trx?: YdbExecutor;
-  /** AbortSignal для отмены */
+  /** AbortSignal for cancellation */
   signal?: AbortSignal;
-  /** Таймаут в миллисекундах */
+  /** Timeout in milliseconds */
   timeout?: number;
   /**
-   * Пометка идемпотентности запроса (#27). Пробрасывается в SDK как
-   * `.idempotent(true)` и разрешает retry-политике ORM повторять запрос
-   * при транзитных ошибках (ABORTED/UNAVAILABLE/OVERLOADED).
+   * Query idempotency marker (#27). Passed to SDK as
+   * `.idempotent(true)` and allows the ORM retry policy to retry the query
+   * on transient errors (ABORTED/UNAVAILABLE/OVERLOADED).
    *
-   * БЕЗ пометки запрос выполняется РОВНО ОДИН раз даже при включённой
-   * политике (`YdbModuleOptions.retry`): повтор незнакомого записывающего
-   * запроса после двусмысленного сбоя транспорта может продублировать
-   * побочные эффекты. Помечайте только операции, устойчивые к повтору
-   * (идемпотентные SELECT, INSERT по фиксированному PK и т.п.).
+   * WITHOUT the marker the query runs EXACTLY ONCE even with the
+   * policy enabled (`YdbModuleOptions.retry`): retrying an unknown write
+   * after an ambiguous transport failure could duplicate side effects.
+   * Mark only operations that are safe to repeat (idempotent SELECT,
+   * INSERT with fixed PK, etc.).
    */
   idempotent?: boolean;
-  /** Максимум строк в SELECT (по умолчанию 100) */
+  /** Maximum rows in SELECT (default 100) */
   limit?: number;
-  /** Смещение для SELECT */
+  /** Offset for SELECT */
   offset?: number;
-  /** Конкретные колонки для SELECT (вместо SELECT *) */
+  /** Specific columns for SELECT (instead of SELECT *) */
   select?: string[];
 }

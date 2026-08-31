@@ -8,7 +8,7 @@ import { YdbPrimitive } from '../core/types.js';
 import { validateIdentifier, validateTableName } from '../core/sql-utils.js';
 import { isoDurationToMicroseconds } from '../decorators/ttl.decorator.js';
 
-/** Разбивает строку на слова (по не-буквенно-цифровым символам и camelCase). */
+/** Splits a string into words (by non-alphanumeric and camelCase). */
 function words(input: string): string[] {
   return input
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -16,18 +16,21 @@ function words(input: string): string[] {
     .filter(Boolean);
 }
 
+/** Converts a string to PascalCase: splits on non-alphanumeric and camelCase boundaries. */
 export function toPascalCase(input: string): string {
   return words(input)
     .map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase())
     .join('');
 }
 
+/** Converts a string to snake_case: splits on non-alphanumeric and camelCase boundaries. */
 export function toSnakeCase(input: string): string {
   return words(input)
     .map((w) => w.toLowerCase())
     .join('_');
 }
 
+/** Converts a string to kebab-case: splits on non-alphanumeric and camelCase boundaries. */
 export function toKebabCase(input: string): string {
   return words(input)
     .map((w) => w.toLowerCase())
@@ -35,10 +38,10 @@ export function toKebabCase(input: string): string {
 }
 
 /**
- * Гарантирует валидный TypeScript-идентификатор класса (#102): `toPascalCase`
- * от имени без буквенных слов ('123', '---') возвращает пустую строку или
- * строку с ведущей цифрой — такой класс не скомпилируется. Валидные имена
- * возвращаются без изменений (обратная совместимость).
+ * Ensures a valid TypeScript class identifier (#102): `toPascalCase`
+ * on a name without letter words ('123', '---') returns an empty string or
+ * a string starting with a digit — such a class won't compile. Valid names
+ * are returned unchanged (backward compatibility).
  */
 export function toValidClassName(input: string): string {
   const name = toPascalCase(input);
@@ -46,6 +49,7 @@ export function toValidClassName(input: string): string {
   return name;
 }
 
+/** Result of creating a file on disk. */
 export interface CreatedFile {
   filePath: string;
   name: string;
@@ -56,13 +60,13 @@ function writeFile(dir: string, fileName: string, content: string): string {
 }
 
 /**
- * Пишет файл по точному пути; существующий файл никогда не перезаписывается.
+ * Writes a file at an exact path; an existing file is never overwritten.
  *
- * Используется эксклюзивное открытие (флаг 'wx', как в entity-diagram.ts):
- * check-then-write через existsSync оставляет окно для гонки, где другой
- * процесс может подсунуть существующий файл или symlink между проверкой и
- * записью, и writeFileSync молча усекёт его. 'wx' не следует symlink и
- * атомарно падает EEXIST, гарантируя one-writer semantics (#170).
+ * Uses exclusive open (flag 'wx', like entity-diagram.ts):
+ * check-then-write via existsSync leaves a race window where another
+ * process could slip in an existing file or symlink between check and
+ * write, and writeFileSync would silently truncate it. 'wx' does not follow
+ * symlinks and atomically fails with EEXIST, guaranteeing one-writer semantics (#170).
  */
 function writeFileAt(filePath: string, content: string): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -70,8 +74,8 @@ function writeFileAt(filePath: string, content: string): string {
   try {
     fd = fs.openSync(filePath, 'wx');
   } catch (error) {
-    // Проверка по коду без instanceof: в VM-окружениях (jest ESM) ошибка
-    // из нативного fs может не наследовать Error этого контекста.
+    // Check by code, not instanceof: in VM environments (jest ESM) a native
+    // fs error may not inherit this context's Error.
     if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') {
       throw new Error(
         `File already exists: ${filePath} — never overwrites existing files.`,
@@ -88,22 +92,22 @@ function writeFileAt(filePath: string, content: string): string {
 }
 
 /**
- * Последние использованные timestamp и суффикс: защита от коллизии имён
- * файлов миграций (#102). `Date.now()` имеет миллисекундную точность —
- * две генерации в пределах одной миллисекунды (или при скачке часов назад)
- * обязаны получить разные имена, иначе writeFile падает на существующем файле.
+ * Last used timestamp and suffix: protection against migration filename
+ * collisions (#102). `Date.now()` has millisecond precision — two generations
+ * within the same millisecond (or on a clock jump backward) must get
+ * different names, otherwise writeFile fails on an existing file.
  */
 let lastTimestamp = 0;
 let lastSuffix = 0;
 
 /**
- * Создаёт файл миграции. Без плана — пустой шаблон (migration:create),
- * с планом — заполненный DDL (migration:generate).
+ * Creates a migration file. Without a plan — empty template (migration:create),
+ * with a plan — filled DDL (migration:generate).
  *
- * Имя файла — `<timestamp>-<Name>`; повторная генерация в ту же миллисекунду
- * получает антиколлизионный суффикс `-1`, `-2`, … (#102). Лексикографическая
- * сортировка загрузчика сохраняется: все timestamps одной длины, короткое
- * имя (без суффикса) идёт раньше длиннее.
+ * Filename — `<timestamp>-<Name>`; re-generation within the same millisecond
+ * gets an anti-collision suffix `-1`, `-2`, ... (#102). Lexicographic
+ * sort order of the loader is preserved: all timestamps have the same length,
+ * short name (without suffix) comes before longer.
  */
 export function createMigrationFile(
   dir: string,
@@ -142,49 +146,49 @@ export function createMigrationFile(
   return { filePath, name: baseName };
 }
 
-/** Создаёт файл сущности (entity:create): `<kebab-name>.entity.ts`. */
+/** Creates an entity file (entity:create): `<kebab-name>.entity.ts`. */
 export function createEntityFile(dir: string, name: string): CreatedFile {
   return createEntityFileFromSpec(dir, buildDefaultEntitySpec(name));
 }
 
 // ---------------------------------------------------------------------------
-// Генерация сущности по спецификации (#24, интерактивный entity:create).
+// Entity generation from spec (#24, interactive entity:create).
 // ---------------------------------------------------------------------------
 
-/** Хранилище enum-колонки (совпадает с YdbEnumMeta.storage). */
+/** Enum column storage (matches YdbEnumMeta.storage). */
 export type YdbEnumStorage = 'Utf8' | 'Int32';
 
-/** Описание одной колонки/свойства генерируемой сущности. */
+/** Description of one column/property of the generated entity. */
 export interface YdbEntityColumnSpec {
-  /** Имя TS-свойства; оно же — имя колонки таблицы. */
+  /** TS property name; same as the table column name. */
   name: string;
-  /** YDB-тип колонки (@YdbColumn/@YdbPrimaryColumn). Игнорируется для encrypted-полей. */
+  /** YDB column type (@YdbColumn/@YdbPrimaryColumn). Ignored for encrypted fields. */
   type: YdbPrimitive;
-  /** Первичный ключ (@YdbPrimaryColumn). */
+  /** Primary key (@YdbPrimaryColumn). */
   primary?: boolean;
-  /** Шифруемое поле (@YdbEncrypted); тип колонки не объявляется (в БД всегда Bytes). */
+  /** Encrypted field (@YdbEncrypted); column type not declared (always Bytes in DB). */
   encrypted?: boolean;
-  /** Blind index для шифруемого поля (по умолчанию true, как у @YdbEncrypted). */
+  /** Blind index for encrypted field (default true, like @YdbEncrypted). */
   blindIndex?: boolean;
-  /** Enum-колонка: допустимые значения (@YdbEnum). */
+  /** Enum column: allowed values (@YdbEnum). */
   enumValues?: readonly string[];
-  /** Хранилище enum: Utf8 (строковое значение) или Int32 (порядковый номер). */
+  /** Enum storage: Utf8 (string value) or Int32 (ordinal). */
   enumStorage?: YdbEnumStorage;
-  /** Автопростановка времени создания (@YdbCreateDateColumn). */
+  /** Auto-set creation time (@YdbCreateDateColumn). */
   createDate?: boolean;
-  /** Автопростановка времени обновления (@YdbUpdateDateColumn). */
+  /** Auto-set update time (@YdbUpdateDateColumn). */
   updateDate?: boolean;
 }
 
-/** TTL таблицы (@YdbTtl) для date-like колонки (Date/Datetime/Timestamp). */
+/** Table TTL (@YdbTtl) for a date-like column (Date/Datetime/Timestamp). */
 export interface YdbEntityTtlSpec {
-  /** ISO 8601 duration, например "PT2H" или "P30D". */
+  /** ISO 8601 duration, e.g. "PT2H" or "P30D". */
   interval: string;
-  /** Имя date-like колонки. */
+  /** Date-like column name. */
   column: string;
 }
 
-/** Спецификация генерируемой сущности. */
+/** Specification of the generated entity. */
 export interface YdbEntitySpec {
   className: string;
   tableName: string;
@@ -195,9 +199,9 @@ export interface YdbEntitySpec {
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Имена, которые нельзя занимать свойствами сущности: члены YdbBaseEntity
- * (Active Record API) и служебные члены любого объекта. Колонка с таким
- * именем скомпилировалась бы, но сломала бы рантайм ORM.
+ * Names that cannot be used for entity properties: YdbBaseEntity members
+ * (Active Record API) and built-in object members. A column with such
+ * a name would compile but break the ORM runtime.
  */
 const RESERVED_PROPERTY_NAMES: ReadonlySet<string> = new Set([
   'constructor',
@@ -230,7 +234,7 @@ const RESERVED_PROPERTY_NAMES: ReadonlySet<string> = new Set([
   'loadRelations',
 ]);
 
-/** YDB-примитивы, доступные в мастере entity:create (см. core/types.ts). */
+/** YDB primitives available in entity:create wizard (see core/types.ts). */
 export const ENTITY_CREATE_TYPES: readonly YdbPrimitive[] = [
   'Uuid',
   'Utf8',
@@ -247,7 +251,7 @@ export const ENTITY_CREATE_TYPES: readonly YdbPrimitive[] = [
   'JsonDocument',
 ];
 
-/** Типы, для которых имеет смысл @YdbCreateDateColumn/@YdbUpdateDateColumn/TTL. */
+/** Types for which @YdbCreateDateColumn/@YdbUpdateDateColumn/TTL make sense. */
 const DATE_LIKE_TYPES: readonly YdbPrimitive[] = [
   'Date',
   'Datetime',
@@ -259,9 +263,9 @@ function isDateLike(type: YdbPrimitive): boolean {
 }
 
 /**
- * Валидирует спецификацию сущности ДО записи файла (#24).
- * Возвращает список проблем (пустой — если всё в порядке); файл не пишется,
- * пока список непуст.
+ * Validates the entity spec BEFORE writing the file (#24).
+ * Returns a list of issues (empty if all is well); file is not written
+ * until the list is empty.
  */
 export function validateEntitySpec(spec: YdbEntitySpec): string[] {
   const issues: string[] = [];
@@ -287,9 +291,9 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
   }
 
   const seen = new Set<string>();
-  // Имя enum-типа выводится из имени колонки: карта для детекта коллизий
-  // ('foo_bar' и 'fooBar' → FooBarEnum) — два объявления одного типа
-  // не компилируются.
+  // Enum type name is derived from column name: map for collision detection
+  // ('foo_bar' and 'fooBar' -> FooBarEnum) — two declarations of the same
+  // type don't compile.
   const seenEnumTypeNames = new Map<string, string>();
   let primaryCount = 0;
   let createDateCount = 0;
@@ -302,8 +306,8 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
       continue;
     }
     if (!IDENTIFIER_RE.test(column.name)) {
-      // Свойство становится и TS-идентификатором, и SQL-колонкой:
-      // требования к обоим совпадают (ASCII буквы/цифры/_).
+      // Property becomes both a TS identifier and a SQL column:
+      // requirements for both match (ASCII letters/digits/_).
       issues.push(
         `${label}: invalid property name — must match /^[A-Za-z_][A-Za-z0-9_]*$/`,
       );
@@ -349,9 +353,9 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
             break;
           }
         }
-        // Нормализация имени члена lossy ("a-b" и "a_b" → A_B): дубликаты
-        // членов в одном объявлении enum не компилируются (duplicate
-        // identifier), поэтому ловим их до записи файла (#24).
+        // Member name normalization is lossy ("a-b" and "a_b" -> A_B): duplicates
+        // within one enum declaration don't compile (duplicate
+        // identifier), so we catch them before writing the file (#24).
         const valuesByMember = new Map<string, string[]>();
         for (const value of column.enumValues) {
           if (typeof value !== 'string') continue;
@@ -369,8 +373,8 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
             );
           }
         }
-        // Имена enum-типов выводятся из колонки тоже lossy ('foo_bar' и
-        // 'fooBar' → FooBarEnum): два объявления одного типа в файле —
+        // Enum type names are derived from column name too lossy ('foo_bar' and
+        // 'fooBar' -> FooBarEnum): two declarations of the same type in a file —
         // duplicate identifier.
         const typeName = enumTypeName(column.name);
         const typeNameOwner = seenEnumTypeNames.get(typeName);
@@ -451,7 +455,7 @@ export function validateEntitySpec(spec: YdbEntitySpec): string[] {
   return issues;
 }
 
-/** TS-тип свойства, соответствующий семантике маппера (core/mapper.ts). */
+/** TS property type corresponding to mapper semantics (core/mapper.ts). */
 function tsPropertyType(column: YdbEntityColumnSpec): string {
   if (column.enumValues) return enumTypeName(column.name);
   switch (column.type) {
@@ -479,18 +483,18 @@ function tsPropertyType(column: YdbEntityColumnSpec): string {
   return 'unknown';
 }
 
-/** Имя TS enum-типа для колонки ("status" → StatusEnum, "order_type" → OrderTypeEnum). */
+/** TS enum type name for a column ("status" -> StatusEnum, "order_type" -> OrderTypeEnum). */
 function enumTypeName(propertyName: string): string {
   const pascal = toPascalCase(propertyName);
   return `${pascal}Enum`;
 }
 
-/** Строковый литерал в исходнике с одинарными кавычками (стиль .prettierrc). */
+/** String literal in source with single quotes (per .prettierrc style). */
 function singleQuoted(value: string): string {
   return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 }
 
-/** Имя члена enum из строкового значения ("new_order" → NEW_ORDER). */
+/** Enum member name from a string value ("new_order" -> NEW_ORDER). */
 export function toEnumMemberName(value: string): string {
   const member = value.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
   if (/^[0-9]/.test(member)) return `V_${member}`;
@@ -498,9 +502,9 @@ export function toEnumMemberName(value: string): string {
 }
 
 /**
- * Рендерит исходник сущности в текущем публичном API (@YdbEntity/@YdbColumn/
- * @YdbPrimaryColumn/@YdbEnum/@YdbEncrypted/@YdbTtl/Ydb*-date-колонки).
- * Форматирование соответствует .prettierrc проекта (singleQuote, trailingComma).
+ * Renders the entity source in the current public API (@YdbEntity/@YdbColumn/
+ * @YdbPrimaryColumn/@YdbEnum/@YdbEncrypted/@YdbTtl/Ydb*-date columns).
+ * Formatting matches project .prettierrc (singleQuote, trailingComma).
  */
 export function renderEntityFile(spec: YdbEntitySpec): string {
   const issues = validateEntitySpec(spec);
@@ -532,7 +536,7 @@ export function renderEntityFile(spec: YdbEntitySpec): string {
   lines.push("} from '@ycforge/ydb-orm';");
   lines.push('');
 
-  // Enum-объявления — перед классом (на них ссылаются типы свойств).
+  // Enum declarations come before the class (property types reference them).
   for (const column of spec.columns) {
     if (!column.enumValues) continue;
     lines.push(`export enum ${enumTypeName(column.name)} {`);
@@ -552,8 +556,8 @@ export function renderEntityFile(spec: YdbEntitySpec): string {
   lines.push(`export class ${spec.className} extends YdbBaseEntity {`);
 
   spec.columns.forEach((column, index) => {
-    // Порядок соответствует фикстурам/документации:
-    // date-декораторы → колонка/PK → шифрование → enum.
+    // Order matches fixtures/docs:
+    // date decorators -> column/PK -> encryption -> enum.
     const decorators: string[] = [];
     if (column.createDate) decorators.push('@YdbCreateDateColumn()');
     if (column.updateDate) decorators.push('@YdbUpdateDateColumn()');
@@ -586,7 +590,7 @@ export function renderEntityFile(spec: YdbEntitySpec): string {
   return `${lines.join('\n')}\n`;
 }
 
-/** Путь файла сущности без записи: `<dir>/<kebab-name>.entity.ts`. */
+/** Entity file path without writing: `<dir>/<kebab-name>.entity.ts`. */
 export function entityFilePath(dir: string, name: string): string {
   const kebab = toKebabCase(name);
   const fileName = `${kebab || toPascalCase(name).toLowerCase()}.entity.ts`;
@@ -594,8 +598,8 @@ export function entityFilePath(dir: string, name: string): string {
 }
 
 /**
- * Спецификация «по умолчанию» (неинтерактивный путь entity:create):
- * uuid PK + name — тот же шаблон, что и раньше.
+ * Default spec (non-interactive entity:create path):
+ * uuid PK + name — same template as before.
  */
 export function buildDefaultEntitySpec(name: string): YdbEntitySpec {
   return {
@@ -609,8 +613,8 @@ export function buildDefaultEntitySpec(name: string): YdbEntitySpec {
 }
 
 /**
- * Валидный TS-идентификатор класса сущности (#102): как toValidClassName,
- * но префикс Entity вместо Migration (миграции не трогаем).
+ * Valid TS entity class identifier (#102): like toValidClassName,
+ * but with Entity prefix instead of Migration (migrations untouched).
  */
 export function toValidEntityClassName(input: string): string {
   const name = toPascalCase(input);
@@ -619,12 +623,12 @@ export function toValidEntityClassName(input: string): string {
 }
 
 /**
- * Создаёт файл сущности по спецификации: сначала полная валидация (#24),
- * затем запись с защитой от перезаписи существующего файла.
+ * Creates an entity file from a spec: full validation first (#24),
+ * then write with protection against overwriting an existing file.
  *
- * `filePath` — явный путь (используется CLI-мастером, чтобы pre-check
- * коллизии и фактическая запись гарантированно указывали на один файл);
- * по умолчанию имя файла выводится из имени таблицы.
+ * `filePath` — explicit path (used by CLI wizard so that pre-check
+ * collision and actual write guaranteed point to the same file);
+ * by default file name derived from table name.
  */
 export function createEntityFileFromSpec(
   dir: string,

@@ -4,49 +4,51 @@ import type { YdbEntityAppScope } from '../metadata/entity-registry.js';
 import type { YdbOrmScope } from '../core/orm-scope.js';
 
 /**
- * Состояние одного экземпляра YdbCoreModule (создаётся в forRootAsync и
- * живёт в замыкании его провайдеров). Хранит опции, ссылку на драйвер,
- * созданный самим модулем — его модуль закрывает при graceful shutdown —
- * и скоуп сущностей этого приложения (#142).
+ * State of a single YdbCoreModule instance (created in forRootAsync and
+ * living in the closure of its providers). Holds the options, the driver
+ * created by the module itself — which the module closes on graceful
+ * shutdown — and the entity scope of this application (#142).
  */
 export interface CoreModuleState {
   options?: YdbModuleOptions;
-  /** Драйвер, созданный самим модулем. Если драйвер подменён снаружи
-   * (overrideProvider/useValue), поле остаётся undefined и не закрывается. */
+  /** Driver created by the module itself. If the driver is replaced from
+   * outside (overrideProvider/useValue), the field stays undefined and is
+   * not closed. */
   ownedDriver?: Driver;
-  /** Сущности ЭТОГО приложения: их привязывают провайдеры forFeature через
-   * DI-токен YDB_CORE_SCOPE, поэтому чужие приложения сюда не попадают. */
+  /** Entities of THIS application: forFeature providers bind them through
+   * the YDB_CORE_SCOPE DI token, so foreign applications never get here. */
   readonly entityScope: YdbEntityAppScope;
-  /** Имя конфигурации (#199): 'default' или пользовательское. */
+  /** Configuration name (#199): 'default' or a custom one. */
   readonly name: string;
-  /** Скоуп ORM-конфигурации (#199): владение сущностями и per-scope
-   * настройки транзакций. Освобождается при shutdown приложения. */
+  /** ORM configuration scope (#199): entity ownership and per-scope
+   * transaction settings. Released on application shutdown. */
   readonly ormScope: YdbOrmScope;
 }
 
 /**
- * Защита от двойного forRootAsync (#93) и учёт независимых конфигураций
- * (#199): повторный импорт с ТЕМ ЖЕ именем молча создавал бы второй
- * Driver/executor/credentials-провайдер, а из-за per-class runtime
- * Active Record («последний wins») сущности могли разъехаться по разным
- * executor-ам. Конфигурации с РАЗНЫМИ именами допустимы и изолированы.
+ * Protection against a double forRootAsync (#93) and tracking of
+ * independent configurations (#199): a repeated import with THE SAME name
+ * would silently create a second Driver/executor/credentials provider, and
+ * because of the per-class Active Record runtime ("last wins") entities
+ * could end up spread across different executors. Configurations with
+ * DIFFERENT names are allowed and isolated.
  *
- * Учёт экземпляров lifecycle-aware, а не «навсегда»: экземпляр регистрируется,
- * когда DI резолвит YDB_OPTIONS (момент компиляции модуля — раньше любого хука),
- * и снимается с учёта в onApplicationShutdown. Поэтому последовательные
- * бутстрапы (тесты, hot-restart) разрешены, а два живых одновременно
- * с одним именем — нет.
+ * Instance tracking is lifecycle-aware, not "forever": an instance is
+ * registered when DI resolves YDB_OPTIONS (module compilation time —
+ * before any hook) and unregistered in onApplicationShutdown. Sequential
+ * bootstraps (tests, hot-restart) are therefore allowed, but two live
+ * instances under the same name at once are not.
  *
- * Это детекция именно in-process дубликатов: гонки DDL между репликами
- * решаются безопасным поведением самого schema sync (DescribeTable перед DDL),
- * здесь они не эмулируются.
+ * This detects only in-process duplicates: DDL races between replicas are
+ * resolved by the safe behavior of schema sync itself (DescribeTable
+ * before DDL); they are not emulated here.
  */
 const activeCoreModules = new Set<CoreModuleState>();
 
 /**
- * Регистрирует инициализацию ядра. Если в процессе уже живёт другой
- * экземпляр с тем же именем конфигурации — бросает понятную ошибку
- * вместо тихого создания второго драйвера.
+ * Registers a core initialization. If another instance with the same
+ * configuration name is already live in this process, throws a clear error
+ * instead of silently creating a second driver.
  */
 export function claimCoreModuleInit(state: CoreModuleState): void {
   for (const existing of activeCoreModules) {
@@ -66,9 +68,9 @@ export function claimCoreModuleInit(state: CoreModuleState): void {
   activeCoreModules.add(state);
 }
 
-/** Снимает экземпляр с учёта (идемпотентно). Скоуп сущностей живёт в
- * состоянии экземпляра и уходит в GC вместе с ним — глобально чистить
- * нечего (#142). */
+/** Unregisters an instance (idempotent). The entity scope lives in the
+ * instance's state and is GC'd together with it — there is nothing to
+ * clean globally (#142). */
 export function releaseCoreModuleInit(state: CoreModuleState): void {
   activeCoreModules.delete(state);
 }

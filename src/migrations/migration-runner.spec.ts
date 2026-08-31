@@ -31,7 +31,7 @@ interface StatefulExecutor {
   rows: Map<string, StoreRow>;
 }
 
-/** Колоночное состояние таблицы учёта для реалистичной модели ALTER (#186). */
+/** Column state of the bookkeeping table for a realistic ALTER model (#186). */
 interface BookkeepingSchema {
   hash: boolean;
   state: boolean;
@@ -48,7 +48,7 @@ const paramString = (param: unknown, fallback = ''): string => {
   return typeof value === 'string' ? value : fallback;
 };
 
-/** Ключ строки (id): Int64 приходит как bigint. */
+/** Row key (id): Int64 arrives as a bigint. */
 const paramKey = (param: unknown): string => {
   const value = paramValue(param);
   if (typeof value === 'bigint' || typeof value === 'number') {
@@ -58,23 +58,23 @@ const paramKey = (param: unknown): string => {
 };
 
 /**
- * Stateful мок executor с PK-уникальностью: имитирует таблицу учёта
- * миграций и атомарность PRIMARY KEY на INSERT (для теста гонок).
+ * Stateful mock executor with PK uniqueness: simulates the migrations
+ * bookkeeping table and PRIMARY KEY atomicity on INSERT (for the race test).
  */
 function createStatefulExecutor(
   options: {
-    /** Начальные строки таблицы учёта. */
+    /** Initial bookkeeping table rows. */
     rows?: (Partial<AppliedMigration> & { timestamp: number })[];
-    /** SELECT-проба legacy-колонок падает (таблица старого формата). */
+    /** The SELECT probe for legacy columns fails (legacy-format table). */
     failProbe?: boolean;
-    /** Внедрить сбой на конкретный SQL. */
+    /** Inject a failure on a specific SQL. */
     failOn?: (sql: string) => Error | undefined;
-    /** Общее хранилище для нескольких раннеров (тест гонок). */
+    /** Shared storage for several runners (race test). */
     store?: Map<string, StoreRow>;
     /**
-     * Общее колоночное состояние таблицы учёта (#186). При заданном schema
-     * мок моделирует реальный ALTER: колонка добавляется ровно один раз,
-     * повторная попытка падает на дубликате (как в YDB).
+     * Shared column state of the bookkeeping table (#186). With a given schema
+     * the mock models a real ALTER: a column is added exactly once, and a
+     * repeated attempt fails on the duplicate (like in YDB).
      */
     schema?: BookkeepingSchema;
   } = {},
@@ -101,8 +101,8 @@ function createStatefulExecutor(
     if (sql.startsWith('CREATE TABLE')) return [];
     if (sql.startsWith('SELECT `hash`')) {
       if (schema) {
-        // Реалистичная модель: проба читает hash/state и валится, пока
-        // хотя бы одной колонки нет.
+        // Realistic model: the probe reads hash/state and fails until
+        // at least one of the columns is missing.
         if (!schema.hash || !schema.state) {
           throw new Error('column `hash` was not found');
         }
@@ -211,8 +211,8 @@ const insertQueries = (mock: StatefulExecutor) =>
   mock.queries.filter((q) => q.sql.startsWith('INSERT INTO'));
 
 /**
- * Барьер на N участников (#186): каждый вызвавший arrive() ждёт, пока
- * не подойдут все — детерминированная точка встречи для теста гонки.
+ * Barrier over N participants (#186): every caller of arrive() waits until
+ * all reach it — a deterministic meeting point for the race test.
  */
 const makeBarrier = (count: number): (() => Promise<void>) => {
   let arrived = 0;
@@ -244,8 +244,9 @@ describe('YdbMigrationRunner (#101)', () => {
     });
 
     it('#186 no-driver runner propagates probe failure without any ALTER', async () => {
-      // Раннер без driver не может подтвердить «колонки нет» по DescribeTable,
-      // поэтому ALTER после произвольного падения SELECT запрещён (#186).
+      // A runner without a driver cannot confirm via DescribeTable that the
+      // column is missing, so ALTER after an arbitrary SELECT failure is
+      // forbidden (#186).
       const mock = createStatefulExecutor({ failProbe: true });
       const runner = new YdbMigrationRunner(mock.executor);
 
@@ -291,7 +292,7 @@ describe('YdbMigrationRunner (#101)', () => {
       ).toHaveLength(0);
     });
 
-    /** Колонки таблицы учёта для DescribeTable-шва (#176). */
+    /** Bookkeeping columns for the DescribeTable seam (#176). */
     const bookkeepingColumns = (hasHash: boolean, hasState: boolean) =>
       new Map<string, unknown>([
         ['id', 3],
@@ -356,7 +357,7 @@ describe('YdbMigrationRunner (#101)', () => {
         mock1.queries.filter((q) => q.sql.startsWith('ALTER TABLE')),
       ).toHaveLength(1);
 
-      // Первый ALTER (`hash`) прошёл; повторный запуск добавляет только `state`.
+      // The first ALTER (`hash`) passed; the rerun adds only `state`.
       hasHash = true;
       const mock2 = createStatefulExecutor({ store });
       const second = new YdbMigrationRunner(
@@ -517,7 +518,7 @@ describe('YdbMigrationRunner (#101)', () => {
     });
 
     it('ensures the table only once per runner instance (#101)', async () => {
-      // Раньше ensureMigrationsTable выполнялся перед каждым чтением
+      // Previously ensureMigrationsTable ran before every read
       const mock = createStatefulExecutor({
         rows: [{ timestamp: 1000, name: '1-First' }],
       });
@@ -535,8 +536,8 @@ describe('YdbMigrationRunner (#101)', () => {
 
   describe('stable identity', () => {
     it('skips an applied migration even after its file was renamed', async () => {
-      // Раньше сопоставление шло только по имени: переименование файла
-      // приводило к повторному применению up()
+      // Previously matching was done only by name: renaming a file
+      // caused up() to be re-applied
       const hash = sha256('create users');
       const mock = createStatefulExecutor({
         rows: [{ timestamp: 1000, name: '100-OldName', hash }],
@@ -552,7 +553,7 @@ describe('YdbMigrationRunner (#101)', () => {
 
     it('matches legacy records without hash by name (backwards compat)', async () => {
       const mock = createStatefulExecutor({
-        rows: [{ timestamp: 1000, name: '1-First' }], // запись старого формата
+        rows: [{ timestamp: 1000, name: '1-First' }], // legacy-format record
       });
       const runner = new YdbMigrationRunner(mock.executor);
       const m1 = migrationFactory('1-First', { hash: sha256('first') });
@@ -584,8 +585,8 @@ describe('YdbMigrationRunner (#101)', () => {
       const idOf = (hash: string) =>
         deriveMigrationRowId(migrationIdentity({ hash } as YdbMigration));
 
-      // Одинаковая идентичность → одинаковый id у любых процессов:
-      // на этом строится атомарный claim через PRIMARY KEY
+      // Same identity → the same id in any process:
+      // this underpins the atomic claim via the PRIMARY KEY
       expect(idOf('h1')).toBe(idOf('h1'));
       expect(idOf('h1')).not.toBe(idOf('h2'));
       expect(Number.isSafeInteger(idOf('h1'))).toBe(true);
@@ -656,7 +657,7 @@ describe('YdbMigrationRunner (#101)', () => {
       const claimIdx = mock.queries.indexOf(inserts[0]);
       expect(upIdx).toBeGreaterThan(claimIdx);
 
-      // claim пишет маркер started и стабильную идентичность до up()
+      // The claim writes the started marker and stable identity before up()
       expect(String(inserts[0].params.state.value)).toBe('started');
       expect(String(inserts[0].params.name.value)).toBe('1-First');
       const updateAfterUp = mock.queries.find((q) =>
@@ -677,11 +678,11 @@ describe('YdbMigrationRunner (#101)', () => {
       ).rejects.toThrow(/failed mid-way and was left in "started" state/);
       expect(failing.up).toHaveBeenCalledTimes(1);
 
-      // Маркер частичного применения остался в таблице
+      // The partial-application marker remains in the table
       const [marker] = [...first.rows.values()];
       expect(marker.state).toBe('started');
 
-      // Повторный запуск отказывается выполнять миграцию заново вслепую
+      // A rerun refuses to re-execute the migration blindly
       const retry = migrationFactory('1-Broken');
       const second = createStatefulExecutor({ store: first.rows });
       await expect(
@@ -701,7 +702,7 @@ describe('YdbMigrationRunner (#101)', () => {
         () => null,
         (error: Error) => error,
       );
-      // Исходная ошибка не потеряна: доступна как cause обёртки
+      // The original error is not lost: available as the wrapper's cause
       expect(failure).toBeInstanceOf(Error);
       expect(failure!.message).toMatch(/failed mid-way/);
       expect((failure as any).cause).toBe(boom);
@@ -709,7 +710,7 @@ describe('YdbMigrationRunner (#101)', () => {
       await runner.markMigrationApplied('1-Broken');
       expect([...mock.rows.values()][0].state).toBe('applied');
 
-      // Следующий run больше не пытается её выполнить
+      // The next run no longer tries to execute it
       const again = migrationFactory('1-Broken');
       const executed = await new YdbMigrationRunner(mock.executor).run([
         again.migration,
@@ -731,7 +732,8 @@ describe('YdbMigrationRunner (#101)', () => {
       await runner.removeMigrationRecord('1-Broken');
       expect(mock.rows.size).toBe(0);
 
-      // Пользователь явно решил откатить схему — миграция применится заново
+      // The user explicitly decided to roll the schema back — the migration
+      // will be applied again
       const fixed = migrationFactory('1-Broken');
       const executed = await new YdbMigrationRunner(mock.executor).run([
         fixed.migration,
@@ -770,9 +772,9 @@ describe('YdbMigrationRunner (#101)', () => {
 
   describe('concurrent runners', () => {
     it('applies a contested migration exactly once (DB-level atomicity)', async () => {
-      // Общее хранилище = одна БД; два независимых процесса-раннера.
-      // id строки детерминирован идентичностью миграции, поэтому оба
-      // процесса претендуют на одну строку и сталкиваются на PK.
+      // Shared storage = one DB; two independent runner processes.
+      // The row id is deterministic from the migration identity, so both
+      // processes claim the same row and collide on the PK.
       const store = new Map<string, StoreRow>();
       const mkExecutor = () => createStatefulExecutor({ store }).executor;
       const runnerA = new YdbMigrationRunner(mkExecutor());
@@ -803,7 +805,7 @@ describe('YdbMigrationRunner (#101)', () => {
         (r): r is PromiseRejectedResult => r.status === 'rejected',
       );
 
-      // Победитель применил миграцию, проигравший упал на своём claim
+      // The winner applied the migration, the loser failed on its own claim
       expect(fulfilled).toHaveLength(1);
       expect(fulfilled[0].value).toEqual(['1-Contested']);
       expect(rejected).toHaveLength(1);
@@ -811,7 +813,7 @@ describe('YdbMigrationRunner (#101)', () => {
         /another migration process is likely running concurrently/,
       );
 
-      // up() выполнился ровно один раз — двойного применения нет
+      // up() ran exactly once — no double application
       expect(mA.up.mock.calls.length + mB.up.mock.calls.length).toBe(1);
 
       const records = [...store.values()];
@@ -822,8 +824,8 @@ describe('YdbMigrationRunner (#101)', () => {
 
   describe('revert consistency', () => {
     it('refuses to revert a record left "started" by an interrupted up()', async () => {
-      // Сбой посреди up() оставил маркер started; revert() не должен
-      // вслепую выполнять down() по частично применённой схеме
+      // A failure mid-up() left a started marker; revert() must not
+      // blindly run down() against a partially applied schema
       const mock = createStatefulExecutor();
       const runner = new YdbMigrationRunner(mock.executor);
       const broken = migrationFactory('1-Broken', {
@@ -840,12 +842,12 @@ describe('YdbMigrationRunner (#101)', () => {
       );
       expect(m.down).not.toHaveBeenCalled();
 
-      // Запись не изменена: состояние разрешается только явно
+      // The record is unchanged: the state is resolved only explicitly
       expect([...mock.rows.values()][0].state).toBe('started');
     });
 
     it('refuses to re-revert after a failed down() left "started"', async () => {
-      // Первая попытка отката упала посреди down(): запись осталась started
+      // The first rollback attempt failed mid-down(): the record stayed started
       const mock = createStatefulExecutor({
         rows: [{ timestamp: 1000, name: '1-First' }],
       });
@@ -857,14 +859,14 @@ describe('YdbMigrationRunner (#101)', () => {
         /Revert of "1-First" failed mid-way/,
       );
 
-      // Повторный revert() отказывается вызывать down() ещё раз
+      // A repeated revert() refuses to call down() again
       const retry = migrationFactory('1-First');
       await expect(
         new YdbMigrationRunner(mock.executor).revert([retry.migration]),
       ).rejects.toThrow(/Cannot revert "1-First"[\s\S]*"started" state/);
       expect(retry.down).not.toHaveBeenCalled();
 
-      // После явного восстановления revert работает как обычно
+      // After an explicit repair, revert works as usual
       await runner.markMigrationApplied('1-First');
       const afterRepair = migrationFactory('1-First');
       const reverted = await new YdbMigrationRunner(mock.executor).revert([
@@ -892,7 +894,7 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(m2.down).toHaveBeenCalled();
       expect(m1.down).not.toHaveBeenCalled();
 
-      // Порядок: маркер намерения → down() → удаление записи
+      // Order: intent marker → down() → record deletion
       const startIdx = mock.queries.findIndex((q) =>
         q.sql.startsWith('UPDATE'),
       );
@@ -902,7 +904,7 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(
         mock.queries.find((q) => q.sql.startsWith('DELETE')),
       ).toBeDefined();
-      expect(mock.rows.size).toBe(1); // осталась только 1-First
+      expect(mock.rows.size).toBe(1); // only 1-First remains
     });
 
     it('keeps the record when down() fails mid-way', async () => {
@@ -919,15 +921,15 @@ describe('YdbMigrationRunner (#101)', () => {
       );
       expect(broken.down).toHaveBeenCalledTimes(1);
 
-      // Запись не молча осталась «применённой»: состояние started
+      // The record did not silently remain "applied": state is started
       const [row] = [...mock.rows.values()];
       expect(row.name).toBe('1-Broken');
       expect(row.state).toBe('started');
     });
 
     it('keeps the record when the delete after down() fails', async () => {
-      // Раньше: down() прошёл, DELETE записи упал — миграция оставалась
-      // recorded как применённая, хотя схема уже откачена.
+      // Previously: down() passed, the record DELETE failed — the migration
+      // stayed recorded as applied even though the schema was already reverted.
       const mock = createStatefulExecutor({
         rows: [{ timestamp: 1000, name: '1-Reverted' }],
         failOn: (sql) =>
@@ -991,7 +993,7 @@ describe('YdbMigrationRunner (#101)', () => {
         },
         {
           name: '2-Interrupted',
-          // #212: прерванная миграция не считается применённой.
+          // #212: an interrupted migration is not considered applied.
           applied: false,
           appliedAt: new Date(2000),
           interrupted: true,
@@ -1023,8 +1025,8 @@ describe('YdbMigrationRunner (#101)', () => {
     });
 
     it('marks a record whose content changed after apply (#152)', async () => {
-      // Запись учёта осталась от старого содержимого; файл миграции
-      // теперь с другим хешем — сопоставление по имени даёт 'changed'.
+      // The record is left from the old content; the migration file
+      // now has a different hash — name-based matching yields 'changed'.
       const mock = createStatefulExecutor({
         rows: [
           {
@@ -1043,7 +1045,7 @@ describe('YdbMigrationRunner (#101)', () => {
       expect(statuses).toEqual([
         {
           name: '1-Edited',
-          // #212: содержимое изменилось — это не «здорово применённая».
+          // #212: the content changed — this is not a "healthy applied".
           applied: false,
           appliedAt: new Date(5000),
           interrupted: false,
@@ -1123,7 +1125,7 @@ describe('YdbMigrationRunner (#101)', () => {
 
       expect(status.contentChanged).toBe(true);
       expect(status.interrupted).toBe(false);
-      // Нормальное «здорово применено» такому статусу не подходит.
+      // A normal "healthy applied" does not match such a status.
       expect(
         status.applied && !status.contentChanged && !status.interrupted,
       ).toBe(false);
@@ -1146,7 +1148,7 @@ describe('YdbMigrationRunner (#101)', () => {
 
     const inserts = insertQueries(mock);
     expect(inserts).toHaveLength(2);
-    // id детерминирован хешем содержимого
+    // The id is deterministic from the content hash
     expect(String(inserts[0].params.id.value)).toBe(
       String(deriveMigrationRowId(hashA)),
     );

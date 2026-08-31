@@ -8,8 +8,8 @@ import {
 let uniqueNameCounter = 0;
 
 /**
- * Создаёт класс сущности с гарантированно уникальным именем, чтобы тесты
- * не зависели от глобального состояния реестра токенов между собой.
+ * Creates an entity class with a guaranteed unique name so the tests don't
+ * depend on the global token registry state across each other.
  */
 function makeNamedEntityClass(nameSuffix?: string): typeof YdbBaseEntity {
   const name = `TokenSpec_${nameSuffix ?? ++uniqueNameCounter}`;
@@ -23,7 +23,7 @@ function makeNamedEntityClass(nameSuffix?: string): typeof YdbBaseEntity {
 }
 
 describe('getRepositoryToken / getActiveRecordInitToken (issue #94)', () => {
-  it('один класс всегда даёт один и тот же токен (идемпотентность)', () => {
+  it('same class always yields the same token (idempotency)', () => {
     const Entity = makeNamedEntityClass();
 
     for (let i = 0; i < 3; i++) {
@@ -33,7 +33,7 @@ describe('getRepositoryToken / getActiveRecordInitToken (issue #94)', () => {
       expect(arToken).toBe(getActiveRecordInitToken(Entity as any));
     }
 
-    // Исторический формат для первого класса с данным именем
+    // Historical format for the first class with a given name
     expect(getRepositoryToken(Entity as any)).toBe(
       `YDB_REPOSITORY_${Entity.name}`,
     );
@@ -42,7 +42,7 @@ describe('getRepositoryToken / getActiveRecordInitToken (issue #94)', () => {
     );
   });
 
-  it('одноимённые классы получают разные токены без перезаписи', () => {
+  it('same-named classes get different tokens without overwriting', () => {
     const first = makeNamedEntityClass('Collision');
     const second = makeNamedEntityClass('Collision');
 
@@ -58,13 +58,13 @@ describe('getRepositoryToken / getActiveRecordInitToken (issue #94)', () => {
     expect(firstAr).not.toBe(secondAr);
   });
 
-  it('порядок регистрации не влияет на стабильность токенов класса', () => {
+  it('registration order does not affect token stability for a class', () => {
     const a1 = makeNamedEntityClass('Order');
     const b1 = makeNamedEntityClass('Order');
     const a2 = makeNamedEntityClass('Order');
     const b2 = makeNamedEntityClass('Order');
 
-    // Токены не меняются после регистрации новых одноимённых классов
+    // Tokens don't change after registering new same-named classes
     expect(getRepositoryToken(a1 as any)).toBe(getRepositoryToken(a1 as any));
     expect(getRepositoryToken(a1 as any)).not.toBe(
       getRepositoryToken(b1 as any),
@@ -80,15 +80,15 @@ describe('getRepositoryToken / getActiveRecordInitToken (issue #94)', () => {
     expect(tokens.size).toBe(4);
   });
 
-  it('AR_INIT-токен согласован между фабрикой провайдера и inject модуля', () => {
-    // Обе стороны обязаны строить токен одной функцией — иначе рассинхрон строк.
+  it('AR_INIT token is consistent between provider factory and module inject', () => {
+    // Both sides must build the token using the same function — otherwise string mismatch.
     const Entity = makeNamedEntityClass();
     const arToken = getActiveRecordInitToken(Entity as any);
     expect(arToken).toContain('_AR_INIT');
     expect(getActiveRecordInitToken(Entity as any)).toBe(arToken);
   });
 
-  it('класс без имени получает валидный и уникальный токен', () => {
+  it('unnamed class gets a valid and unique token', () => {
     @YdbEntity('token_spec_anonymous')
     class Anonymous extends YdbBaseEntity {
       @YdbPrimaryColumn('Uuid')

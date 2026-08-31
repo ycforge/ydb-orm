@@ -11,7 +11,7 @@ import type { AppliedMigration } from '../migrations/migration-runner.js';
 import type { MigrationBookkeepingSnapshot } from '../migrations/migration-bookkeeping.js';
 import type { YdbSchemaIssue } from '../schema/schema-sync.js';
 
-/** Мок executor-а: записывает каждый SQL и отдаёт заданные строки. */
+/** Executor mock: records each SQL and returns the given rows. */
 function makeRecordingExecutor(resultRows: Record<string, unknown>[] = []) {
   const executedSql: string[] = [];
 
@@ -48,9 +48,9 @@ function makeRecordingExecutor(resultRows: Record<string, unknown>[] = []) {
   return {
     executor: executor as unknown,
     executedSql,
-    /** Ни один SQL не выполнялся — значит, точно не было и DDL. */
+    /** No SQL was executed at all — so certainly no DDL happened. */
     expectNoSqlAtAll: () => expect(executor).not.toHaveBeenCalled(),
-    /** SQL был, но среди него нет ни одного DDL/DML-оператора. */
+    /** SQL happened, but among them there is no DDL/DML statement. */
     expectNoDdlOrDml: () => {
       for (const sql of executedSql) {
         expect(sql.toUpperCase()).not.toMatch(
@@ -79,9 +79,9 @@ function recordFromRow(row: RowSpec, id: number): AppliedMigration {
 }
 
 /**
- * Шов inspectBookkeeping: снимок собирается из строк таблицы учёта
- * БЕЗ обращения к executor-у — как и в реальном read-only потоке,
- * где метаданные берутся через DescribeTable.
+ * inspectBookkeeping seam: the snapshot is assembled from bookkeeping-table
+ * rows WITHOUT touching the executor — as in the real read-only path,
+ * where metadata comes via DescribeTable.
  */
 function makeInspect(
   rows: RowSpec[] = [],
@@ -121,7 +121,7 @@ function makeIo(): MigrationVerifyIo & {
   return io;
 }
 
-/** Миграция с замоканными up/down (типизировано как свойства — для expect). */
+/** Migration with mocked up/down (typed as properties — for expect). */
 type MockMigration = Omit<YdbMigration, 'up' | 'down'> & {
   up: jest.Mock<() => Promise<void>>;
   down: jest.Mock<() => Promise<void>>;
@@ -196,10 +196,10 @@ describe('runMigrationVerification (#152)', () => {
       'Up to date: 1 migration(s) applied',
     );
     expect(io.stderrLines).toEqual([]);
-    // Проверка не выполняет миграций: ни up(), ни down().
+    // Verification does not run migrations: neither up() nor down().
     expect(migrations[0].up).not.toHaveBeenCalled();
     expect(migrations[0].down).not.toHaveBeenCalled();
-    // Состояние читается через снимок (DescribeTable), без SQL к учёту.
+    // State is read through the snapshot (DescribeTable), without SQL to the bookkeeping.
     expect(inspect).toHaveBeenCalledTimes(1);
     mock.expectNoSqlAtAll();
   });
@@ -226,7 +226,7 @@ describe('runMigrationVerification (#152)', () => {
     expect(errText).toContain('Pending migrations (2/2):');
     expect(errText).toContain('- 1-Pending');
     expect(errText).toContain('Not ready: pending migrations');
-    // Успех не печатается при неудаче.
+    // Success is not printed on failure.
     expect(io.stdoutLines.join('\n')).not.toContain('Up to date');
     mock.expectNoSqlAtAll();
   });
@@ -332,10 +332,10 @@ describe('runMigrationVerification (#152)', () => {
     expect(errText).toContain(
       'Schema differs from entity metadata (1 issue(s)):',
     );
-    // Детальная диагностика сохранена: таблица-заголовок + колонка.
+    // Detailed diagnostics preserved: table header + column.
     expect(errText).toContain('users');
     expect(errText).toContain('is missing column "email"');
-    // Цвет по реальному потоку вывода (stderr TTY) — #103.
+    // Color by the real output stream (stderr TTY) — #103.
     expect(errText).toContain('\x1b[');
     mock.expectNoSqlAtAll();
   });
@@ -386,7 +386,7 @@ describe('runMigrationVerification (#152)', () => {
   });
 
   describe('read-only contract: no DDL/DML from verification commands (#152)', () => {
-    // Матрица из задачи: check / status / show / --json варианты.
+    // Matrix from the task: check / status / show / --json variants.
     const cases: Array<{
       command: 'migration:check' | 'migration:show' | 'migration:status';
       json: boolean;
@@ -401,8 +401,8 @@ describe('runMigrationVerification (#152)', () => {
 
     for (const { command, json } of cases) {
       it(`${command}${json ? ' --json' : ''}: never creates or alters ydb_migrations`, async () => {
-        // Если бы путь ходил в ensureMigrationsTable, executor получил бы
-        // CREATE TABLE IF NOT EXISTS (+ возможный ALTER) — тест падает.
+        // If the path went through ensureMigrationsTable, the executor would
+        // receive CREATE TABLE IF NOT EXISTS (+ possible ALTER) — the test fails.
         const mock = makeRecordingExecutor();
         const io = makeIo();
 
@@ -417,8 +417,8 @@ describe('runMigrationVerification (#152)', () => {
           io,
         });
 
-        // Строгое требование: мутирующий путь не просто «не сработал»,
-        // его нет в execution path вовсе — executor не вызывался ни разу.
+        // Strict requirement: the mutating path is not merely "didn't fire",
+        // it is absent from the execution path entirely — the executor was never called.
         mock.expectNoSqlAtAll();
         mock.expectNoDdlOrDml();
       });
@@ -460,7 +460,7 @@ describe('runMigrationVerification (#152)', () => {
         io,
       });
 
-      // Контракт #152: pending → exit 1; ничего не создано.
+      // #152 contract: pending → exit 1; nothing was created.
       expect(verdict.state).toBe('pending');
       expect(verdict.pending).toEqual(['1-New']);
       expect(io.stdoutLines.join('\n')).toContain(
@@ -705,13 +705,13 @@ describe('runMigrationVerification (#152)', () => {
       }),
     ).rejects.toBe(boom);
 
-    // Тег не ломает сообщение и цепочку cause.
+    // The tag does not break the message or the cause chain.
     expect(boom.message).toBe('connection refused');
     expect((boom as Error & { cause?: Error }).cause?.message).toBe(
       'ECONNREFUSED',
     );
     expect(exitCodeOf(boom)).toBe(5);
-    // Ничего не напечатано как успех.
+    // Nothing printed as a success.
     expect(io.stdoutLines).toEqual([]);
   });
 
@@ -768,7 +768,7 @@ describe('runMigrationVerification (#152)', () => {
       io: makeIo(),
     });
 
-    // Без entities схема не проверяется вовсе.
+    // Without entities the schema is not checked at all.
     const io2 = makeIo();
     const entities = [class Photos {}];
     await runMigrationVerification({
@@ -788,7 +788,7 @@ describe('runMigrationVerification (#152)', () => {
       mock.executor,
       entities,
     );
-    // Готово + схема совпадает.
+    // Ready + schema matches.
     expect(io2.stdoutLines.join('\n')).toContain(
       '; schema matches entity metadata',
     );

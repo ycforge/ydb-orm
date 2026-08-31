@@ -1,26 +1,26 @@
 /**
- * metadata:dump (#37): read-only экспорт метаданных сущностей
- * в детерминированный JSON.
+ * metadata:dump (#37): read-only export of entity metadata
+ * to deterministic JSON.
  *
- * Гарантии:
- *  - НИКАКОГО I/O в БД: ни драйвера, ни executor'а, ни DDL, ни миграций —
- *    функция синхронная и работает только с метаданными классов;
- *  - весь дамп строится до первого байта вывода: невалидные/незарегистрированные
- *    сущности и конфликтующие метаданные роняют команду с понятной ошибкой,
- *    а не дают частичный вывод;
- *  - детерминизм: стабильный порядок сущностей (по имени таблицы), колонок,
- *    индексов, связей, enum-ов и ключей JSON; повторный вызов на тех же
- *    сущностях даёт побайтово одинаковый JSON;
- *  - сериализуются только простые значения: никаких функций, инстансов
- *    классов, циклических ссылок или внутренних объектов фреймворка;
- *  - формат версионируется (format + version) для безопасной эволюции.
+ * Guarantees:
+ *  - NO DB I/O whatsoever: no driver, no executor, no DDL, no migrations —
+ *    the function is synchronous and works only with class metadata;
+ *  - the entire dump is built before the first byte of output: invalid/unregistered
+ *    entities and conflicting metadata fail the command with a clear error,
+ *    rather than producing partial output;
+ *  - determinism: stable order of entities (by table name), columns,
+ *    indexes, relations, enums, and JSON keys; repeated calls on the same
+ *    entities yield byte-identical JSON;
+ *  - only plain values are serialized: no functions, class instances,
+ *    cyclic references, or framework internal objects;
+ *  - format is versioned (format + version) for safe evolution.
  *
- * Реализация использует только канонические точки резолва ORM — обхода
- * декораторов нет: getYdbEntityMetadata, buildExpectedTableSchema
- * (колонки/PK/индексы/TTL + валидация), getYdbRelationsMetadata,
+ * Implementation uses only canonical ORM resolution points — no decorator
+ * walk: getYdbEntityMetadata, buildExpectedTableSchema
+ * (columns/PK/indexes/TTL + validation), getYdbRelationsMetadata,
  * resolveRelationJoinColumn (#87), resolveRelationJoinTableDefinition /
  * getManyToManyJoinTables (#90/#139), getYdbEnumMetadata, getEagerRelations.
- * Семантика наследования #92/#107 наследуется от этих функций автоматически.
+ * Inheritance semantics #92/#107 inherited from these functions automatically.
  */
 
 import type { YdbPrimitive } from '../core/types.js';
@@ -50,22 +50,22 @@ import { getEagerRelations } from '../decorators/eager.decorator.js';
 import { requireEntityMeta } from './migration-verify.js';
 import { compareStrings } from './sort.js';
 
-/** Идентификатор формата дампа (верхнеуровневое поле format). */
+/** Dump format identifier (top-level `format` field). */
 export const METADATA_DUMP_FORMAT = 'ydb-orm/metadata-dump';
 
-/** Версия формата дампа: несовместимые изменения схемы JSON увеличивают её. */
+/** Dump format version: incremented on incompatible JSON schema changes. */
 export const METADATA_DUMP_VERSION = 1;
 
 export interface DumpedColumn {
   name: string;
   type: YdbPrimitive;
-  /** Входит в первичный ключ. */
+  /** Part of the primary key. */
   primary: boolean;
 }
 
 export interface DumpedIndex {
   name: string;
-  /** Колонки индекса — порядок значим (префиксный поиск YDB). */
+  /** Index columns — order is significant (YDB prefix search). */
   columns: string[];
   unique: boolean;
 }
@@ -74,44 +74,44 @@ export interface DumpedTtl {
   column: string;
   /** ISO 8601 duration ("PT2H", "P30D"). */
   interval: string;
-  /** Единица числовой TTL-колонки; отсутствует для Date/Datetime/Timestamp. */
+  /** Numeric TTL column unit; absent for Date/Datetime/Timestamp. */
   unit?: YdbTtlUnit;
 }
 
 export interface DumpedEnum {
   property: string;
-  /** Значения enum — порядок сохранён (семантичен для storage Int32). */
+  /** Enum values — order preserved (semantically significant for Int32 storage). */
   values: string[];
   storage: 'Utf8' | 'Int32';
 }
 
 /**
- * Метаданные шифрования без секретов: только декларативная конфигурация
- * полей. Провайдеры, ключи, salt/secret-материал и runtime-состояние
- * сюда не попадают никогда.
+ * Encryption metadata without secrets: only declarative field
+ * configuration. Providers, keys, salt/secret material and runtime state
+ * are never included.
  */
 export interface DumpedEncryptedField {
   property: string;
   blindIndex: boolean;
-  /** Synthetic-колонка blind index (`{property}_bi`); null, если выключен. */
+  /** Synthetic blind index column (`{property}_bi`); null when disabled. */
   blindIndexColumn: string | null;
-  /** Ленивая дешифровка (@YdbEncrypted({ lazy: true })). */
+  /** Lazy decryption (@YdbEncrypted({ lazy: true })). */
   lazy: boolean;
-  /** Явный AAD-контекст поля; null — используется AAD по умолчанию. */
+  /** Explicit AAD context for the field; null — uses the default AAD. */
   aadOverride: string | null;
 }
 
 export interface DumpedRelationTarget {
-  /** Имя класса целевой сущности. */
+  /** Class name of the target entity. */
   entity: string;
-  /** Имя таблицы целевой сущности. */
+  /** Table name of the target entity. */
   table: string;
 }
 
 /**
- * Ссылка m2m-связи на join-таблицу из верхнеуровневого списка joinTables:
- * side='owner' — @JoinTable объявлен на этой связи; side='inverse' — на
- * противоположной стороне (owner указывает, на какой именно).
+ * M2M relation reference to a join table from the top-level joinTables
+ * list: side='owner' — @JoinTable declared on this relation;
+ * side='inverse' — declared on the opposite side (owner indicates which).
  */
 export interface DumpedJoinTableRef {
   table: string;
@@ -124,36 +124,36 @@ export interface DumpedRelation {
   type: RelationType;
   target: DumpedRelationTarget;
   /**
-   * FK-колонка: для many-to-one/one-to-one — колонка этой сущности,
-   * для one-to-many — колонка целевой сущности. Для many-to-many отсутствует.
+   * FK column: for many-to-one/one-to-one — this entity's column;
+   * for one-to-many — the target entity's column. Absent for many-to-many.
    */
   joinColumn?: string;
-  /** Свойство обратной связи на целевой сущности; null, если не объявлено. */
+  /** Inverse relation property on the target entity; null if not declared. */
   inverseProperty: string | null;
-  /** Только для many-to-many; детали — в верхнеуровневом списке joinTables. */
+  /** Only for many-to-many; details in the top-level joinTables list. */
   joinTable: DumpedJoinTableRef | null;
 }
 
 export interface DumpedEntity {
   className: string;
   table: string;
-  /** PK-колонки в порядке объявления (в YDB порядок PK значим, #89). */
+  /** PK columns in declaration order (YDB PK order is significant, #89). */
   primaryKey: string[];
   columns: DumpedColumn[];
   indexes: DumpedIndex[];
   ttl: DumpedTtl | null;
   enums: DumpedEnum[];
   encryptedFields: DumpedEncryptedField[];
-  /** PK-колонки — участники AAD-строки шифрования. */
+  /** PK columns that participate in the encryption AAD string. */
   aadFields: string[];
-  /** Колонки с автоматической JSON-сериализацией (хранятся как Utf8). */
+  /** Columns with automatic JSON serialization (stored as Utf8). */
   jsonColumns: string[];
-  /** Связи, автоматически подгружаемые при find/findAll (#107). */
+  /** Relations auto-loaded during find/findAll (#107). */
   eagerLoad: string[];
   relations: DumpedRelation[];
 }
 
-/** Физическая join-таблица many-to-many (верхнеуровневый список). */
+/** Physical many-to-many join table (top-level list). */
 export interface DumpedJoinTable {
   table: string;
   joinColumn: string;
@@ -174,20 +174,21 @@ export interface MetadataDump {
 type EntityCtor = new (...args: any[]) => any;
 
 /**
- * Строит дамп метаданных для переданного списка сущностей.
+ * Builds a metadata dump for the given list of entities.
  *
- * Список задаёт состав дампа (обычно config.entities из ydb-orm.config.ts);
- * порядок вывода от него не зависит — сущности сортируются по имени таблицы.
- * Чистая синхронная функция: БД не трогает, ошибок конфигурации не глотает.
+ * The list defines the dump composition (usually config.entities from
+ * ydb-orm.config.ts); output order does not depend on it — entities are
+ * sorted by table name. Pure synchronous function: does not touch the DB
+ * and does not swallow configuration errors.
  */
 export function buildMetadataDump(entities: EntityCtor[]): MetadataDump {
-  // requireEntityMeta падает сразу для класса без собственного @YdbEntity —
-  // иначе остальные канонические функции молча пропустили бы такой класс.
+  // requireEntityMeta fails immediately for a class without its own @YdbEntity —
+  // otherwise other canonical functions would silently pass such a class.
   for (const entity of entities) {
     requireEntityMeta(entity);
   }
 
-  // Повтор класса в списке дедуплицируется (как в buildExpectedSchemas).
+  // Duplicate class in list is deduplicated (like in buildExpectedSchemas).
   const seen = new Set<EntityCtor>();
   const uniqueEntities: EntityCtor[] = [];
   for (const entity of entities) {
@@ -197,11 +198,11 @@ export function buildMetadataDump(entities: EntityCtor[]): MetadataDump {
     }
   }
 
-  // Каноническая валидация модели: дедупликация классов, конфликт имён
-  // таблиц (#92), обязательный PK, валидность TTL против схемы. Все ошибки —
-  // до какого-либо вывода; ожидаемые схемы дальше служат каноническим
-  // источником физических колонок (включая synthetic `{field}_bi`),
-  // индексов с resolved-именами и TTL.
+  // Canonical model validation: class deduplication, table name conflicts
+  // (#92), required PK, TTL validity against schema. All errors —
+  // before any output; expected schemas further serve as the canonical
+  // source of physical columns (including synthetic `{field}_bi`),
+  // indexes with resolved names, and TTL.
   const expectedByTable = new Map(
     buildExpectedSchemas(uniqueEntities).map((schema) => [
       schema.tableName,
@@ -209,8 +210,8 @@ export function buildMetadataDump(entities: EntityCtor[]): MetadataDump {
     ]),
   );
 
-  // Join-таблицы many-to-many: канонический резолв с дедупликацией и
-  // детекцией расходящихся объявлений (#139) — конфликты роняют дамп.
+  // Many-to-many join tables: canonical resolution with deduplication and
+  // detection of conflicting declarations (#139) — conflicts fail the dump.
   const joinTableDefs = getManyToManyJoinTables(uniqueEntities);
 
   const dumpedEntities = uniqueEntities
@@ -233,9 +234,9 @@ function dumpEntity(
   joinTableDefs: ManyToManyJoinTable[],
 ): DumpedEntity {
   const meta = getYdbEntityMetadata(Entity)!;
-  // Ожидаемая схема построена канонически выше (buildExpectedSchemas):
-  // физические колонки (включая synthetic `{field}_bi`), индексы
-  // с resolved-именами и TTL.
+  // Expected schema built canonically above (buildExpectedSchemas):
+  // physical columns (including synthetic `{field}_bi`), indexes
+  // with resolved names, and TTL.
   const expected = expectedByTable.get(meta.tableName)!;
 
   const columns: DumpedColumn[] = Object.entries(expected.columns)
@@ -325,8 +326,8 @@ function dumpRelation(
   };
 
   if (relation.type !== 'many-to-many') {
-    // Тот же строгий резолв, что и в рантайме relations (#87):
-    // невалидный селектор/отсутствие join-колонки — ошибка, а не угаданная строка.
+    // Same strict resolution as in runtime relations (#87):
+    // invalid selector/missing join column — error, not a guessed string.
     dumped.joinColumn = resolveRelationJoinColumn(relation.joinColumn, {
       entityName: Entity.name,
       relationPropertyKey: relation.propertyKey,
@@ -366,12 +367,12 @@ function resolveJoinTableRef(
     (jt) => jt.propertyKey === relation.propertyKey,
   );
   if (ownJoin) {
-    // Канонический резолв объявления (#90/#87): ошибки конфигурации
-    // (нет PK, составной PK, невыводимый тип) роняют дамп.
+    // Canonical declaration resolution (#90/#87): configuration errors
+    // (no PK, composite PK, non-inferrable type) fail the dump.
     const definition = resolveRelationJoinTableDefinition(Entity, relation);
     if (!definition) {
-      // Инвариант: @JoinTable на m2m-связи декорированной сущности всегда
-      // резолвится в определение — undefined здесь невозможен.
+      // Invariant: @JoinTable on an m2m relation of a decorated entity always
+      // resolves to a definition — undefined here is impossible.
       throw new Error(
         `Cannot resolve join table for relation "${relation.propertyKey}" ` +
           `on ${Entity.name} despite a @JoinTable declaration.`,
@@ -380,9 +381,9 @@ function resolveJoinTableRef(
     return { table: definition.tableName, side: 'owner' };
   }
 
-  // Обратная сторона: join-таблица ищется среди определений, владельцами
-  // которых являются сущности текущего дампа. Без совпадения — null
-  // (владелец может не входить в список сущностей этого дампа).
+  // Inverse side: join table is searched among definitions whose owners
+  // are entities in the current dump. No match -> null
+  // (owner may not be in this dump's entity list).
   const TargetCtor = relation.target();
   let candidates = joinTableDefs.filter(
     (def) => def.ownerEntity === TargetCtor && def.inverseEntity === Entity,
@@ -408,20 +409,20 @@ function resolveJoinTableRef(
 }
 
 /**
- * Имя обратного свойства связи, если оно объявлено на целевой сущности.
+ * Inverse relation property name, if declared on the target entity.
  *
- *  - many-to-many: селектор inverseSide резолвится тем же строгим
- *    способом, что и join-колонки (#87): ровно одно чтение свойства,
- *    всё остальное — ошибка конфигурации;
- *  - one-to-many ↔ many-to-one: обратная связь ищется по той же
- *    join-колонке (значение колонки сравнивается с PK, поэтому связь
- *    пары однозначно определяется колонкой);
- *  - one-to-one: обратная one-to-one на целевой сущности (каждая сторона
- *    хранит собственную FK-колонку, поэтому соответствие — по типу и цели).
+ *  - many-to-many: inverseSide selector resolved with the same strict
+ *    method as join columns (#87): exactly one property read,
+ *    everything else — configuration error;
+ *  - one-to-many <-> many-to-one: inverse relation found by the same
+ *    join column (column value compared with PK, so the pair relation
+ *    is uniquely determined by the column);
+ *  - one-to-one: inverse one-to-one on target entity (each side stores
+ *    its own FK column, so matching is by type and target).
  *
- * Необъявленная обратная связь — норма (однонаправленные связи): null,
- * а не ошибка. Невалидные кандидаты пропускаются: их отвергнет проверка
- * самой сущности-владельца с её контекстом.
+ * Undeclared inverse relation is normal (unidirectional relations): null,
+ * not an error. Invalid candidates are skipped: they will be rejected by
+ * the owning entity's own validation with its context.
  */
 function findInverseProperty(
   Entity: EntityCtor,
@@ -441,7 +442,7 @@ function findInverseProperty(
       relationPropertyKey: relation.propertyKey,
     });
   } catch {
-    // Невалидное объявление отвергнет dumpRelation с полным контекстом.
+    // Invalid declaration will be rejected by dumpRelation with full context.
     return null;
   }
 
@@ -480,10 +481,10 @@ function findInverseProperty(
 }
 
 /**
- * Резолвит селектор inverseSide `(target) => target.property` каноническим
- * резолвером property-селекторов (#87) — та же строгость, что у join-колонок:
- * ровно одно чтение свойства, цепочки/вызовы/константы — ошибка с именем
- * сущности и связи.
+ * Resolves the inverseSide selector `(target) => target.property` using the
+ * canonical property selector resolver (#87) — same strictness as join columns:
+ * exactly one property read, chains/calls/constants — error with entity
+ * and relation name.
  */
 function resolveInverseSideProperty(
   Entity: EntityCtor,

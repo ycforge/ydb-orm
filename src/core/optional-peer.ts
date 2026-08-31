@@ -1,11 +1,11 @@
 /**
- * Загружает опциональную peer-зависимость динамическим импортом.
+ * Loads an optional peer dependency via dynamic import.
  *
- * Имя пакета передаётся строковым аргументом (а не литералом в import()),
- * чтобы сборка не требовала установленный пакет.
+ * The package name is passed as a string argument (not a literal in import())
+ * so the build doesn't require the package to be installed.
  *
- * @param name имя пакета (например, 'class-validator')
- * @param hint где пакет нужен (например, 'ClassValidatorProvider')
+ * @param name package name (e.g., 'class-validator')
+ * @param hint where the package is needed (e.g., 'ClassValidatorProvider')
  */
 export async function loadOptionalPeer<T = unknown>(
   name: string,

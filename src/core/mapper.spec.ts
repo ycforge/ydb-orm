@@ -170,7 +170,7 @@ describe('mapToYdb', () => {
     });
 
     it('rejects an unsafe number that would otherwise pass Int64 range', () => {
-      const unsafe = 9007199254740994; // 2^53 + 2, внутри Int64, но number округляет
+      const unsafe = 9007199254740994; // 2^53 + 2, within Int64, but number rounds it
       expect(Number.isSafeInteger(unsafe)).toBe(false);
       expect(BigInt(unsafe)).toBeLessThan(9223372036854775807n);
       expect(() => mapToYdb('Int64', unsafe)).toThrow(/safe integer/);
@@ -264,7 +264,7 @@ describe('mapToYdb', () => {
       const ms = new Date('2026-08-18T12:30:00.123Z');
       const val = mapToYdb('Timestamp', ms) as any;
       expect(val.value).toBe(BigInt(ms.getTime()) * 1000n);
-      // Субмиллисекунды не сохраняются: JS Date не может их нести.
+      // Sub-milliseconds are not preserved: a JS Date cannot carry them.
       expect(val.value % 1000n).toBe(0n);
     });
 

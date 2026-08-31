@@ -1,15 +1,15 @@
 /**
- * Интерактивный мастер entity:create (#24): ввод колонок
- * (имя → тип YDB → PK/encrypted/enum/date-колонки/TTL) и генерация файла.
+ * Interactive entity:create wizard (#24): column input
+ * (name -> YDB type -> PK/encrypted/enum/date columns/TTL) and file generation.
  *
- * Гарантии:
- *  - валидация всех введённых определений ДО записи файла;
- *  - отмена/EOF (Ctrl+D/Ctrl+C) — чистый выход без записи;
- *  - существующий файл никогда не перезаписывается (проверка до старта
- *    мастера и защита в момент записи);
- *  - вне TTY ввод не читается вовсе: команда детерминированно создаёт
- *    шаблон по умолчанию и не зависает в ожидании ответов;
- *  - никаких обращений к БД и DDL — только локальная генерация файла.
+ * Guarantees:
+ *  - validation of all entered definitions BEFORE writing the file;
+ *  - cancel/EOF (Ctrl+D/Ctrl+C) — clean exit without writing;
+ *  - existing file is never overwritten (check before wizard start
+ *    and protection at write time);
+ *  - outside TTY input is not read at all: command deterministically creates
+ *    a default template and does not hang waiting for answers;
+ *  - no DB access or DDL — only local file generation.
  */
 import fs from 'node:fs';
 import { Writable } from 'node:stream';
@@ -38,20 +38,20 @@ const DATE_LIKE_TYPES = new Set<YdbPrimitive>([
 ]);
 
 export interface EntityCreateCommandOptions extends Partial<PromptIo> {
-  /** Директория файла сущности. */
+  /** Entity file directory. */
   dir: string;
   /**
-   * Принудительный режим мастера. По умолчанию мастер запускается только
-   * если input.isTTY — иначе создаётся шаблон по умолчанию без чтения ввода.
+   * Force wizard mode. By default the wizard runs only
+   * when input.isTTY — otherwise a default template is created without reading input.
    */
   interactive?: boolean;
 }
 
 /**
- * Точка входа команды entity:create.
+ * Entry point for the entity:create command.
  *
- * TTY — интерактивный мастер; не-TTY (CI/скрипты/закрытый stdin) — прежнее
- * поведение: шаблон по умолчанию (uuid PK + name), stdin не читается.
+ * TTY — interactive wizard; non-TTY (CI/scripts/closed stdin) — legacy
+ * behavior: default template (uuid PK + name), stdin not read.
  */
 export async function runEntityCreateCommand(
   name: string,
@@ -60,7 +60,7 @@ export async function runEntityCreateCommand(
   const dir = options.dir;
   const output = options.output ?? process.stdout;
 
-  // Коллизия обнаруживается ДО любых вопросов: файл никогда не перезаписывается.
+  // Collision detected BEFORE any questions: file is never overwritten.
   const target = entityFilePath(dir, name);
   if (fs.existsSync(target)) {
     throw new Error(
@@ -73,7 +73,7 @@ export async function runEntityCreateCommand(
     options.interactive ?? Boolean((input as NodeJS.ReadStream).isTTY);
 
   if (!interactive) {
-    // Детерминированный неинтерактивный путь: stdin не читается вообще.
+    // Deterministic non-interactive path: stdin is not read at all.
     return createDefaultEntity(name, dir, target, output);
   }
 
@@ -112,14 +112,14 @@ function createDefaultEntity(
 export interface EntityCreateWizardOptions extends PromptIo {
   name: string;
   dir: string;
-  /** Целевой путь файла (по умолчанию выводится из имени). */
+  /** Target file path (derived from name by default). */
   target?: string;
 }
 
 /**
- * Запускает интерактивный мастер и пишет файл сущности.
- * Бросает PromptCancelledError при EOF/Ctrl+C/Ctrl+D — файл в этом случае
- * гарантированно не создаётся.
+ * Runs the interactive wizard and writes the entity file.
+ * Throws PromptCancelledError on EOF/Ctrl+C/Ctrl+D — file is guaranteed
+ * not to be created in this case.
  */
 export async function runEntityCreateWizard(
   name: string,
@@ -132,7 +132,7 @@ export async function runEntityCreateWizard(
     io.writeLine(`Creating entity ${buildDefaultEntitySpec(name).className}`);
     io.writeLine('(empty column name finishes; Ctrl+C cancels)');
 
-    // Имя таблицы: пустой ввод принимает дефолт; невалидное переспрашивается.
+    // Table name: empty input accepts default; invalid re-prompts.
     const tableName = await askTableName(io, toSnakeCase(name));
 
     const columns: YdbEntityColumnSpec[] = [];
@@ -168,7 +168,7 @@ export async function runEntityCreateWizard(
         column.encrypted = true;
         column.blindIndex = await io.confirm('add blind index?', true);
       } else if (type === 'Utf8' || type === 'Int32') {
-        // Enum имеет смысл только для строковых и целочисленных колонок.
+        // Enum only makes sense for string and integer columns.
         if (await askEnum(io, column)) continue;
         await askDateColumns(io, column, type);
       } else {
@@ -189,7 +189,7 @@ export async function runEntityCreateWizard(
       );
     }
 
-    // TTL предлагается только для date-like колонок (unit не требуется).
+    // TTL offered only for date-like columns (unit not required).
     const dateLikeColumns = columns.filter((c) => DATE_LIKE_TYPES.has(c.type));
     let ttl: YdbEntitySpec['ttl'];
     if (dateLikeColumns.length > 0) {
@@ -214,7 +214,7 @@ export async function runEntityCreateWizard(
       ttl: ttl ?? null,
     };
 
-    // Полная валидация введённых определений ДО записи файла (#24).
+    // Full validation of entered definitions BEFORE writing the file (#24).
     const issues = validateEntitySpec(spec);
     if (issues.length) {
       for (const issue of issues) io.writeLine(`  ! ${issue}`);
@@ -234,7 +234,7 @@ export async function runEntityCreateWizard(
   }
 }
 
-/** Проблема имени колонки или null, если имя допустимо. */
+/** Column name issue or null if name is valid. */
 function columnNameIssue(
   name: string,
   existing: YdbEntityColumnSpec[],
@@ -251,7 +251,7 @@ function columnNameIssue(
   return null;
 }
 
-/** Для date-like колонок предлагает автопростановку create/update времени. */
+/** For date-like columns, offers auto-set create/update timestamps. */
 async function askDateColumns(
   io: PromptReader,
   column: YdbEntityColumnSpec,
@@ -307,9 +307,8 @@ async function askColumnType(
 }
 
 /**
- * Спрашивает enum-опции для колонки. Возвращает true, если ввод невалиден:
- * колонка при этом НЕ добавляется — пользователь вводит её заново
- * с самого начала (с имени).
+ * Asks for enum options for a column. Returns true if input is invalid:
+ * the column is NOT added — user re-enters it from the start (from name).
  */
 async function askEnum(
   io: PromptReader,

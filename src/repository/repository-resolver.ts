@@ -41,8 +41,8 @@ function sameDeps(
 }
 
 /**
- * Возвращает (или создаёт) YdbRepository для сущности из текущих runtime deps.
- * Repository кешируется в entity-runtime и пересоздаётся при смене executor/провайдеров.
+ * Returns (or creates) a YdbRepository for an entity from current runtime deps.
+ * Repository is cached in entity-runtime and recreated when executor/providers change.
  */
 export function getOrCreateRepository<T extends YdbBaseEntity>(
   entityClass: YdbEntityConstructor<T>,

@@ -2,15 +2,15 @@ import type { YdbQuery } from './interfaces.js';
 import type { QueryOptions } from './query-options.js';
 
 /**
- * Применяет QueryOptions к построенному запросу и выполняет его:
- * - signal — отмена (уже абортнутый сигнал — немедленная ошибка);
- * - timeout — таймаут на попытку;
- * - idempotent (#27) — пометка `.idempotent(true)`, разрешающая
- *   retry-политике повторять запрос; без пометки запрос выполняется
- *   ровно один раз.
+ * Applies QueryOptions to a built query and executes it:
+ * - signal — cancellation (an already-aborted signal fails immediately);
+ * - timeout — per-attempt timeout;
+ * - idempotent (#27) — marks the query `.idempotent(true)`, which allows
+ *   the retry policy to repeat it; without the marker the query runs
+ *   exactly once.
  *
- * Единая точка этой логики для persistence и relations — раньше
- * дублировалась в обоих.
+ * Single definition point of this logic for persistence and relations —
+ * previously it was duplicated in both.
  */
 export async function executeYdbQuery<U>(
   query: YdbQuery,

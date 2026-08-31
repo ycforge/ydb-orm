@@ -34,29 +34,29 @@ import {
 } from './resolve-join-table.js';
 import { valueIdentityKey } from '../core/value-identity.js';
 
-/** Канонический value-ключ отношений (#174): Bytes и Date сравниваются
- * по значению, а не по ссылке (гидрация создаёт независимые инстансы
- * Uint8Array/Date — по ссылке валидные связи «не находились»). */
+/** Canonical value key for relations (#174): Bytes and Date are compared by
+ * value, not by reference (hydration creates independent Uint8Array/Date
+ * instances, so by-reference valid relations would go "not found"). */
 function relationKey(value: unknown): string {
   return valueIdentityKey([value]);
 }
 
 /**
- * Зависимости relations-модуля.
+ * Relations module dependencies.
  */
 export interface RelationsDeps {
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
   /**
-   * @internal Общий контекст гидратации одной операции чтения.
-   * Передаётся в persistence связанных сущностей при batch-фетче,
-   * чтобы afterFind сработал ровно один раз на инстанс (см. #83).
+   * @internal Shared hydration context of one read operation.
+   * Passed to the persistence of related entities during batch fetch so that
+   * afterFind fires exactly once per instance (see #83).
    */
   hydrationContext?: HydrationContext;
 }
 
 /**
- * Relations-класс: eager loading, lazy loadRelations, many-to-many.
+ * Relations class: eager loading, lazy loadRelations, many-to-many.
  */
 export class YdbEntityRelations<T extends YdbBaseEntity> {
   constructor(
@@ -65,15 +65,15 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     private readonly options: RelationsDeps = {},
   ) {}
 
-  /** Обновляет executor (вызывается из runtime при смене deps). */
+  /** Updates the executor (called from runtime when deps change). */
   setExecutor(executor: YdbExecutor | undefined): void {
     this.executor = executor;
   }
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor | undefined {
-    // Ambient-контекст транзакций (#98): auto-join / запрет смешивания.
-    // Настройки — из конфигурации-владельца сущности (#199), логгер — тоже
-    // из неё (#206): предупреждения warnOutsideTransaction не эмитятся чужим.
+    // Ambient transaction context (#98): auto-join / no mixing. Settings come
+    // from the entity's owning configuration (#199), and so does the logger
+    // (#206): warnOutsideTransaction warnings are not emitted by a foreign one.
     return resolveOperationExecutor(
       trx,
       this.executor,
@@ -101,7 +101,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Batch-загрузка по колонке IN (...).
+   * Batch loads related entities by an IN (...) column, delegating to the
+   * target's persistence (deduplicating, chunking, and hydration rules apply).
    */
   private async fetchByColumnIn(
     Target: typeof YdbBaseEntity,
@@ -129,33 +130,32 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Batch-загрузка many-to-many: join-таблица + инверсные сущности.
-   * Возвращает Map<owner PK, related entities[]>.
+   * Batch load of many-to-many: join table + inverse entities.
+   * Returns a Map<owner PK, related entities[]>.
    *
-   * Батчинг и guard-ы (#86): пустой список владельцев — ноль запросов;
-   * дубликаты PK владельцев убираются; join-select чанкуется по
-   * MAX_IN_CLAUSE_VALUES (чанки по owner-PK не пересекаются, поэтому
-   * каждый владелец встречается ровно в одном чанке).
+   * Batching and guards (#86): an empty owner list results in zero queries;
+   * duplicate owner PKs are removed; the join select is chunked by
+   * MAX_IN_CLAUSE_VALUES (owner-PK chunks do not overlap, so each owner appears
+   * in exactly one chunk).
    *
-   * Память ограничена (#209) и семантика эквивалентна одному согласованному
-   * чтению (#224): join-таблица читается ровно ОДИН раз на чанк — для
-   * каждого чанка сразу собираются уникальные inverse FK, по ним выбираются
-   * (только ещё не загруженные) инверсные сущности, и результат заполняется.
-   * Полный `links[]` не материализуется, повторного чтения изменяемого
-   * состояния join-таблицы нет — рассинхронизации «pass 1 vs pass 2», когда
-   * ссылка появляется во втором чтении, но отсутствует в собранных FK (и
-   * потому молча теряется), не существует: каждый inverse FK результата
-   * получен ровно из того же чтения, что и его ссылка.
+   * Memory is bounded (#209) and semantics equal a single consistent read
+   * (#224): the join table is read exactly ONCE per chunk — for each chunk the
+   * unique inverse FKs are collected on the fly, the (not-yet-loaded) inverse
+   * entities are fetched by them, and the result is filled in. A full `links[]`
+   * is never materialized and there is no re-read of the mutable join-table
+   * state, so a "pass 1 vs pass 2" desync — a link appearing in the second
+   * read but absent from the collected FKs (and thus silently lost) — cannot
+   * exist: every inverse FK of the result comes from the same read as its link.
    *
-   * Общие инстансы между чанками: инверсные сущности кешируются по PK в
-   * `byInversePk` — один тег, общий для нескольких владельцев в разных
-   * чанках, гидратируется (и получает afterFind) ровно один раз и разделяется
-   * между владельцами по ссылке. Инверсный FK, уже загруженный в другом
-   * чанке, не выбирается повторно (без N+1 и без дублей инстансов).
+   * Shared instances across chunks: inverse entities are cached by PK in
+   * `byInversePk` — one tag shared by several owners in different chunks is
+   * hydrated (and gets afterFind) exactly once and is shared between owners by
+   * reference. An inverse FK already loaded in another chunk is not fetched
+   * again (no N+1, no duplicate instances).
    *
-   * Кардинальность и порядок совпадают с одиночным чтением join-таблицы:
-   * одинаковые (owner, inverse) строки не дедуплицируются, порядок сущностей
-   * владельца — порядок строк его чанка из БД.
+   * Cardinality and ordering match a single read of the join table: identical
+   * (owner, inverse) rows are not deduplicated, and an owner's entity order is
+   * the order of its chunk rows from the DB.
    */
   private async loadManyToManyRelation(
     items: YdbBaseEntity[],
@@ -181,9 +181,9 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     const targetPkField = getPrimaryKey(Target);
 
     const result = new Map<string, YdbBaseEntity[]>();
-    // Общий кеш инверсных сущностей: общий инстанс на PK между чанками.
-    // Растёт до числа различных инверсных сущностей (масштаб результата),
-    // а не до числа повторений ссылок.
+    // Shared cache of inverse entities: one instance per PK across chunks.
+    // It grows up to the number of distinct inverse entities (result scale),
+    // not the number of link repetitions.
     const byInversePk = new Map<string, YdbBaseEntity>();
 
     for (const chunk of chunkInValues(uniqueOwnerPks)) {
@@ -203,7 +203,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       const chunkRows = await this.executeQuery(joinQuery, options);
       const rows = (chunkRows[0] ?? []) as { [key: string]: any }[];
 
-      // Уникальные inverse FK этого чанка (для выборки сущностей).
+      // Unique inverse FKs of this chunk (to fetch the entities).
       const inverseFkValues: any[] = [];
       const seenFk = new Set<string>();
       for (const row of rows) {
@@ -216,8 +216,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
       }
 
-      // Выбираем только те инверсные сущности, которых ещё нет в кеше:
-      // общие инстансы между чанками, без повторной гидратации и без N+1.
+      // Fetch only the inverse entities not yet in the cache: shared instances
+      // across chunks, without re-hydration and without N+1.
       const missing = inverseFkValues.filter(
         (fk) => !byInversePk.has(relationKey(fk)),
       );
@@ -234,8 +234,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
       }
 
-      // Заполняем результат по строкам этого единственного чтения join-
-      // таблицы: порядок и кардинальность — как у базового SELECT'а.
+      // Fill the result from the rows of this single join-table read: ordering
+      // and cardinality match the underlying SELECT.
       for (const row of rows) {
         const ownerFk = row[ownerColumn];
         const inverseFk = row[inverseColumn];
@@ -255,14 +255,14 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Eager loading: батч IN (...) на каждый уровень связи (без N+1).
+   * Eager loading: a batch IN (...) per relation level (no N+1).
    *
-   * Каждая запись @EagerLoad — путь из имён relations, разделённых точкой
-   * (например `tags.owner`). Допустимая длина пути:
-   * - один сегмент — классическая eager-загрузка одного уровня (как до #16);
-   * - несколько сегментов — вложенная загрузка (issue #16): после загрузки
-   *   первого уровня его инстансы становятся «родителями» для следующего
-   *   сегмента, ключи переносятся вперёд батчами.
+   * Each @EagerLoad entry is a path of dot-separated relation names
+   * (for example `tags.owner`). Allowed path lengths:
+   * - one segment — classic single-level eager loading (as before #16);
+   * - several segments — nested loading (issue #16): after the first level is
+   *   loaded, its instances become the "parents" for the next segment, and the
+   *   keys are carried forward by batches.
    */
   async loadEagerRelations(items: T[], options?: QueryOptions): Promise<void> {
     if (!items.length) return;
@@ -277,20 +277,21 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Единый обход relation-пути (#16): рекурсивно загружает сегменты пути по
-   * одному батчу IN (...) на уровень, перенося ключи предыдущего уровня вперёд.
+   * Single traversal of a relation path (#16): recursively loads path segments,
+   * one batch IN (...) per level, carrying the previous level's keys forward.
    *
-   * Для многоуровневых путей afterFind промежуточных инстансов откладывается
-   * (afterFind: false в гидратации) и срабатывает в пост-порядке — после
-   * загрузки собственных детей — через fireAfterFindOn (см. #83/#107).
+   * For multi-level paths, the afterFind of intermediate instances is deferred
+   * (afterFind: false in hydration) and fires in post-order — after their own
+   * children are loaded — via fireAfterFindOn (see #83/#107).
    *
-   * Явный { trx } пробрасывается во ВЕСЬ обход (#16): на время многоуровневого
-   * пути открывается внутренний транзакционный контекст (per-call ambient из
-   * #98), поэтому запросы БЕЗ явного { trx } — включая те, что запускают
-   * afterFind-хуки промежуточных уровней — выполняются через тот же executor
-   * транзакции. Глобальный ambient для этого не нужен и не меняется; новая
-   * транзакция/сессия не создаётся (SDK исполняет повторные вызовы executor'а
-   * транзакции в ней же), commit/rollback остаётся у владельца транзакции.
+   * An explicit { trx } is threaded through the ENTIRE traversal (#16): for the
+   * duration of a multi-level path an internal transaction context is opened
+   * (the per-call ambient from #98), so queries WITHOUT an explicit { trx } —
+   * including those that fire the afterFind hooks of intermediate levels — go
+   * through the same transaction executor. Global ambient is neither needed nor
+   * changed; no new transaction/session is created (the SDK runs repeated
+   * transaction-executor calls in it), and commit/rollback stays with the
+   * transaction owner.
    */
   private async loadRelationPath(
     items: YdbBaseEntity[],
@@ -313,11 +314,11 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       );
     }
 
-    // Внутренний контекст нужен только для многоуровневых путей с явным
-    // { trx }: одноуровневая eager-load и ambient-режим ведут себя как раньше.
+    // The internal context is only needed for multi-level paths with an explicit
+    // { trx }: single-level eager load and ambient mode behave as before.
     if (options?.trx && segments.length > 1) {
-      // Извлекаем transactionId из явного trx (или генерируем и сохраняем его),
-      // чтобы resolveOperationExecutor не ругался на смешивание транзакций.
+      // Extract the transactionId from the explicit trx (or generate and store
+      // one) so resolveOperationExecutor does not complain about mixing transactions.
       const extractedId = getTransactionId(options.trx);
       const transactionId: symbol =
         typeof extractedId === 'symbol' ? extractedId : Symbol('transaction');
@@ -344,7 +345,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     await this.loadRelationSegments(rel, items, segments, options);
   }
 
-  /** Тело обхода пути без управления транзакционным контекстом (#16). */
+  /** The path traversal body, without transaction-context management (#16). */
   private async loadRelationSegments(
     rel: RelationMetadata,
     items: YdbBaseEntity[],
@@ -357,22 +358,22 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
     });
 
     if (isIntermediate) {
-      // Дети этого уровня уже загружены — пост-порядковый afterFind
-      // срабатывает для этого уровня после его потомков.
+      // This level's children are already loaded — post-order afterFind fires
+      // for this level after its descendants.
       await this.loadRelationPath(targets, segments.slice(1), options);
       await this.fireAfterFindOn(targets, options);
     }
   }
 
   /**
-   * Загружает ОДНУ связь для списка инстансов одним (или несколькими
-   * чанками) IN (...) и возвращает свежезагруженные инстансы цели — они
-   * становятся «родителями» следующего уровня вложенного eager-пути (#16).
+   * Loads ONE relation for a list of instances with one (or several chunks of)
+   * IN (...) and returns the freshly loaded target instances — they become the
+   * "parents" of the next level of a nested eager path (#16).
    *
-   * `hydration.afterFind:false` применяется для промежуточных уровней пути,
-   * чтобы их afterFind сработал в пост-порядке (после детей).
-   * `strict` (для публичной loadRelations) сохраняет прежние контракты
-   * ошибок: бросает на undefined PK/FK, тогда как eager-путь их пропускает.
+   * `hydration.afterFind:false` is applied for intermediate path levels so that
+   * their afterFind fires in post-order (after children).
+   * `strict` (for the public loadRelations) preserves the previous error
+   * contracts: it throws on undefined PK/FK, whereas the eager path skips them.
    */
   private async loadRelation(
     items: YdbBaseEntity[],
@@ -402,9 +403,9 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
       }
 
-      // null-PK не входят в IN (...) — их группы и так пусты ([]).
-      // В строгом режиме (публичный loadRelations) всё равно назначаем [],
-      // как было до #16; в eager-пути пустой список ключей — просто skip.
+      // null PKs are left out of the IN (...) — their groups are empty ([]) even
+      // without them. In strict mode (public loadRelations) we still assign [],
+      // as before #16; in the eager path an empty key list is simply skipped.
       const pks = dedupeInValues(
         items
           .map((item) => (item as any)[pkField])
@@ -431,8 +432,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         }
       }
 
-      // Копия массива на инстанс: два инстанса с одним PK не должны
-      // разделять один массив (раньше у каждого был свой findAll).
+      // A copy of the array per instance: two instances sharing one PK must not
+      // share a single array (each used to have its own findAll).
       for (const item of items) {
         const group = byFk.get(relationKey((item as any)[pkField]));
         (item as any)[rel.propertyKey] = group ? [...group] : [];
@@ -473,7 +474,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       );
       if (!pks.length && !strict) return [];
 
-      // Один батч-вызов на ВСЕ инстансы вместо пары запросов на каждый.
+      // One batch call for ALL instances instead of a couple of queries each.
       const related = await this.loadManyToManyRelation(
         items,
         Target,
@@ -488,9 +489,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
         (item as any)[rel.propertyKey] = group ? [...group] : [];
       }
 
-      // Уникальные инстансы целей (по ссылке): один тег, общий для
-      // нескольких владельцев, должен встретиться в следующих уровнях
-      // пути ровно один раз.
+      // Unique target instances (by reference): one tag shared by several
+      // owners must appear in the next path levels exactly once.
       const targets: YdbBaseEntity[] = [];
       const seenInst = new Set<object>();
       for (const group of related.values()) {
@@ -522,8 +522,8 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
       }
     }
 
-    // null-FK не входят в IN (...) — им назначается null, как возвращал
-    // find() по условию «PK = NULL» (пустой результат).
+    // null FKs are left out of the IN (...) — they are assigned null, as
+    // find() with a "PK = NULL" condition would return (empty result).
     const fks = dedupeInValues(
       items
         .map((item) => (item as any)[joinColumnName])
@@ -552,12 +552,12 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Пост-порядковый afterFind для инстансов промежуточного уровня
-   * вложенного eager-пути (#16): срабатывает после их детей.
+   * Post-order afterFind for intermediate-level instances of a nested eager
+   * path (#16): fires after their children.
    *
-   * Persistence создаётся с тем же { trx }, что и загрузка связи (#16-fix):
-   * отложенный afterFind промежуточного уровня не теряет транзакцию
-   * вызывающего — любые DB-операции внутри хуков идут через неё.
+   * Persistence is created with the same { trx } as the relation load
+   * (#16-fix): the deferred afterFind of an intermediate level does not lose
+   * the caller's transaction — any DB operations inside the hooks go through it.
    */
   private async fireAfterFindOn(
     targets: YdbBaseEntity[],
@@ -573,16 +573,16 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 
   /**
-   * Явная загрузка relations для одного или нескольких инстансов.
+   * Explicitly loads relations for one or more instances.
    *
-   * Батчинг (#86): для каждой связи сначала собираются все значения
-   * FK/PK по массиву инстансов, затем выполняется один (или несколько
-   * чанков) IN (...) запрос — как в eager-пути. Раньше каждый тип связи
-   * ходил запросом НА КАЖДЫЙ инстанс: 100 записей = 100–200 запросов.
+   * Batching (#86): for each relation all FK/PK values across the instance list
+   * are collected first, then one (or several chunks of) IN (...) query runs —
+   * as in the eager path. Previously each relation type sent a query PER
+   * INSTANCE: 100 records = 100-200 queries.
    *
-   * Делегирует в общий loadRelation (#16) в строгом режиме: проверяет
-   * неизвестное имя связи и сохраняет прежние контракты ошибок для
-   * undefined PK/FK и отсутствующей join-таблицы.
+   * Delegates to the shared loadRelation (#16) in strict mode: it checks for an
+   * unknown relation name and preserves the previous error contracts for
+   * undefined PK/FK and a missing join table.
    */
   async loadRelations(
     items: T[],
@@ -618,7 +618,7 @@ export class YdbEntityRelations<T extends YdbBaseEntity> {
   }
 }
 
-/** Возвращает первый PK из метаданных. Бросает ошибку, если PK не объявлен. */
+/** Returns the first PK from the metadata. Throws if no PK is declared. */
 function getPrimaryKey(target: typeof YdbBaseEntity): string {
   const meta = getYdbEntityMetadata(target);
   if (!meta?.primaryKeys?.length) {

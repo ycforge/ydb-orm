@@ -6,22 +6,27 @@ import type {
 } from './ydb-validate.interface.js';
 
 /**
- * Безопасный явный дефолт (#95): отсутствующие свойства валидируются.
- * Раньше здесь было жёстко зашито true — @IsNotEmpty/@IsDefined на
- * незаполненных полях молча проходили валидацию при save() нового объекта.
+ * Safe explicit default (#95): missing properties are validated.
+ * Previously this was hardcoded to true — @IsNotEmpty/@IsDefined on
+ * unfilled fields silently passed validation on save() of a new object.
  */
 const DEFAULT_SKIP_MISSING_PROPERTIES = false;
 
-/** Минимальный структурный срез ValidationError из class-validator. */
+/** Minimal structural slice of ValidationError from class-validator. */
 interface ClassValidatorErrorLike {
   property?: string;
   value?: unknown;
   constraints?: Record<string, string>;
   children?: ClassValidatorErrorLike[];
-  /** У настоящей ValidationError есть toString() с человекочитаемым текстом. */
+  /** Real ValidationError has a human-readable toString(). */
   toString?: () => string;
 }
 
+/**
+ * `YdbValidationProvider` backed by `class-validator` (optional peer
+ * dependency). Translates class-validator's `ValidationError` tree into
+ * the structured `YdbValidationErrorItem[]` format.
+ */
 export class ClassValidatorProvider implements YdbValidationProvider {
   private readonly groups?: string[];
   private readonly skipMissingProperties: boolean;
@@ -33,7 +38,7 @@ export class ClassValidatorProvider implements YdbValidationProvider {
   }
 
   async validate(entity: any): Promise<YdbValidationErrorItem[]> {
-    // class-validator — опциональный peer dependency
+    // class-validator is an optional peer dependency
     const mod = await loadOptionalPeer<{
       validate: (
         object: object,
@@ -56,8 +61,8 @@ export class ClassValidatorProvider implements YdbValidationProvider {
 }
 
 /**
- * Разворачивает дерево ValidationError в плоский список структурированных
- * ошибок: property (вложенность — через точку), constraint, message, value.
+ * Flattens a ValidationError tree into a flat list of structured
+ * errors: property (nesting via dot), constraint, message, value.
  */
 function collectIssues(
   errors: ClassValidatorErrorLike[],
@@ -90,7 +95,7 @@ function collectIssues(
       continue;
     }
 
-    // Ни constraints, ни children: аномальный формат ошибки — не теряем её
+    // Neither constraints nor children: anomalous error format — don't drop it
     if (!constraints) {
       out.push({
         property,
@@ -102,7 +107,7 @@ function collectIssues(
   }
 }
 
-/** Безопасная сериализация аномальной ошибки без constraints. */
+/** Safe serialization of an anomalous error without constraints. */
 function describeUnknownError(error: ClassValidatorErrorLike): string {
   const text = error.toString?.();
   if (typeof text === 'string') return text;

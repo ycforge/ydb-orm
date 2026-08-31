@@ -1,25 +1,25 @@
 /**
- * Единый workflow проверки миграций для `migration:check` и
+ * Unified migration verification workflow for `migration:check` and
  * `migration:status` (#152).
  *
- * Команда только ЧИТАЕТ состояние и не выполняет НИКАКОГО DDL:
- *  - существование таблицы учёта `ydb_migrations` определяется через
- *    DescribeTable (readBookkeepingSnapshot); если её нет — база считается
- *    не инициализированной («не применено ничего»), таблица НЕ создаётся;
- *  - записи читаются голым SELECT (без CREATE/ALTER, колонки легаси-таблиц
- *    учитываются без их изменения);
- *  - для сущностей из конфига — DescribeTable через YdbSchemaSyncer.verify.
+ * Command only READS state and performs NO DDL:
+ *  - existence of the `ydb_migrations` bookkeeping table is determined via
+ *    DescribeTable (readBookkeepingSnapshot); if absent — database is
+ *    considered uninitialized ("nothing applied"), table is NOT created;
+ *  - records are read with a raw SELECT (no CREATE/ALTER, legacy table
+ *    columns accounted for without modification);
+ *  - for entities from config — DescribeTable via YdbSchemaSyncer.verify.
  *
- * Различимые состояния и exit-коды см. в
- * migrations/migration-check.ts и cli/exit-codes.ts.
+ * Distinct states and exit codes see in
+ * migrations/migration-check.ts and cli/exit-codes.ts.
  *
- * Вывод:
- *  - текстовый режим: сводка/список — в stdout, проблемы — в stderr,
- *    итоговая строка `Up to date: ...` / `Not ready: ...` по потоку
- *    результата; цвет diff-а схемы определяется по реальному потоку
- *    вывода (stderr), не по stdout (#103);
- *  - `--json`: весь машинночитаемый отчёт — только в stdout, стабильная
- *    схема (без цвета и человеческих формулировок).
+ * Output:
+ *  - text mode: summary/list — to stdout, issues — to stderr,
+ *    final line `Up to date: ...` / `Not ready: ...` per result stream;
+ *    schema diff color determined by actual output stream (stderr), not
+ *    stdout (#103);
+ *  - `--json`: entire machine-readable report — only in stdout, stable
+ *    schema (no color or human wording).
  */
 import type { Driver } from '@ydbjs/core';
 import { YdbExecutor } from '../core/interfaces.js';
@@ -45,19 +45,19 @@ import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { renderSchemaDiff, shouldUseColor } from './diff.js';
 import { EXIT_COMMAND_ERROR, tagExitCode } from './exit-codes.js';
 
-/** Команды, использующие этот workflow. */
+/** Commands that use this workflow. */
 export type MigrationVerifyCommand =
   'migration:check' | 'migration:show' | 'migration:status';
 
-/** Потоки вывода команды: сводки — в stdout, проблемы — в stderr. */
+/** Command output streams: summaries to stdout, issues to stderr. */
 export interface MigrationVerifyIo {
   stdout(line: string): void;
   stderr(line: string): void;
 }
 
 /**
- * Потоки для решения о цвете (#103): по умолчанию реальные
- * process.stdout/process.stderr; в тестах подставляются фейки.
+ * Streams for color decision (#103): by default the real
+ * process.stdout/process.stderr; in tests, fakes are substituted.
  */
 export interface MigrationVerifyStreams {
   stdout?: { isTTY?: boolean | undefined };
@@ -66,15 +66,15 @@ export interface MigrationVerifyStreams {
 
 export interface RunMigrationVerificationOptions {
   command: MigrationVerifyCommand;
-  /** Директория миграций (--dir или из конфига). */
+  /** Migrations directory (--dir or from config). */
   migrationsDir: string;
   /**
-   * Сущности из конфига CLI: если заданы, дополнительно проверяется
-   * схема БД (read-only DescribeTable) — иначе состояние schema-drift
-   * недоступно и в отчёте помечается как не проверявшееся.
+   * Entities from the CLI config: if provided, DB schema is additionally
+   * checked (read-only DescribeTable) — otherwise the schema-drift state
+   * is unavailable and marked as unchecked in the report.
    */
   entities?: (new (...args: any[]) => any)[] | undefined;
-  /** Машинночитаемый вывод: всё в stdout, без цвета. */
+  /** Machine-readable output: everything in stdout, no color. */
   json?: boolean | undefined;
   io: MigrationVerifyIo;
   streams?: MigrationVerifyStreams | undefined;
@@ -83,11 +83,11 @@ export interface RunMigrationVerificationOptions {
     executor: YdbExecutor;
     close: () => void;
   }>;
-  /** Шов для тестов (по умолчанию — загрузка из директории). */
+  /** Test seam (default — load from directory). */
   loadMigrations?: ((dir: string) => Promise<YdbMigration[]>) | undefined;
   /**
-   * Read-only чтение таблицы учёта миграций (#152): DescribeTable + голый
-   * SELECT, без CREATE/ALTER. Шов для тестов.
+   * Read-only inspection of the migration bookkeeping table (#152): DescribeTable
+   * + bare SELECT, no CREATE/ALTER. Test seam.
    */
   inspectBookkeeping?:
     | ((deps: {
@@ -95,7 +95,7 @@ export interface RunMigrationVerificationOptions {
         executor: YdbExecutor;
       }) => Promise<MigrationBookkeepingSnapshot>)
     | undefined;
-  /** Шов для тестов (по умолчанию — YdbSchemaSyncer.verify). */
+  /** Test seam (default — YdbSchemaSyncer.verify). */
   verifySchema?:
     | ((
         driver: Driver,
@@ -106,8 +106,8 @@ export interface RunMigrationVerificationOptions {
 }
 
 /**
- * Возвращает метаданные сущности или падает, если класс не декорирован
- * @YdbEntity (иначе syncer.verify молча пропускает такой класс).
+ * Returns entity metadata or throws if class is not decorated
+ * with @YdbEntity (otherwise syncer.verify silently skips such a class).
  */
 export function requireEntityMeta(entity: any): any {
   const meta = getYdbEntityMetadata(entity);
@@ -133,10 +133,10 @@ function isoOrNull(date?: Date): string | null {
   return date ? date.toISOString() : null;
 }
 
-/** Строка списка `migration:status` для одной миграции (маркеры #101). */
+/** `migration:status` line for a single migration (markers #101). */
 export function renderStatusLine(status: YdbMigrationStatus): string {
   if (status.orphan) {
-    // Применена, но файла миграции больше нет (#101).
+    // Applied, but migration file no longer exists (#101).
     const flags: string[] = [];
     if (status.interrupted) flags.push('interrupted');
     if (status.contentChanged) flags.push('content changed');
@@ -152,7 +152,7 @@ export function renderStatusLine(status: YdbMigrationStatus): string {
     );
   }
   if (status.interrupted) {
-    // Прервана посреди применения/отката (#101).
+    // Interrupted mid-apply/revert (#101).
     return `[~] ${status.name} — interrupted, resolve via migration:repair`;
   }
   if (status.contentChanged) {
@@ -168,14 +168,14 @@ export function renderStatusLine(status: YdbMigrationStatus): string {
 }
 
 /**
- * Выполняет проверку и рендерит отчёт. Бросает исходную ошибку,
- * помеченную exit-кодом EXIT_COMMAND_ERROR (5): цепочка cause сохраняется.
- * Возвращает вердикт — вызывающий код ставит process.exitCode.
+ * Runs verification and renders the report. Throws the original error
+ * tagged with EXIT_COMMAND_ERROR (5): cause chain preserved.
+ * Returns verdict — caller sets process.exitCode.
  *
- * Read-only контракт (#152): состояние таблицы учёта читается через
- * readBookkeepingSnapshot (DescribeTable + голый SELECT, без DDL);
- * YdbMigrationRunner.status с его ensureMigrationsTable() здесь
- * не вызывается никогда.
+ * Read-only contract (#152): bookkeeping table state read via
+ * readBookkeepingSnapshot (DescribeTable + raw SELECT, no DDL);
+ * YdbMigrationRunner.status with its ensureMigrationsTable() never
+ * called here.
  */
 export async function runMigrationVerification(
   options: RunMigrationVerificationOptions,
@@ -204,8 +204,8 @@ export async function runMigrationVerification(
       snapshot = await inspectBookkeeping({ driver, executor });
       statuses = snapshot.exists
         ? computeMigrationStatuses(migrations, snapshot.records)
-        : // Таблицы учёта ещё нет: применено не было ничего — все
-          // миграции из файлов считаются ожидающими; таблица НЕ создаётся.
+        : // Bookkeeping table doesn't exist yet: nothing was applied — all
+          // migrations from files are considered pending; table is NOT created.
           migrations.map((migration) => ({
             name: migrationName(migration),
             applied: false,
@@ -239,7 +239,7 @@ export async function runMigrationVerification(
   }
 }
 
-/** Полностью применённые без блокирующих состояний (legacy-семантика поля). */
+/** Fully applied without blocking states (legacy field semantics). */
 function isBookkeepingApplied(verdict: MigrationCheckVerdict): boolean {
   return (
     verdict.pending.length === 0 &&
@@ -258,11 +258,11 @@ interface JsonMigrationEntry {
 }
 
 /**
- * Машинночитаемый отчёт (#152): стабильная схема, детерминированный порядок
- * ключей и строк, ISO-даты, булевы флаги всегда явные. Парсить нужно это,
- * а не цвет/формулировки текстового режима. Блок `bookkeeping` различает
- * «не инициализированную» базу (таблицы учёта ещё нет) от полностью
- * применённой.
+ * Machine-readable report (#152): stable schema, deterministic order
+ * of keys and rows, ISO dates, boolean flags always explicit. Parse this,
+ * not color/wording of text mode. The `bookkeeping` block distinguishes
+ * an "uninitialized" database (bookkeeping table doesn't exist yet) from
+ * a fully applied one.
  */
 export function buildJsonReport(
   command: MigrationVerifyCommand,
@@ -273,9 +273,9 @@ export function buildJsonReport(
 ): Record<string, unknown> {
   const migrations: JsonMigrationEntry[] = statuses.map((s) => ({
     name: s.name,
-    // `applied` в отчёте — только здорово применённая (#212): изменённая
-    // после применения и прерванная миграции не считаются applied
-    // независимо от значения поля статуса (producer уже даёт false).
+    // `applied` in report — only cleanly applied (#212): modified
+    // after apply and interrupted migrations are not considered applied
+    // regardless of status field value (producer already gives false).
     applied: s.applied && !s.interrupted && !s.contentChanged,
     appliedAt: isoOrNull(s.appliedAt),
     interrupted: s.interrupted === true,
@@ -342,13 +342,13 @@ function renderText(
   schemaIssues: YdbSchemaIssue[] | undefined,
   bookkeeping: Pick<MigrationBookkeepingSnapshot, 'exists' | 'legacy'>,
 ): void {
-  // Обёртки-стрелки: не отвязываем методы io от объекта (#103-стиль lint).
+  // Arrow wrappers: do not detach io methods from the object (#103-style lint).
   const out = (line: string) => io.stdout(line);
   const err = (line: string) => io.stderr(line);
 
   if (!bookkeeping.exists) {
-    // Свежая база: таблицы учёта ещё нет. Информация — в stdout; таблица
-    // НЕ создаётся, состояние считается «не применено ничего».
+    // Fresh database: bookkeeping table doesn't exist yet. Information — in
+    // stdout; table is NOT created, state is considered "nothing applied".
     out(
       `Bookkeeping table ydb_migrations does not exist yet — ` +
         `no migrations have been applied (nothing was created).`,
@@ -356,7 +356,7 @@ function renderText(
   }
 
   if (command === 'migration:check') {
-    // Сводка вместо полного списка: полный список — migration:status.
+    // Summary instead of a full list: the full list is in migration:status.
     out(
       `Migrations: ${verdict.appliedCount}/${verdict.totalMigrations} applied` +
         (verdict.orphaned.length
@@ -397,8 +397,8 @@ function renderText(
     }
   }
 
-  // Orphans уже видны в списке migration:status — отдельная секция только
-  // для компактного migration:check.
+  // Orphans are already visible in the migration:status list — a separate
+  // section only for the compact migration:check.
   if (command === 'migration:check' && verdict.orphaned.length) {
     err(
       `Orphan records (${verdict.orphaned.length}) — applied but no matching migration file:`,
@@ -412,7 +412,7 @@ function renderText(
     err(
       `Schema differs from entity metadata (${schemaIssues.length} issue(s)):`,
     );
-    // Цвет решаем по stderr — куда реально уезжает diff (#103).
+    // Color is decided by stderr — where the diff actually lands (#103).
     err(
       renderSchemaDiff(schemaIssues, {
         color: shouldUseColor(

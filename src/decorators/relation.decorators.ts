@@ -4,7 +4,9 @@ import { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
 
+/** Metadata key for relations (`@OneToMany`/`@ManyToOne`/`@OneToOne`/`@ManyToMany`). */
 export const YDB_RELATIONS_KEY = 'ydb:relations';
+/** Metadata key for join tables (`@JoinTable`). */
 export const YDB_JOIN_TABLES_KEY = 'ydb:joinTables';
 
 export type RelationType =
@@ -14,9 +16,9 @@ export interface RelationMetadata {
   propertyKey: string;
   type: RelationType;
   target: () => typeof YdbBaseEntity;
-  /** Для one-to-many/many-to-one/one-to-one — FK-колонка. Для many-to-many не используется. */
+  /** For one-to-many/many-to-one/one-to-one — the FK column. Not used for many-to-many. */
   joinColumn?: string | ((target: any) => any);
-  /** Для many-to-many — селектор inverse-свойства (для двунаправленных связей). */
+  /** For many-to-many — a selector of the inverse property (bidirectional relations). */
   inverseSide?: (target: any) => string;
 }
 
@@ -24,30 +26,30 @@ export interface JoinTableMetadata {
   propertyKey: string;
   tableName: string;
   /**
-   * Колонка, ссылающаяся на владеющую сущность
-   * (по умолчанию `{ownerTable}_{pkProperty}`, #90).
+   * Column referring to the owning entity
+   * (default `{ownerTable}_{pkProperty}`, #90).
    */
   joinColumn?: string;
   /**
-   * Колонка, ссылающаяся на обратную сущность
-   * (по умолчанию `{inverseTable}_{pkProperty}`, #90).
+   * Column referring to the inverse entity
+   * (default `{inverseTable}_{pkProperty}`, #90).
    */
   inverseJoinColumn?: string;
 }
 
-/** Описание join-таблицы many-to-many, вычисленное по метаданным сущностей. */
+/** Join-table description of a many-to-many relation, computed from entity metadata. */
 export interface ManyToManyJoinTable {
   tableName: string;
   joinColumn: string;
   inverseJoinColumn: string;
   /**
-   * YDB-тип колонки, ссылающейся на владельца (#90/#87): выводится из
-   * фактического PK owner-сущности. Обязателен: резолв всегда выводит тип
-   * из PK или бросает понятную ошибку конфигурации — молчаливого фолбэка
-   * на Uuid не существует (#87).
+   * YDB type of the column referring to the owner (#90/#87): derived from the
+   * owner entity's actual PK. Required: resolution always derives the type
+   * from the PK or throws a clear configuration error — there is no silent
+   * fallback to Uuid (#87).
    */
   joinColumnType: YdbPrimitive;
-  /** YDB-тип колонки, ссылающейся на inverse-сущность (аналогично #87). */
+  /** YDB type of the column referring to the inverse entity (analogous to #87). */
   inverseJoinColumnType: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
   ownerTableName: string;
@@ -57,10 +59,10 @@ export interface ManyToManyJoinTable {
 }
 
 /**
- * Имя join-колонки по умолчанию: `{tableName}_{pkProperty}` (#90).
- * Для PK с именем `uuid` это историческое `{tableName}_uuid` — существующие
- * связи сохраняют имена; для не-uuid PK имя выводится из реального свойства
- * PK вместо молчаливого предположения о `_uuid`.
+ * Default join-column name: `{tableName}_{pkProperty}` (#90).
+ * For a PK named `uuid` this is the historical `{tableName}_uuid` — existing
+ * relations keep their names; for a non-uuid PK the name is derived from the
+ * real PK property instead of silently assuming `_uuid`.
  */
 export function defaultJoinColumnName(
   tableName: string,
@@ -69,29 +71,36 @@ export function defaultJoinColumnName(
   return `${tableName}_${pkProperty}`;
 }
 
-/** Контекст для сообщений об ошибках конфигурации join-колонки (#87). */
+/**
+ * Context for join-column configuration error messages (#87).
+ */
 export interface JoinColumnResolutionContext {
-  /** Имя класса-владельца связи. */
+  /** Name of the entity class owning the relation. */
   entityName: string;
-  /** Свойство связи (@OneToMany/@ManyToOne/@OneToOne). */
+  /** The relation property (@OneToMany/@ManyToOne/@OneToOne). */
   relationPropertyKey: string;
 }
 
 /**
- * Строгий резолв декларации join-колонки связи (#87).
+ * Strict resolution of a relation's join-column declaration (#87).
  *
- * Поддерживается ровно две формы:
- *  - непустая строка — имя колонки;
- *  - селектор свойства: `(target) => target.property` (точка или скобочная
- *    запись с одним чтением свойства).
+ * Exactly two forms are supported:
+ *  - a non-empty string — the column name;
+ *  - a property selector: `(target) => target.property` (dot or bracket
+ *    notation with a single property read).
  *
- * Всё остальное — ошибка конфигурации, а не молчаливая угаданная строка:
- * цепочки свойств (`x.a.b`), вызовы методов (`x.getFk()`), константы
- * (`() => 'col'`) и неиспользованный аргумент отвергаются с ошибкой,
- * называющей сущность и связь.
+ * Everything else is a configuration error, not a silently guessed string:
+ * property chains (`x.a.b`), method calls (`x.getFk()`), constants
+ * (`() => 'col'`) and an unused argument are rejected with an error that
+ * names the entity and the relation.
  *
- * Единственная точка резолва: используется рантаймом relations и
- * validateEntityMetadata — расхождений между путями нет (#87).
+ * The single resolution point: used by the relations runtime and
+ * validateEntityMetadata — no divergence between the paths (#87).
+ *
+ * @param joinColumn - The join column declaration (string or selector).
+ * @param ctx - Resolution context for error messages.
+ * @returns Resolved column name.
+ * @throws If joinColumn is invalid or missing.
  */
 export function resolveRelationJoinColumn(
   joinColumn: string | ((target: any) => any) | undefined | null,
@@ -128,15 +137,21 @@ export function resolveRelationJoinColumn(
 }
 
 /**
- * Строгий резолв селектора `(target) => target.property`: прокси-рекордер читает
- * ровно одно обращение к свойству. Любая другая форма (цепочка, вызов,
- * символ, вычисленное значение) даёт понятную ошибку вместо угаданной
- * строки колонки (#87).
+ * Strict resolution of the `(target) => target.property` selector: a proxy
+ * recorder reads exactly one property access. Any other form (chain, call,
+ * symbol, computed value) yields a clear error instead of a guessed column
+ * string (#87).
  *
- * Единственная точка резолва property-селекторов: используется join-колонками
- * (#87) и селектором inverseSide many-to-many (metadata:dump, #37) —
- * расхождений между путями нет. `what` — название селектора в тексте ошибки
- * ("join column selector", "inverseSide selector").
+ * The single resolution point for property selectors: used by join columns
+ * (#87) and the many-to-many inverseSide selector (metadata:dump, #37) —
+ * no divergence between the paths. `what` is the selector's label in error
+ * text ("join column selector", "inverseSide selector").
+ *
+ * @param selector - Property selector function.
+ * @param what - Selector label for error messages.
+ * @param where - Context for error messages.
+ * @returns Resolved property name.
+ * @throws If selector is not a direct property access.
  */
 export function resolvePropertySelector(
   selector: (target: any) => any,
@@ -146,7 +161,7 @@ export function resolvePropertySelector(
   const accessedProps: string[] = [];
   let lastNode: unknown;
 
-  /** Маркер внутренней ошибки рекордера: отличаем её от ошибок пользователя. */
+  /** Marker of the recorder's internal error: distinguished from user errors. */
   class SelectorRejected extends Error {}
 
   const makeNode = (): unknown =>
@@ -201,6 +216,14 @@ function defineRelation(prototype: object, metadata: RelationMetadata): void {
   Reflect.defineMetadata(YDB_RELATIONS_KEY, relations, constructor);
 }
 
+/**
+ * Declares a one-to-many relation: each row in the target table references
+ * this entity via the FK column (or a property selector resolving to one).
+ *
+ * @param target - Lazy identity of the related entity class.
+ * @param joinColumn - The FK column name or a `(target) => target.property` selector.
+ * @returns Property decorator function.
+ */
 export function OneToMany(
   target: () => typeof YdbBaseEntity,
   joinColumn: string | ((target: any) => any),
@@ -215,6 +238,14 @@ export function OneToMany(
   };
 }
 
+/**
+ * Declares a many-to-one relation: this entity references the target's row
+ * via the FK column (or a property selector resolving to one).
+ *
+ * @param target - Lazy identity of the related entity class.
+ * @param joinColumn - The FK column name or a `(target) => target.property` selector.
+ * @returns Property decorator function.
+ */
 export function ManyToOne(
   target: () => typeof YdbBaseEntity,
   joinColumn: string | ((target: any) => any),
@@ -229,6 +260,14 @@ export function ManyToOne(
   };
 }
 
+/**
+ * Declares a one-to-one relation between this entity and the target via the
+ * FK column (or a property selector resolving to one).
+ *
+ * @param target - Lazy identity of the related entity class.
+ * @param joinColumn - The FK column name or a `(target) => target.property` selector.
+ * @returns Property decorator function.
+ */
 export function OneToOne(
   target: () => typeof YdbBaseEntity,
   joinColumn: string | ((target: any) => any),
@@ -243,6 +282,15 @@ export function OneToOne(
   };
 }
 
+/**
+ * Declares a many-to-many relation backed by a join table. Combine with
+ * @JoinTable on the owning side; the inverse side may provide an
+ * `inverseSide` selector for bidirectional navigation.
+ *
+ * @param target - Lazy identity of the related entity class.
+ * @param inverseSide - Optional selector resolving the inverse relation property.
+ * @returns Property decorator function.
+ */
 export function ManyToMany(
   target: () => typeof YdbBaseEntity,
   inverseSide?: (target: any) => string,
@@ -258,7 +306,12 @@ export function ManyToMany(
 }
 
 /**
- * Задаёт join-таблицу для many-to-many. Вешается на владеющую сторону связи.
+ * Sets the join table for a many-to-many relation. Applied to the owning
+ * side of the relation.
+ *
+ * @param tableName - Join table name.
+ * @param options - Optional join column and inverse join column names.
+ * @returns Property decorator function.
  * @example
  *   @ManyToMany(() => Tag)
  *   @JoinTable('photo_tag')
@@ -284,25 +337,39 @@ export function JoinTable(
   };
 }
 
+/**
+ * Returns the relations metadata declared on an entity class.
+ *
+ * @param target - Entity class constructor.
+ * @returns Array of relation metadata entries.
+ */
 export function getYdbRelationsMetadata(target: any): RelationMetadata[] {
   return Reflect.getMetadata(YDB_RELATIONS_KEY, target) || [];
 }
 
+/**
+ * Returns the join-table metadata declared on an entity class.
+ *
+ * @param target - Entity class constructor.
+ * @returns Array of join table metadata entries.
+ */
 export function getYdbJoinTableMetadata(target: any): JoinTableMetadata[] {
   return Reflect.getMetadata(YDB_JOIN_TABLES_KEY, target) || [];
 }
 
 /**
- * Резолвит ОДНО объявление join-таблицы: владелец + конкретная m2m-связь
- * с @JoinTable. Валидирует PK обеих сторон, выводит имена колонок по
- * умолчанию из фактических PK и их YDB-типы (#90).
+ * Resolves a SINGLE join-table declaration: owner + the specific m2m relation
+ * with @JoinTable. Validates the PKs of both sides, derives default column
+ * names from the actual PKs and their YDB types (#90).
  *
- * Единственная точка резолва объявления: используется и генерацией схемы
- * (getManyToManyJoinTables), и рантайм-резолвом relations (#139) —
- * алгоритм открытия/валидации нигде не дублируется.
+ * The single resolution point for a declaration: used both by schema
+ * generation (getManyToManyJoinTables) and the relations runtime (#139) —
+ * the open/validation algorithm is not duplicated anywhere.
  *
- * undefined — связь не many-to-many, у сущности нет метаданных или
- * у этой связи нет собственной @JoinTable.
+ * @param Entity - Owner entity class.
+ * @param relation - The many-to-many relation metadata.
+ * @returns Resolved join table definition or undefined if not applicable.
+ * @throws If PKs are missing, composite, or types cannot be derived.
  */
 export function resolveRelationJoinTableDefinition(
   Entity: new (...args: any[]) => any,
@@ -327,8 +394,8 @@ export function resolveRelationJoinTableDefinition(
     );
   }
 
-  // Контекст связи для ошибок конфигурации (#87): ошибка всегда называет
-  // сущности, свойство связи и join-таблицу, а не только одну сущность.
+  // Relation context for configuration errors (#87): the error always names
+  // the entities, the relation property and the join table, not just one entity.
   const relationDesc =
     `${Entity.name}.${relation.propertyKey} -> ${InverseEntity.name} ` +
     `(join table "${joinTable.tableName}")`;
@@ -348,12 +415,12 @@ export function resolveRelationJoinTableDefinition(
     );
   }
 
-  // Рантайм-модель many-to-many связывает строки ровно по одному
-  // значению PK с каждой стороны; составной PK породил бы join-таблицу,
-  // не совпадающую с тем, что читает relations-код, — отказываем явно
-  // (#90/#87). Отказ детерминирован: один и тот же резолвер используется
-  // генерацией схемы, валидацией метаданных, eager loading, loadRelations
-  // и рантаймом join-таблицы — частичной поддержки ни в одном пути нет.
+  // The runtime many-to-many model links rows by exactly one PK value on
+  // each side; a composite PK would produce a join table that does not match
+  // what the relations code reads — we refuse explicitly (#90/#87). The
+  // refusal is deterministic: the same resolver is used by schema generation,
+  // metadata validation, eager loading, loadRelations and the join-table
+  // runtime — there is no path with partial support.
   if (meta.primaryKeys.length > 1) {
     throw new Error(
       `Cannot build many-to-many join table for relation "${relationDesc}": ` +
@@ -374,17 +441,17 @@ export function resolveRelationJoinTableDefinition(
   const ownerPk = meta.primaryKeys[0];
   const inversePk = inverseMeta.primaryKeys[0];
 
-  // Имена по умолчанию выводятся из фактических PK-колонок (#90):
-  // для PK "uuid" это прежние `{table}_uuid`, для остальных — `{table}_{pk}`.
+  // Default names are derived from the actual PK columns (#90):
+  // for a "uuid" PK this is the previous `{table}_uuid`, for others — `{table}_{pk}`.
   const resolvedJoinColumn =
     joinTable.joinColumn ?? defaultJoinColumnName(meta.tableName, ownerPk);
   const resolvedInverseJoinColumn =
     joinTable.inverseJoinColumn ??
     defaultJoinColumnName(inverseMeta.tableName, inversePk);
 
-  // Тип join-колонки = точный тип PK-колонки сущности (#90/#87).
-  // Вывести тип невозможно — ошибка конфигурации; молчаливого фолбэка на
-  // Uuid не существует: он породил бы схему, несовместимую с данными.
+  // Join-column type = the entity's exact PK column type (#90/#87).
+  // If the type cannot be derived — a configuration error; there is no silent
+  // fallback to Uuid: it would produce a schema incompatible with the data.
   const ownerPkType = meta.schema[ownerPk];
   if (!ownerPkType) {
     throw new Error(
@@ -421,15 +488,19 @@ export function resolveRelationJoinTableDefinition(
 }
 
 /**
- * Возвращает join-таблицы many-to-many, владельцами которых являются переданные сущности.
- * Обратная сторона (без @JoinTable) не порождает отдельную таблицу.
+ * Returns the many-to-many join tables owned by the given entities.
+ * The inverse side (without @JoinTable) does not produce a separate table.
  *
- * Одно имя join-таблицы может быть объявлено несколько раз (например,
- * зеркально на обеих сторонах связи или при повторе класса во входном
- * списке). Повторные объявления безопасно дедуплицируются только при
- * идентичном физическом описании (#139); расходящиеся — ошибка со списком
- * всех определений: иначе sync/migrations молча построили бы схему по
- * первому объявлению, а relations-код читал бы по другому.
+ * One join-table name may be declared multiple times (e.g. mirrored on both
+ * sides of the relation, or when the class repeats in the input list).
+ * Repeated declarations are safely deduplicated only when they describe an
+ * identical physical table (#139); diverging ones are an error listing all
+ * definitions: otherwise sync/migrations would silently build a schema from
+ * the first declaration while relations code reads by a different one.
+ *
+ * @param entities - Array of entity classes.
+ * @returns Array of resolved join table definitions.
+ * @throws If conflicting declarations for the same table name exist.
  */
 export function getManyToManyJoinTables(
   entities: (new (...args: any[]) => any)[],
@@ -454,8 +525,8 @@ export function getManyToManyJoinTables(
     }
   }
 
-  // Расходящиеся объявления одного имени таблицы — конфликт: физическую
-  // таблицу нельзя построить двумя разными способами (#139).
+  // Diverging declarations of one table name are a conflict: a physical
+  // table cannot be built in two different ways (#139).
   for (const group of groups.values()) {
     if (group.length > 1) {
       throw new Error(formatJoinTableConflict(group));
@@ -466,14 +537,16 @@ export function getManyToManyJoinTables(
 }
 
 /**
- * Глобальная сверка объявления join-таблицы со всеми зарегистрированными
- * сущностями (#139): если то же имя таблицы объявлено другой связью
- * с другим физическим описанием — ошибка с перечислением определений.
+ * Global reconciliation of a join-table declaration against all registered
+ * entities (#139): if the same table name is declared by another relation
+ * with a different physical description — an error enumerating the
+ * definitions.
  *
- * Вызывается рантайм-резолвом relations, чтобы конфликт, который отвергла
- * бы schema sync/verify/миграции, не проходил молча при чтении: локально
- * для пары (owner, inverse) объявление может быть единственным, но имя
- * таблицы уже занято расходящимся объявлением в другом месте модели.
+ * Called by the relations runtime so that a conflict which schema
+ * sync/verify/migrations would reject does not pass silently on read:
+ * locally for the (owner, inverse) pair the declaration may be the only one,
+ * but the table name is already taken by a diverging declaration elsewhere
+ * in the model.
  */
 export function assertNoForeignJoinTableConflicts(
   canonical: ManyToManyJoinTable,
@@ -481,10 +554,10 @@ export function assertNoForeignJoinTableConflicts(
   for (const Entity of getRegisteredYdbEntities()) {
     const relations = getYdbRelationsMetadata(Entity);
     for (const relation of relations) {
-      // Сломанные нерелевантные объявления не должны ронять чтение другой
-      // связи: их отвергнет полное сканирование модели (schema sync/verify/
-      // миграции) с той же ошибкой. Роняет сверку только реальный конфликт
-      // имён таблиц.
+      // Broken irrelevant declarations must not break reading another
+      // relation: a full model scan (schema sync/verify/migrations) will
+      // reject them with the same error. Only a real table-name conflict
+      // fails this check.
       let other: ManyToManyJoinTable | undefined;
       try {
         other = resolveRelationJoinTableDefinition(Entity, relation);
@@ -492,7 +565,7 @@ export function assertNoForeignJoinTableConflicts(
         continue;
       }
       if (!other || other.tableName !== canonical.tableName) continue;
-      // Эквивалентные (например, зеркальные) объявления разрешены.
+      // Equivalent (e.g. mirrored) declarations are allowed.
       if (joinTableDefinitionsEquivalent(canonical, other)) continue;
       throw new Error(
         formatJoinTableConflict([canonical, other]) +
@@ -504,12 +577,15 @@ export function assertNoForeignJoinTableConflicts(
 }
 
 /**
- * Сравнивает два описания join-таблицы как ФИЗИЧЕСКУЮ таблицу (#139):
- * совпадают пары «сущность → имя колонки + тип», направление объявления
- * не важно (зеркальные декларации на обеих сторонах эквивалентны).
- * Типы выводятся из PK конкретных сущностей, поэтому сравнение покрывает
- * и семантику PK; идентичность сущностей гарантирует одинаковый источник
- * имён/типов по умолчанию.
+ * Compares two join-table descriptions as a PHYSICAL table (#139): the
+ * "entity → column name + type" pairs match; the declaration direction does
+ * not matter (mirrored declarations on both sides are equivalent). Types are
+ * derived from the specific entities' PKs, so the comparison also covers PK
+ * semantics; entity identity guarantees the same default name/type source.
+ *
+ * @param a - First join table definition.
+ * @param b - Second join table definition.
+ * @returns True if definitions describe the same physical table.
  */
 export function joinTableDefinitionsEquivalent(
   a: Pick<
@@ -576,7 +652,7 @@ export function joinTableDefinitionsEquivalent(
   );
 }
 
-/** Человекочитаемое описание одного определения join-таблицы (для ошибок). */
+/** Human-readable description of one join-table definition (for errors). */
 function formatJoinTableDefinition(d: ManyToManyJoinTable): string {
   return (
     `- ${d.ownerEntity.name}.${d.ownerProperty} -> ${d.inverseEntity.name} ` +

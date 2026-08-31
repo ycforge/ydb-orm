@@ -4,12 +4,12 @@ import { YdbEntity } from './entity.decorator.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { getRegisteredYdbEntities } from '../metadata/entity-registry.js';
 
-// Валидация имени таблицы в @YdbEntity (#91): невалидное имя должно падать
-// при декорировании (загрузке модуля), а не на первом DescribeTable/DDL,
-// где из него уже собрали путь до первой ошибки квотинга.
+// Table-name validation in @YdbEntity (#91): an invalid name must fail at
+// decoration (module load) time, not on the first DescribeTable/DDL, where
+// the path would already have been built up to the first quoting error.
 
 describe('@YdbEntity table name validation (#91)', () => {
-  /** Декорирует класс именем name — декоратор отрабатывает немедленно. */
+  /** Decorates a class with the given name — the decorator runs immediately. */
   function decorate(name: string): void {
     @YdbEntity(name)
     class DecoratorValidationEntity {}
@@ -21,7 +21,7 @@ describe('@YdbEntity table name validation (#91)', () => {
     (name) => {
       const before = getRegisteredYdbEntities().length;
       expect(() => decorate(name)).not.toThrow();
-      // Валидная сущность попадает в глобальный реестр
+      // A valid entity enters the global registry
       expect(getRegisteredYdbEntities().length).toBe(before + 1);
     },
   );
@@ -37,11 +37,11 @@ describe('@YdbEntity table name validation (#91)', () => {
     ['SQL injection attempt', '`users`; DROP TABLE users'],
   ])('rejects invalid table name (%s)', (_label, name) => {
     const before = getRegisteredYdbEntities().length;
-    // Строки в toThrow сопоставляются с текстом ошибки как подстроки
+    // Strings in toThrow are matched against the error text as substrings
     expect(() => decorate(name)).toThrow('@YdbEntity: invalid table name');
     expect(() => decorate(name)).toThrow(JSON.stringify(name));
     expect(() => decorate(name)).toThrow('/^[a-zA-Z_][a-zA-Z0-9_]*$/');
-    // Невалидная сущность не должна попасть в глобальный реестр
+    // An invalid entity must not enter the global registry
     expect(getRegisteredYdbEntities().length).toBe(before);
   });
 
@@ -65,15 +65,15 @@ describe('@YdbEntity table name validation (#91)', () => {
       thrown = error;
     }
     expect(thrown).toBeInstanceOf(Error);
-    // Декоратор упал до defineMetadata — метаданных сущности нет.
-    // Проверяем через свежий WeakMap-кеш метаданных на классе-обёртке.
+    // The decorator failed before defineMetadata — no entity metadata exists.
+    // Checked via a fresh WeakMap metadata cache on the wrapper class.
     const holder: { target?: new (...args: any[]) => any } = {};
     try {
       @YdbEntity('also bad')
       class AnotherInvalidEntity {}
       holder.target = AnotherInvalidEntity;
     } catch {
-      // ожидаемо
+      // expected
     }
     expect(holder.target).toBeUndefined();
   });

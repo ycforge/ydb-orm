@@ -11,8 +11,8 @@ import type { YdbBaseEntity } from './base-entity.js';
 import type { YdbRepository } from '../repository/ydb-repository.js';
 
 /**
- * Снапшот зависимостей, использованных при создании repository.
- * Хранится в runtime для пересоздания repository при смене deps.
+ * Snapshot of dependencies used when creating the repository.
+ * Stored in runtime for repository recreation when deps change.
  */
 export interface RepositoryDepsSnapshot {
   executor?: YdbExecutor;
@@ -29,38 +29,42 @@ export interface EntityRuntime {
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
   validationProvider?: YdbValidationProvider;
-  /** Генератор UUID для PK (по умолчанию v7 — см. base-entity). */
+  /** UUID generator for primary key (default: v7 — see base-entity). */
   uuidGenerator?: () => string;
-  /** Формат Security AAD (#165); undefined = 'v2' по умолчанию. */
+  /** Security AAD format (#165); undefined = 'v2' by default. */
   aadFormat?: AadFormat;
   /**
-   * Автоматическое определение формата AAD при чтении (#165);
-   * undefined = true (безопасный переход legacy → v2).
+   * Automatic AAD format detection on read (#165);
+   * undefined = true (safe legacy → v2 transition).
    */
   aadReadFallback?: boolean;
-  /** Готовый репозиторий сущности (создаётся лениво из deps). */
+  /** Cached entity repository (lazily created from deps). */
   repository?: YdbRepository<YdbBaseEntity>;
-  /** Снапшот deps, использованных для создания repository. */
+  /** Snapshot of deps used to create the repository. */
   repositoryDeps?: RepositoryDepsSnapshot;
   /**
-   * Скоуп ORM-конфигурации, которой принадлежит сущность (#199);
-   * undefined — сущность ещё не сконфигурирована.
+   * ORM configuration scope that owns this entity (#199);
+   * undefined — entity has not been configured yet.
    */
   scope?: YdbOrmScope;
   /**
-   * Настройки транзакций конфигурации-владельца (#199); undefined —
-   * используются процессно-глобальные настройки (прежнее поведение).
+   * Transaction settings of the owning configuration (#199); undefined —
+   * process-global settings are used (legacy behavior).
    */
   transactions?: Required<YdbTransactionsSettings>;
 }
 
 /**
- * Рантайм-зависимости Active Record сущностей.
- * Хранятся отдельно от классов (а не в статических полях с any-кастами),
- * ключ — конкретный класс сущности, поэтому наследники не разделяют состояние.
+ * Runtime dependencies of Active Record entities.
+ * Stored separately from classes (not in static fields with any-casts),
+ * key is the specific entity class, so subclasses don't share state.
  */
 const runtimes = new WeakMap<typeof YdbBaseEntity, EntityRuntime>();
 
+/**
+ * Returns the runtime dependencies for an entity class, creating an
+ * empty record if none exists yet.
+ */
 export function getEntityRuntime(target: typeof YdbBaseEntity): EntityRuntime {
   let runtime = runtimes.get(target);
   if (!runtime) {
@@ -71,21 +75,21 @@ export function getEntityRuntime(target: typeof YdbBaseEntity): EntityRuntime {
 }
 
 /**
- * Снимок runtime-состояния сущности ДО применения конфигурации для
- * атомарного отката (#200). Используется configureEntities() и
- * createActiveRecordEntityProvider(): если конфигурация падает после того,
- * как часть runtime уже изменена, restoreEntityRuntime() возвращает сущность
- * ровно в то состояние, в котором она была до вызова.
+ * Snapshot of entity runtime state BEFORE applying configuration for
+ * atomic rollback (#200). Used by configureEntities() and
+ * createActiveRecordEntityProvider(): if configuration fails after
+ * part of runtime has been changed, restoreEntityRuntime() returns the
+ * entity to exactly the state it was in before the call.
  *
- * Контракт (обязателен для корректности поверхностного снимка):
- * конфигурация заменяет только ВЕРХНЕУРОВНЕВЫЕ поля runtime (executor,
- * провайдеры, uuidGenerator, aadFormat, aadReadFallback, scope, transactions,
- * repository, repositoryDeps), присваивая новые значения по ссылке. Ни одно
- * вложенное значение (scope.transactions, repositoryDeps, repository) внутри
- * не мутируется в месте — поэтому копирования ссылок достаточно для точного
- * восстановления прежних ссылок. Если появится поле, которое мутируется
- * в месте (например, `runtime.transactions.ambient = true`), его снимок
- * нужно делать здесь глубоким, а restoreEntityRuntime() — дополнить.
+ * Contract (required for correctness of shallow snapshot):
+ * configuration replaces only TOP-LEVEL runtime fields (executor,
+ * providers, uuidGenerator, aadFormat, aadReadFallback, scope, transactions,
+ * repository, repositoryDeps), assigning new values by reference. No nested
+ * value (scope.transactions, repositoryDeps, repository) is mutated in place
+ * — so copying references is sufficient for exact restoration of previous
+ * references. If a field that mutates in place appears (e.g.,
+ * `runtime.transactions.ambient = true`), its snapshot must be made deep
+ * here, and restoreEntityRuntime() must be extended.
  */
 export function snapshotEntityRuntime(
   entityClass: typeof YdbBaseEntity,
@@ -94,10 +98,11 @@ export function snapshotEntityRuntime(
 }
 
 /**
- * Восстанавливает runtime-состояние сущности из снимка (см.
- * snapshotEntityRuntime). Помимо присваивания сохранённых ссылок удаляет
- * поля, которых не было в снимке: если конфигурация добавила новое поле
- * (не существовавшее до вызова), оно не должно пережить откат.
+ * Restores entity runtime state from snapshot (see
+ * snapshotEntityRuntime). Besides assigning saved references, removes
+ * fields that were not in the snapshot: if configuration added a new
+ * field (one that didn't exist before the call), it must not survive
+ * the rollback.
  */
 export function restoreEntityRuntime(
   entityClass: typeof YdbBaseEntity,

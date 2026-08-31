@@ -4,13 +4,17 @@ import { YdbRepository } from './ydb-repository.js';
 import { getOrCreateRepository } from './repository-resolver.js';
 
 /**
- * Менеджер сущностей — фабрика репозиториев.
+ * Entity manager — a repository factory.
  *
- * Удобен, когда сервису нужны несколько репозиториев или их набор
- * заранее неизвестен. Репозитории не хранят состояния, поэтому
- * можно создавать их на лету.
+ * Useful when a service needs multiple repositories or their set
+ * is not known in advance. Repositories don't hold state, so
+ * they can be created on the fly.
  */
 export class YdbEntityManager {
+  /**
+   * Returns the `YdbRepository` for the given entity class, creating
+   * it from the current runtime dependencies if not yet cached.
+   */
   getRepository<T extends YdbBaseEntity>(
     entityClass: YdbEntityConstructor<T>,
   ): YdbRepository<T> {

@@ -48,7 +48,7 @@ describe('parseArgs (#103)', () => {
   });
 
   it('rejects unknown flag instead of making it positional', () => {
-    // Раньше `migration:create --nme foo` создавал миграцию с именем «--nme».
+    // Previously `migration:create --nme foo` created a migration named "--nme".
     expect(() => parseArgs(['migration:create', '--nme', 'foo'])).toThrow(
       CliArgsError,
     );
@@ -64,7 +64,7 @@ describe('parseArgs (#103)', () => {
   });
 
   it('rejects missing value at end of argv for value flags', () => {
-    // Раньше `--config` без значения тихо откатывался к env/дефолту.
+    // Previously `--config` without a value quietly fell back to env/default.
     expect(() => parseArgs(['migration:run', '--config'])).toThrow(
       /Option --config requires a non-empty value/,
     );
@@ -121,11 +121,11 @@ describe('formatError (#103)', () => {
     const out = formatError(error);
 
     expect(out).toContain('boom');
-    expect(out).not.toContain('at '); // стек не печатается без verbose
+    expect(out).not.toContain('at '); // stack is not printed without verbose
   });
 
   it('preserves the cause chain by default', () => {
-    // Раньше в catch печатался только error.message.
+    // Previously the catch block printed only error.message.
     const error = new Error('boom', {
       cause: new Error('middle', { cause: new Error('root') }),
     });
@@ -142,7 +142,7 @@ describe('formatError (#103)', () => {
 
     expect(out).toContain('Error: boom');
     expect(out).toContain('Caused by: Error: root');
-    expect(out).toMatch(/\n\s+at /); // реальные кадры стека сохранены
+    expect(out).toMatch(/\n\s+at /); // real stack frames are preserved
   });
 
   it('prints context lines first in verbose mode', () => {

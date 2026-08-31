@@ -81,7 +81,7 @@ class TestNoPkEntity extends YdbBaseEntity {
   name: string;
 }
 
-// #89: составной PK — порядок колонок значим при сравнении схем
+// #89: composite PK — column order matters when comparing schemas
 @YdbEntity('test_composite_pk')
 class TestCompositePkEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Utf8')
@@ -139,12 +139,12 @@ class TestNumericTtlEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
-  // Uint32 нет в YdbPrimitive — числовые TTL-типы проверяются отдельно
+  // Uint32 is not in YdbPrimitive — numeric TTL types are verified separately
   @YdbColumn('Uint32' as never)
   expires_at: number;
 }
 
-// Сущность для проверки не-примитивных типов в БД (#91)
+// Entity for verifying non-primitive types in the DB (#91)
 @YdbEntity('test_unsupported_types')
 class TestUnsupportedTypesEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -168,7 +168,7 @@ class TestPhotoEntity extends YdbBaseEntity {
   tags?: TestTagEntity[];
 }
 
-// #90: many-to-many с не-uuid PK (кастомные имена свойств)
+// #90: many-to-many with non-uuid PK (custom property names)
 @YdbEntity('test_articles')
 class TestArticleEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -194,7 +194,7 @@ class TestAuthorEntity extends YdbBaseEntity {
   articles?: TestArticleEntity[];
 }
 
-// #90: разные PK-типы на сторонах связи (Int64 ↔ Utf8) + явные имена колонок
+// #90: different PK types on relation sides (Int64 ↔ Utf8) + explicit column names
 @YdbEntity('test_orders')
 class TestOrderEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Int64')
@@ -223,7 +223,7 @@ class TestSkuEntity extends YdbBaseEntity {
   orders?: TestOrderEntity[];
 }
 
-// #90: составной PK на стороне owner — явный отказ
+// #90: composite PK on the owner side — explicitly rejected
 @YdbEntity('test_m2m_comp_users')
 class TestCompositeUserEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Utf8')
@@ -252,8 +252,8 @@ class TestCompositeRoleEntity extends YdbBaseEntity {
   users?: TestCompositeUserEntity[];
 }
 
-// #90/#139: зеркальные декларации одной join-таблицы на обеих сторонах —
-// физически эквивалентны, дедуплицируются безопасно
+// #90/#139: mirrored declarations of the same join table on both sides are
+// physically equivalent and are deduplicated safely
 @YdbEntity('test_sym_lefts')
 class TestSymLeftEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Int64')
@@ -286,8 +286,8 @@ class TestSymRightEntity extends YdbBaseEntity {
   lefts?: TestSymLeftEntity[];
 }
 
-// #139: конфликтующие объявления одного имени таблицы
-// (разные пары сущностей с разными PK-типами)
+// #139: conflicting declarations of one table name
+// (different entity pairs with different PK types)
 @YdbEntity('test_dup_orders')
 class TestDupOrderEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Int64')
@@ -356,8 +356,8 @@ const description = (
   ...(ttl ? { ttl } : {}),
 });
 
-// #89: описание таблицы с составным PK; primaryKey передаётся явно,
-// чтобы проверять перестановки порядка
+// #89: table description with a composite PK; primaryKey is passed
+// explicitly so order permutations can be tested
 const compositePkExpected = buildExpectedTableSchema(
   meta(TestCompositePkEntity),
 );
@@ -432,7 +432,7 @@ describe('buildExpectedJoinTableSchema', () => {
     expect(joinTables).toHaveLength(1);
 
     const [jt] = joinTables;
-    // PK называются article_id/author_id — дефолтные имена выводятся из них
+    // PKs are named article_id/author_id — default names are derived from them
     expect(jt.joinColumn).toBe('test_articles_article_id');
     expect(jt.inverseJoinColumn).toBe('test_authors_author_id');
 
@@ -469,9 +469,9 @@ describe('buildExpectedJoinTableSchema', () => {
   });
 
   it('definition always carries explicit column types; schema builds from it as-is (#87)', () => {
-    // Единственный источник имён/типов — resolveRelationJoinTableDefinition:
-    // типы обязательны и выводятся только там (ошибкой конфигурации, без
-    // молчаливого фолбэка). Отдельного пути вывода типов в схеме нет (#87).
+    // The only source of names/types is resolveRelationJoinTableDefinition:
+    // types are mandatory and derived only there (a configuration error, no
+    // silent fallback). There is no separate type inference path in the schema (#87).
     const [jt] = getManyToManyJoinTables([TestOrderEntity, TestSkuEntity]);
     expect(jt.joinColumnType).toBe('Int64');
     expect(jt.inverseJoinColumnType).toBe('Utf8');
@@ -506,12 +506,12 @@ describe('duplicate join-table declarations (#139)', () => {
       TestSymLeftEntity,
       TestSymRightEntity,
     ]);
-    // Оба объявления описывают одну физическую таблицу — остаётся одно
+    // Both declarations describe one physical table — only one remains
     expect(joinTables).toHaveLength(1);
 
     const jt = joinTables[0];
     expect(jt.tableName).toBe('test_sym_join');
-    // Первое объявление (от left): колонка left → left_ref (Int64)
+    // First declaration (from left): column left → left_ref (Int64)
     expect(jt.joinColumn).toBe('left_ref');
     expect(jt.joinColumnType).toBe('Int64');
     expect(jt.inverseJoinColumn).toBe('right_code');
@@ -538,7 +538,7 @@ describe('duplicate join-table declarations (#139)', () => {
     expect(error!.message).toContain(
       'Conflicting definitions for many-to-many join table "test_duplicated_join"',
     );
-    // В ошибке перечислены оба определения с сущностями и колонками/типами
+    // The error lists both definitions with entities and columns/types
     expect(error!.message).toContain('TestDupOrderEntity.items');
     expect(error!.message).toContain(
       'test_dup_orders_order_id:Int64, test_dup_items_item_uuid:Uuid',
@@ -550,8 +550,8 @@ describe('duplicate join-table declarations (#139)', () => {
   });
 
   it('treats mirrored declarations with different column names as conflicting', () => {
-    // test_sym_join объявлен зеркально корректно; проверим, что подмена
-    // имени колонки на одной стороне даёт конфликт
+    // test_sym_join is declared correctly mirrored; check that swapping
+    // the column name on one side yields a conflict
     const [fromLeft] = getManyToManyJoinTables([TestSymLeftEntity]);
     const [fromRight] = getManyToManyJoinTables([TestSymRightEntity]);
 
@@ -937,7 +937,7 @@ describe('composite primary key comparison (#89)', () => {
     );
 
     expect(check.primaryKeyMatches).toBe(false);
-    // Чистая перестановка: наборы колонок равны — диагностируется именно порядок
+    // Pure permutation: the column sets are equal — the order itself is diagnosed
     expect(check.primaryKeyOrderMismatch).toBe(true);
     expect(check.missingPrimaryKeyColumns).toEqual([]);
     expect(check.extraPrimaryKeyColumns).toEqual([]);
@@ -1051,7 +1051,7 @@ describe('checkTableSchema TTL (#88)', () => {
   });
 
   it('detects changed TTL interval semantically (by seconds)', () => {
-    // P1DT0H == 24 часа != PT2H; при этом "PT120M" эквивалентен "PT2H"
+    // P1DT0H == 24 hours != PT2H; meanwhile "PT120M" is equivalent to "PT2H"
     const equalCheck = checkTableSchema(
       ttlExpected,
       sessionDescription({
@@ -1075,7 +1075,7 @@ describe('checkTableSchema TTL (#88)', () => {
   });
 
   it('matches fractional-second TTL without precision loss (#88)', () => {
-    // PT0.5S == ровно 500000µs; сравнение в целых микросекундах YDB Interval
+    // PT0.5S == exactly 500000µs; comparison in whole YDB Interval microseconds
     const fractionalExpected = {
       ...ttlExpected,
       ttl: { interval: 'PT0.5S', column: 'expires_at' },
@@ -1088,7 +1088,7 @@ describe('checkTableSchema TTL (#88)', () => {
     );
     expect(equalCheck.ttlMismatches).toEqual([]);
 
-    // Сдвиг на микросекунду фиксируется как расхождение
+    // A one-microsecond shift is detected as a mismatch
     const changedCheck = checkTableSchema(
       fractionalExpected,
       sessionDescription({
@@ -1099,8 +1099,8 @@ describe('checkTableSchema TTL (#88)', () => {
   });
 
   it('treats sub-microsecond intervals as mismatch instead of truncating (#88)', () => {
-    // "PT0.0000001S" непредставим в YDB Interval: усечение до 0µs дало бы
-    // ложное «совпадение» с TTL = 0 секунд в БД
+    // "PT0.0000001S" is not representable in a YDB Interval: truncation to 0µs
+    // would give a false "match" with TTL = 0 seconds in the DB
     const subMicroExpected = {
       ...ttlExpected,
       ttl: { interval: 'PT0.0000001S', column: 'expires_at' },
@@ -1331,7 +1331,7 @@ describe('YdbSchemaSyncer', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    // driver не используется: describeTable мокается
+    // driver is not used: describeTable is mocked
     syncer = new YdbSchemaSyncer({} as never, executor);
   });
 
@@ -1603,8 +1603,8 @@ describe('YdbSchemaSyncer', () => {
     expect(executedSql()).toEqual([]);
   });
 
-  // Синхронизация TTL (#88): отсутствующий ставим, изменённый заменяем,
-  // лишний не сбрасываем.
+  // TTL sync (#88): missing is set, changed is replaced,
+  // extra is not reset.
   describe('sync applies TTL changes', () => {
     const sessionDescriptionFull = (ttl?: YdbTableTtl): YdbTableDescription =>
       description(
@@ -1880,8 +1880,8 @@ describe('YdbSchemaSyncer.describeTable TTL parsing (#88)', () => {
   });
 });
 
-// Регресс-тесты #91: describeTable различает «таблицы нет» и другие
-// SCHEME_ERROR, а не-примитивные типы не деградируют до «typeId=0».
+// Regression tests #91: describeTable distinguishes "no table" from other
+// SCHEME_ERRORs, and non-primitive types do not degrade to "typeId=0".
 describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () => {
   const sessionResult = anyPack(
     CreateSessionResultSchema,
@@ -1972,8 +1972,8 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
   });
 
   it('treats issues-less SCHEME_ERROR as an error, not as missing table', async () => {
-    // ydb-platform/ydb#7791: DescribeTable может не прислать issues вовсе.
-    // Без текста «не существует» это нельзя считать not-found (#91).
+    // ydb-platform/ydb#7791: DescribeTable may send no issues at all.
+    // Without "does not exist" text it cannot be treated as not-found (#91).
     const { syncer } = makeDescribeTableSyncer({
       operation: { status: StatusIds_StatusCode.SCHEME_ERROR },
     });
@@ -2008,7 +2008,7 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
       /Access denied/,
     );
 
-    // Ни CREATE TABLE, ни какого-либо другого DDL
+    // Neither CREATE TABLE nor any other DDL
     expect(executedSql()).toEqual([]);
   });
 
@@ -2103,9 +2103,9 @@ describe('DescribeTable non-primitive column types (#91)', () => {
 
     const desc = await syncer.describeTable('mixed_table');
 
-    // Примитивная колонка осталась в columns…
+    // The primitive column stays in columns...
     expect(desc?.columns.get('uuid')).toBe(Type_PrimitiveTypeId.UUID);
-    // …а не-примитивные ушли в unsupportedColumns с фактическим типом
+    // ...while non-primitives went into unsupportedColumns with the actual type
     expect(desc?.columns.has('price')).toBe(false);
     expect(desc?.unsupportedColumns).toEqual(
       new Map([
@@ -2288,11 +2288,11 @@ describe('DescribeTable non-primitive column types (#91)', () => {
 });
 
 /**
- * #23: детекция вероятных переименований колонок. Чистые литеральные
- * схемы — без декораторов, чтобы точно управлять PK/индексами/TTL.
+ * #23: detection of likely column renames. Plain literal schemas —
+ * without decorators, so PK/indexes/TTL can be controlled precisely.
  */
 describe('checkTableSchema: column rename hints (#23)', () => {
-  // Сущность переименовала label -> title; в БД осталась label
+  // The entity renamed label -> title; the DB still has label
   const renameExpected = (overrides: Partial<ExpectedTableSchema> = {}) => ({
     tableName: 'photos',
     columns: { uuid: 'Uuid', title: 'Utf8' } as Record<string, YdbPrimitive>,
@@ -2463,7 +2463,7 @@ describe('checkTableSchema: column rename hints (#23)', () => {
     };
 
     const result = checkTableSchema(renameExpected(), withUnsupported);
-    // Тип label неизвестен (#91) — сравнение типов невозможно, подсказки нет.
+    // The type of label is unknown (#91) — type comparison is impossible, no hint.
     expect(result.extraColumns).toEqual(['label']);
     expect(result.missingColumns).toEqual([['title', 'Utf8']]);
     expect(result.typeMismatches).toEqual([]);
@@ -2506,8 +2506,8 @@ describe('rename-suggestion diagnostics consistency (#23)', () => {
     expect(issues.filter((i) => i.kind === 'rename-suggestion')).toHaveLength(
       1,
     );
-    // Расхождение само по себе не «закрыто» подсказкой: колонки по-прежнему
-    // числятся отсутствующей и лишней.
+    // The mismatch itself is not "resolved" by the hint: the columns still
+    // count as missing and extra.
     expect(issues.filter((i) => i.kind === 'missing-column')).toHaveLength(1);
     expect(issues.filter((i) => i.kind === 'extra-column')).toHaveLength(1);
   });

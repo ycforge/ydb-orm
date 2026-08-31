@@ -1,41 +1,41 @@
 /**
- * Exit-коды CLI (#152).
+ * CLI exit codes (#152).
  *
- * Для `migration:check` / `migration:status` код детерминирован
- * состоянием проверки (см. migrations/migration-check.ts), чтобы CI
- * различал «не готово» разных причин и реальный сбой команды:
+ * For `migration:check` / `migration:status` the code is determined
+ * by the verification state (see migrations/migration-check.ts), so CI
+ * can distinguish different "not ready" reasons from an actual command failure:
  *
- *  0 — готово: все миграции применены; схема совпадает, если проверялась;
- *  1 — есть неприменённые миграции (pending);
- *  2 — есть прерванные миграции (`state='started'`, #101);
- *  3 — схема БД расходится с метаданными сущностей (нужен entities в конфиге);
- *  4 — содержимое применённой миграции изменилось (#101);
- *  5 — ошибка выполнения команды (подключение, конфиг, неожиданный сбой).
+ *  0 — ready: all migrations applied; schema matches if checked;
+ *  1 — pending migrations exist;
+ *  2 — interrupted migrations exist (`state='started'`, #101);
+ *  3 — DB schema diverges from entity metadata (requires entities in config);
+ *  4 — applied migration content changed (#101);
+ *  5 — command execution error (connection, config, unexpected crash).
  *
- * Остальные команды: 0 — успех/help, 1 — любая ошибка (как раньше).
+ * Other commands: 0 — success/help, 1 — any error (as before).
  */
 
-/** Готово (успех или help). */
+/** Ready (success or help). */
 export const EXIT_OK = 0;
-/** Есть неприменённые миграции. */
+/** Pending migrations exist. */
 export const EXIT_PENDING_MIGRATIONS = 1;
-/** Есть прерванные миграции (#101). */
+/** Interrupted migrations exist (#101). */
 export const EXIT_INTERRUPTED_MIGRATIONS = 2;
-/** Схема БД расходится с метаданными сущностей. */
+/** DB schema diverges from entity metadata. */
 export const EXIT_SCHEMA_DRIFT = 3;
-/** Содержимое применённой миграции изменилось (#101). */
+/** Applied migration content changed (#101). */
 export const EXIT_MODIFIED_MIGRATION = 4;
-/** Ошибка выполнения команды (check/status); остальные команды — 1. */
+/** Command execution error (check/status); other commands — 1. */
 export const EXIT_COMMAND_ERROR = 5;
 
-/** Exit-код по умолчанию для ошибок вне check/status. */
+/** Default exit code for errors outside check/status. */
 export const DEFAULT_EXIT_CODE = 1;
 
 const EXIT_CODE_TAG = Symbol('ydb-orm.cli.exitCode');
 
 /**
- * Помечает исходную ошибку exit-кодом, не заворачивая её: цепочка cause,
- * стек и сообщение остаются нетронутыми (formatError печатает как раньше).
+ * Tags the original error with an exit code, without wrapping it: the cause
+ * chain, stack, and message remain intact (formatError prints as before).
  */
 export function tagExitCode<T>(error: T, exitCode: number): T {
   if (error instanceof Error) {
@@ -45,8 +45,8 @@ export function tagExitCode<T>(error: T, exitCode: number): T {
 }
 
 /**
- * Достаёт exit-код из помеченной ошибки (или из её цепочки cause);
- * неизвестные ошибки — DEFAULT_EXIT_CODE.
+ * Extracts the exit code from a tagged error (or from its cause chain);
+ * unknown errors — DEFAULT_EXIT_CODE.
  */
 export function exitCodeOf(error: unknown): number {
   let current: unknown = error;

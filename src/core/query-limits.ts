@@ -1,31 +1,31 @@
 /**
- * Лимиты батч-запросов (#86): единая точка определения размера чанка
- * для IN (...) списков — используется persistence (fetchByColumnIn)
- * и relations (join-таблицы many-to-many, eager/loading связей).
+ * Batch-query limits (#86): single definition point of the chunk size for
+ * IN (...) lists — used by persistence (fetchByColumnIn) and relations
+ * (many-to-many join tables, eager/loading of relations).
  */
 
 /**
- * Максимальное количество значений в одном IN (...) списке.
+ * Maximum number of values in a single IN (...) list.
  *
- * Почему именно 500:
- * - у YDB есть лимит на длину текста запроса (по умолчанию 10 KB) и
- *   суммарный размер параметров gRPC-запроса (~50 MB на параметры,
- *   но текст запроса ограничен жёстче);
- * - каждый элемент IN (...) разворачивается в отдельный плейсхолдер `$pN`
- *   (~5–8 символов текста + отдельный параметр запроса), поэтому чанк из
- *   500 значений даёт ~3–4 KB SQL-текста — с запасом до лимита даже при
- *   дополнительных WHERE-условиях;
- * - значение согласовано с практикой батчинга самого YDB CLI
- *   (дефолт 1000 параметров на batch), но консервативнее.
+ * Why 500:
+ * - YDB limits the query text length (default 10 KB) and the total size of
+ *   the gRPC request parameters (~50 MB for parameters, but the query text
+ *   is capped more strictly);
+ * - each IN (...) element expands into its own placeholder `$pN`
+ *   (~5–8 characters of SQL plus a separate request parameter), so a chunk
+ *   of 500 values yields ~3–4 KB of SQL text — safely under the limit even
+ *   with additional WHERE conditions;
+ * - the value is aligned with the batching practice of the YDB CLI itself
+ *   (default 1000 parameters per batch), but is more conservative.
  *
- * Большие списки FK/PK режутся на несколько последовательных запросов,
- * результаты объединяются без дубликатов (см. chunkInValues).
+ * Large FK/PK lists are split into several sequential queries and the
+ * results are merged without duplicates (see chunkInValues).
  */
 export const MAX_IN_CLAUSE_VALUES = 500;
 
 /**
- * Режет список значений на чанки по MAX_IN_CLAUSE_VALUES (или явному size).
- * Порядок элементов сохраняется; последний чанк может быть меньше.
+ * Splits a list of values into chunks of MAX_IN_CLAUSE_VALUES (or an explicit size).
+ * Element order is preserved; the last chunk may be smaller.
  */
 import { valueIdentityKey } from './value-identity.js';
 export function chunkInValues<T>(
@@ -43,23 +43,23 @@ export function chunkInValues<T>(
 }
 
 /**
- * Дедупликация значений FK/PK с сохранением порядка первого вхождения.
+ * Deduplicates FK/PK values preserving the order of first occurrence.
  *
- * Ключ дедупликации — канонический value-ключ (#174): скаляры
- * (string/number/bigint/boolean) сравниваются по значению, а Bytes и
- * Date — ПО ЗНАЧЕНИЮ (два равных `Uint8Array` или две равные `Date`)
- * тоже схлопываются в одно значение, хотя по ссылке это разные объекты.
+ * The deduplication key is the canonical value key (#174): scalars
+ * (string/number/bigint/boolean) are compared by value, and Bytes and
+ * Date are compared BY VALUE too — two equal `Uint8Array`s or two equal
+ * `Date`s collapse into one value even though they are different objects.
  */
 export function dedupeInValues<T>(values: readonly T[]): T[] {
   const hasObject = values.some(
     (value) => typeof value === 'object' && value !== null,
   );
   if (!hasObject) {
-    // Быстрый путь: все значения — примитивы (string/number/bigint/boolean/
-    // null/undefined). Нативные Set-семантики (SameValueZero с различением
-    // типов и нормализацией -0/0) в точности совпадают с каноническим
-    // value-ключом однокомпонентных примитивов (#174), поэтому сериализация
-    // каждого значения не нужна.
+    // Fast path: all values are primitives (string/number/bigint/boolean/
+    // null/undefined). Native Set semantics (SameValueZero with type
+    // discrimination and -0/0 normalization) exactly match the canonical
+    // value key of single-component primitives (#174), so serializing each
+    // value is unnecessary.
     const seen = new Set<T>();
     const out: T[] = [];
     for (const value of values) {
@@ -70,8 +70,8 @@ export function dedupeInValues<T>(values: readonly T[]): T[] {
     }
     return out;
   }
-  // Fallback: есть Bytes/Date — сравнение по значению требует
-  // канонического ключа.
+  // Fallback: Bytes/Date present — value-based comparison requires a
+  // canonical key.
   const seen = new Map<string, T>();
   for (const value of values) {
     const key = valueIdentityKey([value]);
@@ -80,21 +80,22 @@ export function dedupeInValues<T>(values: readonly T[]): T[] {
   return [...seen.values()];
 }
 
-/** Защитный лимит строк по умолчанию для SELECT без явного limit (#133). */
+/** Default safety row limit for SELECTs without an explicit limit (#133). */
 export const DEFAULT_RETRIEVE_LIMIT = 100;
 
-/** Максимально допустимый лимит строк в одном SELECT. */
+/** Maximum allowed row limit for a single SELECT. */
 export const MAX_RETRIEVE_LIMIT = 1000;
 
 /**
- * Итоговый LIMIT с явной семантикой (#133):
- * - лимит не задан — защитный дефолт DEFAULT_RETRIEVE_LIMIT;
- * - `0` — LIMIT 0 (пустой результат), НЕ клампится в 1;
- * - положительное целое значение — до MAX_RETRIEVE_LIMIT (потолок);
- * - отрицательное, дробное или неконечное значение — ошибка.
+ * Resolves the effective LIMIT with explicit semantics (#133):
+ * - limit not set — safety default DEFAULT_RETRIEVE_LIMIT;
+ * - `0` — LIMIT 0 (empty result), NOT clamped to 1;
+ * - positive integer — up to MAX_RETRIEVE_LIMIT (ceiling);
+ * - negative, fractional or non-finite value — error.
  *
- * Единая точка семантики для query-builder и persistence (#158): раньше
- * persistence молча клампил limit: 0 → 1 и отрицательные → 1.
+ * Single definition point of the semantics shared by the query builder and
+ * persistence (#158): previously persistence silently clamped limit: 0 → 1
+ * and negatives → 1.
  */
 export function resolveRetrieveLimit(limit: number | undefined): number {
   if (limit === undefined) {
@@ -109,8 +110,8 @@ export function resolveRetrieveLimit(limit: number | undefined): number {
 }
 
 /**
- * Итоговый OFFSET: не задан — 0; дробное округляется вниз;
- * отрицательное клампится в 0.
+ * Resolves the effective OFFSET: not set — 0; fractional values are floored;
+ * negative values are clamped to 0.
  */
 export function resolveRetrieveOffset(offset: number | undefined): number {
   const num = Number.isFinite(offset) ? Math.floor(offset as number) : 0;

@@ -11,26 +11,26 @@ function fromRecord(rec: Record<string, unknown>): (name: string) => unknown {
 }
 
 describe('serializeAadV2 (#165)', () => {
-  it('различает tuple из issue: вложенные разделители не создают коллизий', () => {
+  it('distinguishes tuples from the issue: nested separators cause no collisions', () => {
     const t1 = serializeAadV2(['a', 'b'], fromRecord({ a: 'x;b=y', b: '' }));
     const t2 = serializeAadV2(['a', 'b'], fromRecord({ a: 'x', b: 'y;b=' }));
     expect(t1).not.toBe(t2);
   });
 
-  it('prefix v2 маркирует формат и отделяет от legacy', () => {
+  it('prefix v2 marks format and separates from legacy', () => {
     const out = serializeAadV2(['uuid'], fromRecord({ uuid: 'u-1' }));
     expect(out.startsWith('v2:')).toBe(true);
     expect(out).not.toBe('uuid=u-1');
   });
 
-  it('фиксированный порядок полей: перестановка значений даёт другую строку', () => {
+  it('fixed field order: permuting values produces different string', () => {
     const rec = { a: 'x', b: 'y' };
     const ab = serializeAadV2(['a', 'b'], fromRecord(rec));
     const ba = serializeAadV2(['b', 'a'], fromRecord(rec));
     expect(ab).not.toBe(ba);
   });
 
-  it('absent и null кодируются единым маркером отсутствия значения', () => {
+  it('absent and null encoded with single missing-value marker', () => {
     const withNull = serializeAadV2(
       ['a', 'b'],
       fromRecord({ a: 'x', b: null }),
@@ -43,13 +43,13 @@ describe('serializeAadV2 (#165)', () => {
     expect(withNull.endsWith('0')).toBe(true);
   });
 
-  it('поле с пустой строкой отличается от отсутствующего поля', () => {
+  it('field with empty string differs from absent field', () => {
     const empty = serializeAadV2(['a', 'b'], fromRecord({ a: 'x', b: '' }));
     const missing = serializeAadV2(['a', 'b'], fromRecord({ a: 'x' }));
     expect(empty).not.toBe(missing);
   });
 
-  it('Bytes-значения (Uint8Array) нормализуются через base64 детерминированно', () => {
+  it('Bytes values (Uint8Array) normalized via base64 deterministically', () => {
     const bytes = new TextEncoder().encode('abc');
     const same = new TextEncoder().encode('abc');
     const other = new TextEncoder().encode('abd');
@@ -58,15 +58,15 @@ describe('serializeAadV2 (#165)', () => {
     const aad2 = serializeAadV2(['blob'], fromRecord({ blob: same }));
     const aad3 = serializeAadV2(['blob'], fromRecord({ blob: other }));
 
-    // Один и тот же набор байт — одна и та же AAD-строка (в любом инстансе).
+    // The same byte set yields the same AAD string (from any instance).
     expect(aad1).toBe(aad2);
-    // Разные байты — разные строки.
+    // Different bytes yield different strings.
     expect(aad1).not.toBe(aad3);
-    // Значение кодируется base64 ('abc' → 'YWJj').
+    // The value is base64-encoded ('abc' → 'YWJj').
     expect(aad1).toContain('4:YWJj');
   });
 
-  it('Bytes AAD различает разные значения первой же строкой', () => {
+  it('Bytes AAD distinguishes different values at first line', () => {
     const a = serializeAadV2(
       ['a', 'b'],
       fromRecord({ a: 'x', b: new TextEncoder().encode('v') }),
@@ -78,7 +78,7 @@ describe('serializeAadV2 (#165)', () => {
     expect(a).not.toBe(b);
   });
 
-  it('значения, похожие на length-prefix компонента, не ломают кодировку', () => {
+  it('values resembling length-prefix component do not break encoding', () => {
     const t1 = serializeAadV2(['a'], fromRecord({ a: '1:a0' }));
     const t2 = serializeAadV2(['a'], fromRecord({ a: '1:a1' }));
     const t3 = serializeAadV2(['a', 'b'], fromRecord({ a: 'x', b: '0' }));
@@ -86,7 +86,7 @@ describe('serializeAadV2 (#165)', () => {
     expect(t3).not.toBe(t1);
   });
 
-  it('разные пары значений всегда дают разные кодировки', () => {
+  it('different value pairs always produce different encodings', () => {
     const tuples: Record<string, unknown>[] = [
       { a: 'x', b: 'y' },
       { a: 'x', b: 'y;b=' },
@@ -102,7 +102,7 @@ describe('serializeAadV2 (#165)', () => {
     expect(new Set(encodings).size).toBe(encodings.length);
   });
 
-  it('нормализует каждое присутствующее значение ровно один раз (#204)', () => {
+  it('normalizes each present value exactly once (#204)', () => {
     const d1 = new Date('2024-01-01T00:00:00.000Z');
     const d2 = new Date('2025-06-15T12:30:45.000Z');
     const iso1 = jest.spyOn(d1, 'toISOString');
@@ -112,12 +112,12 @@ describe('serializeAadV2 (#165)', () => {
         ['dt1', 'dt2'],
         fromRecord({ dt1: d1, dt2: d2 }),
       );
-      // Байт-в-байт тот же v2-формат: длина + значение для каждого поля.
+      // Byte-for-byte the same v2 format: length + value for each field.
       expect(out).toBe(
         'v2:3:dt1124:2024-01-01T00:00:00.000Z' +
           '3:dt2124:2025-06-15T12:30:45.000Z',
       );
-      // Нормализация (Date → ISO) выполняется один раз на значение.
+      // Normalization (Date → ISO) happens once per value.
       expect(iso1).toHaveBeenCalledTimes(1);
       expect(iso2).toHaveBeenCalledTimes(1);
     } finally {
@@ -128,7 +128,7 @@ describe('serializeAadV2 (#165)', () => {
 });
 
 describe('serializeAadLegacy', () => {
-  it('сохраняет исторический формат name=value;... и пропуск null-полей', () => {
+  it('preserves historical name=value;... format and skips null fields', () => {
     const out = serializeAadLegacy(
       ['uuid', 'tenant_id'],
       fromRecord({ uuid: 'u-1', tenant_id: null }),
@@ -136,7 +136,7 @@ describe('serializeAadLegacy', () => {
     expect(out).toBe('uuid=u-1');
   });
 
-  it('типичные коллизии legacy остаются коллизиями legacy (для теста миграции)', () => {
+  it('typical legacy collisions remain legacy collisions (for migration test)', () => {
     const t1 = serializeAadLegacy(
       ['a', 'b'],
       fromRecord({ a: 'x;b=y', b: '' }),
@@ -150,13 +150,13 @@ describe('serializeAadLegacy', () => {
 });
 
 describe('buildAad', () => {
-  it('по умолчанию использует безопасный v2', () => {
+  it('defaults to safe v2', () => {
     expect(DEFAULT_AAD_FORMAT).toBe('v2');
     const out = buildAad(['uuid'], fromRecord({ uuid: 'u-1' }));
     expect(out.startsWith('v2:')).toBe(true);
   });
 
-  it('явный legacy отдаёт исторический формат', () => {
+  it('explicit legacy returns historical format', () => {
     const out = buildAad(['uuid'], fromRecord({ uuid: 'u-1' }), 'legacy');
     expect(out).toBe('uuid=u-1');
   });
