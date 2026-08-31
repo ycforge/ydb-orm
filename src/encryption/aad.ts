@@ -39,7 +39,8 @@ export function serializeAadV2(
     const present = value !== undefined && value !== null;
     out += `${name.length}:${name}${present ? '1' : '0'}`;
     if (present) {
-      out += `${toAadString(value).length}:${toAadString(value)}`;
+      const normalized = toAadString(value);
+      out += `${normalized.length}:${normalized}`;
     }
   }
   return out;
