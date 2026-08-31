@@ -1,4 +1,4 @@
-import { describe, it, expect } from '@jest/globals';
+import { describe, it, expect, jest } from '@jest/globals';
 import {
   buildAad,
   serializeAadV2,
@@ -100,6 +100,30 @@ describe('serializeAadV2 (#165)', () => {
     const names = ['a', 'b', 'c', 'd'];
     const encodings = tuples.map((t) => serializeAadV2(names, fromRecord(t)));
     expect(new Set(encodings).size).toBe(encodings.length);
+  });
+
+  it('нормализует каждое присутствующее значение ровно один раз (#204)', () => {
+    const d1 = new Date('2024-01-01T00:00:00.000Z');
+    const d2 = new Date('2025-06-15T12:30:45.000Z');
+    const iso1 = jest.spyOn(d1, 'toISOString');
+    const iso2 = jest.spyOn(d2, 'toISOString');
+    try {
+      const out = serializeAadV2(
+        ['dt1', 'dt2'],
+        fromRecord({ dt1: d1, dt2: d2 }),
+      );
+      // Байт-в-байт тот же v2-формат: длина + значение для каждого поля.
+      expect(out).toBe(
+        'v2:3:dt1124:2024-01-01T00:00:00.000Z' +
+          '3:dt2124:2025-06-15T12:30:45.000Z',
+      );
+      // Нормализация (Date → ISO) выполняется один раз на значение.
+      expect(iso1).toHaveBeenCalledTimes(1);
+      expect(iso2).toHaveBeenCalledTimes(1);
+    } finally {
+      iso1.mockRestore();
+      iso2.mockRestore();
+    }
   });
 });
 
