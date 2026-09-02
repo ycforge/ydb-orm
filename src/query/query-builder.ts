@@ -36,10 +36,13 @@ type EntityClass<T extends YdbBaseEntity> = {
 
 /**
  * Chainable query builder over an Active Record entity.
- * where/andWhere conditions are equality-only and combined with AND
- * (repeating a field in andWhere overwrites the previous value). JSON
- * predicates (andWhereJsonExists/andWhereJsonValue) for the same column do
- * NOT overwrite each other — they compose via AND (#201).
+ * `where()` / `andWhere()` add conditions that support the same WHERE
+ * operators as the persistence layer, including comparison operators,
+ * `$in`, `$like`, `$between`, `$and` / `$or`, JSON predicates, and
+ * related-entity filters where supported.
+ *
+ * JSON predicates (`andWhereJsonExists` / `andWhereJsonValue`) for the same
+ * column do NOT overwrite each other — they compose via AND (#201).
  * Encrypted fields with a blind index are supported just like in find/findAll.
  *
  * The builder is reusable: builder methods (where/orderBy/limit/... ) and
