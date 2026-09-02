@@ -232,7 +232,7 @@ export interface YdbTransactionHandle {
 }
 
 /**
- * A thenable YDB query client: callable as a tagged-template query builder,
+ * YDB query executor: callable as a tagged-template query builder,
  * exposing `transaction()` to execute inside a transaction.
  */
 export interface YdbExecutor {
