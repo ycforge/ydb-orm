@@ -27,8 +27,8 @@ export function YdbColumn(type: YdbPrimitive): PropertyDecorator {
 }
 
 /**
- * Primary key decorator (optional, for future migrations/indexes).
- * Essentially the same as YdbColumn but with an additional meta-label.
+ * Primary key column decorator.
+ * Sets the YDB type of the column and marks it as part of the entity's primary key.
  *
  * @param type - YDB primitive type for the primary key column.
  * @returns Property decorator function.
