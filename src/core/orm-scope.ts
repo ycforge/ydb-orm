@@ -1,42 +1,42 @@
 import type { YdbTransactionsSettings } from './interfaces.js';
 
 /**
- * Скоуп одной независимой ORM-конфигурации (#199).
+ * Scope of one independent ORM configuration (#199).
  *
- * Раньше конфигурация была процессно-глобальной: один executor, одни
- * настройки транзакций, один набор сущностей на процесс. Скоуп делает
- * конфигурацию instance-scoped: у каждого скоупа собственные настройки
- * транзакций и собственный набор сущностей, а executor/провайдеры
- * изолируются естественно — через per-class entity runtime (сущность
- * физически не может быть подключена к двум конфигурациям сразу).
+ * Previously the configuration was process-global: one executor, one
+ * transaction setting, one entity set per process. A scope makes the
+ * configuration instance-scoped: each scope has its own transaction settings
+ * and its own entity set, while executors/providers are isolated naturally —
+ * via per-class entity runtime (an entity physically cannot be attached to two
+ * configurations at once).
  *
- * Контракт владения: один класс сущности принадлежит ровно одному
- * АКТИВНОМУ скоупу. Повторная регистрация в другом скоупе —
- * детерминированная ошибка (см. claimEntitiesForScope). Освобождение —
- * releaseOrmScope() (NestJS вызывает при shutdown приложения).
+ * Ownership contract: an entity class belongs to exactly one ACTIVE scope.
+ * Re-registration in another scope is a deterministic error (see
+ * claimEntitiesForScope). Release happens via releaseOrmScope() (NestJS calls
+ * it on application shutdown).
  */
 export interface YdbOrmScope {
-  /** Имя конфигурации: 'default' или пользовательское (NestJS `name`). */
+  /** Configuration name: 'default' or a custom one (NestJS `name`). */
   readonly name: string;
   /**
-   * Настройки транзакций этой конфигурации (#98/#199). undefined —
-   * наследуются процессно-глобальные настройки (configureTransactionContext),
-   * что сохраняет прежнее поведение standalone/тестов.
+   * Transaction settings of this configuration (#98/#199). undefined —
+   * inherit the process-global settings (configureTransactionContext), which
+   * preserves the previous standalone/test behavior.
    */
   transactions?: Required<YdbTransactionsSettings>;
-  /** Сущности, привязанные к этой конфигурации. */
+  /** Entities bound to this configuration. */
   readonly entities: Set<YdbEntityClass>;
 }
 
 type YdbEntityClass = new (...args: any[]) => any;
 
-/** Имя конфигурации по умолчанию (обратная совместимость). */
+/** Default configuration name (backward compatibility). */
 export const DEFAULT_ORM_SCOPE_NAME = 'default';
 
 /**
- * Владение сущностями: класс → активный скоуп-владелец.
- * Обычный Map (не WeakMap): владение снимается явно через releaseOrmScope,
- * а GC классов сущностей на практике не происходит.
+ * Entity ownership: class → active owner scope.
+ * A plain Map (not WeakMap): ownership is removed explicitly via
+ * releaseOrmScope, and GC of entity classes does not happen in practice.
  */
 const entityOwners = new Map<YdbEntityClass, YdbOrmScope>();
 
@@ -50,9 +50,9 @@ function normalizeTransactions(
 }
 
 /**
- * Создаёт скоуп новой независимой конфигурации (#199).
+ * Creates a scope for a new independent configuration (#199).
  *
- * Standalone-пример:
+ * Standalone example:
  * ```ts
  * const reporting = createOrmScope('reporting', { transactions: { ambient: true } });
  * configureEntities([ReportEntity], { executor: reportingExecutor, scope: reporting });
@@ -77,11 +77,11 @@ export function createOrmScope(
 let defaultScope: YdbOrmScope | undefined;
 
 /**
- * Скоуп конфигурации по умолчанию — ленивый синглтон. Именно он
- * используется configureEntities() без options.scope и дефолтной
- * конфигурацией NestJS, поэтому одиночная конфигурация и повторный
- * бутстрап (тесты, hot-restart) работают как раньше: скоуп никогда
- * не освобождается, повторный claim своих же сущностей идемпотентен.
+ * Default configuration scope — a lazy singleton. It is the one used by
+ * configureEntities() without options.scope and by the default NestJS
+ * configuration, so a single configuration and repeated bootstrap (tests,
+ * hot-restart) keep working as before: the scope is never released, and
+ * re-claiming its own entities is idempotent.
  */
 export function getDefaultOrmScope(): YdbOrmScope {
   if (!defaultScope) {
@@ -91,12 +91,12 @@ export function getDefaultOrmScope(): YdbOrmScope {
 }
 
 /**
- * Привязывает сущности к скоупу конфигурации (#199).
+ * Binds entities to a configuration scope (#199).
  *
- * Сущность, уже принадлежащая ДРУГОМУ активному скоупу, — понятная
- * ошибка конфигурации (тот же класс не может жить в двух конфигурациях:
- * его per-class runtime один). Повторный claim тем же скоупом
- * идемпотентен — это re-bootstrap в рамках одной конфигурации.
+ * An entity already owned by ANOTHER active scope is a clear configuration
+ * error (the same class cannot live in two configurations: its per-class
+ * runtime is single). Re-claiming by the same scope is idempotent — this is a
+ * re-bootstrap within one configuration.
  */
 export function claimEntitiesForScope(
   scope: YdbOrmScope,
@@ -122,8 +122,8 @@ export function claimEntitiesForScope(
 }
 
 /**
- * Снимает владение скоупа над его сущностями (shutdown приложения).
- * Идемпотентно. После release сущности можно привязать к другому скоупу.
+ * Releases the scope's ownership of its entities (application shutdown).
+ * Idempotent. After release the entities can be bound to another scope.
  */
 export function releaseOrmScope(scope: YdbOrmScope): void {
   for (const entity of scope.entities) {
@@ -135,9 +135,9 @@ export function releaseOrmScope(scope: YdbOrmScope): void {
 }
 
 /**
- * Снимает владение конкретных сущностей скоупа (rollback при ошибке
- * конфигурации). Только сущности, действительно принадлежащие scope,
- * освобождаются: ранее привязанные к нему же сущности не затрагиваются.
+ * Releases ownership of specific entities from a scope (rollback on
+ * configuration error). Only entities that actually belong to the scope
+ * are released: entities previously bound to the same scope are not affected.
  */
 export function releaseEntitiesFromScope(
   scope: YdbOrmScope,
@@ -151,7 +151,7 @@ export function releaseEntitiesFromScope(
   }
 }
 
-/** Текущий владелец сущности (для тестов и диагностики). */
+/** Current entity owner (for tests and diagnostics). */
 export function getEntityOrmScope(
   entity: YdbEntityClass,
 ): YdbOrmScope | undefined {
@@ -159,9 +159,9 @@ export function getEntityOrmScope(
 }
 
 /**
- * Заявляет сущности в скоупе и возвращает список сущностей, которые были
- * ново привязаны (не принадлежали этому скоупу ранее). Используется для
- * отката владения при ошибке конфигурации.
+ * Claims entities in a scope and returns the list of entities that were
+ * newly bound (did not previously belong to this scope). Used for
+ * ownership rollback on configuration error.
  */
 export function claimEntitiesForScopeWithTracking(
   scope: YdbOrmScope,

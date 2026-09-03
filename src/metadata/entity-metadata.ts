@@ -1,52 +1,63 @@
 import 'reflect-metadata';
 import { YdbPrimitive } from '../core/types.js';
 
+/** Reflect metadata key for the entity table name. */
 export const YDB_ENTITY_KEY = 'ydb:entity';
+/** Reflect metadata key for the column map (property → YDB type). */
 export const YDB_COLUMNS_KEY = 'ydb:columns';
+/** Reflect metadata key for the primary key column list. */
 export const YDB_PRIMARY_KEYS_KEY = 'ydb:primaryKeys';
+/** Reflect metadata key for encrypted field descriptors. */
 export const YDB_ENCRYPTED_KEY = 'ydb:encrypted';
+/** Reflect metadata key for Security AAD field names. */
 export const YDB_SECURITY_AAD_KEY = 'ydb:security:aad';
+/** Reflect metadata key for JSON-serialized column names. */
 export const YDB_JSON_COLUMNS_KEY = 'ydb:jsonColumns';
 
+/**
+ * Metadata for a single encrypted field (from `@YdbEncrypted`).
+ */
 export interface EncryptedFieldMeta {
   propertyKey: string;
   blindIndex: boolean;
   aadOverride?: string;
-  /**
-   * Ленивая дешифровка: поле не дешифруется при чтении из БД,
-   * а только по явному вызову decryptField()/decryptLazyFields().
-   */
+  /** Lazy decryption: field is not decrypted when reading from DB,
+   * only on explicit call to decryptField()/decryptLazyFields(). */
   lazy?: boolean;
 }
 
+/**
+ * Canonical metadata of an `@YdbEntity`-decorated class, built once per
+ * class and cached for the lifetime of the process.
+ */
 export interface YdbEntityMetadata<T = any> {
   tableName: string;
   schema: Record<string, YdbPrimitive>;
   primaryKeys: string[];
   encryptedFields: EncryptedFieldMeta[];
   aadFields: string[];
-  /** Колонки с автоматической JSON-сериализацией (хранятся как Utf8). */
+  /** Columns with automatic JSON serialization (stored as Utf8). */
   jsonColumns: string[];
   target: new (...args: any[]) => T;
 }
 
 /**
- * Метаданные собираются из Reflect один раз на класс: декораторы
- * отрабатывают при определении класса, до первого запроса.
+ * Metadata is collected from Reflect once per class: decorators
+ * run at class definition time, before the first query.
  */
 const metadataCache = new WeakMap<object, YdbEntityMetadata<any>>();
 
 /**
- * Извлекает метаданные, собранные декораторами @YdbEntity / @YdbColumn.
+ * Extracts metadata collected by @YdbEntity / @YdbColumn decorators.
  *
- * Имя таблицы читается только из СОБСТВЕННЫХ метаданных класса
- * (Reflect.getOwnMetadata, #92): сущностью является только класс,
- * непосредственно декорированный @YdbEntity. Подкласс без собственного
- * @YdbEntity — не сущность: он не наследует tableName родителя и потому
- * не регистрируется вторым классом на его таблицу (иначе buildExpectedSchemas
- * вернул бы дубликаты, а sync патчил одну таблицу дважды). Колонки, PK,
- * шифрование, AAD, JSON и enum при этом продолжают наследоваться по цепочке
- * прототипов с copy-on-write (см. декораторы свойств).
+ * Table name is read only from the class's OWN metadata
+ * (Reflect.getOwnMetadata, #92): an entity is only the class
+ * directly decorated with @YdbEntity. A subclass without its own
+ * @YdbEntity is not an entity: it does not inherit the parent's tableName
+ * and therefore is not registered as a second class on its table (otherwise
+ * buildExpectedSchemas would return duplicates, and sync would patch one
+ * table twice). Columns, PK, encryption, AAD, JSON, and enum still inherit
+ * through the prototype chain with copy-on-write (see property decorators).
  */
 export function getYdbEntityMetadata<T>(
   target: new (...args: any[]) => T,
@@ -83,8 +94,8 @@ export function getYdbEntityMetadata<T>(
     });
   }
 
-  // Шифруемые поля всегда хранятся как Bytes (raw ciphertext) — формат
-  // объявленный в @YdbColumn игнорируется (раньше был base64 в Utf8).
+  // Encrypted fields are always stored as Bytes (raw ciphertext) — format
+  // declared in @YdbColumn is ignored (previously was base64 in Utf8).
   for (const ef of encryptedFields) {
     schema[ef.propertyKey] = 'Bytes';
   }

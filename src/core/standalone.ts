@@ -26,13 +26,13 @@ import {
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid';
 
 /**
- * Конфигурация сущностей для программного использования без NestJS.
- * Валидирует метаданные каждой сущности, устанавливает executor,
- * генератор UUID (uuidVersion), провайдеры шифрования и валидации
- * на каждую переданную сущность и создаёт для неё YdbRepository.
+ * Entity configuration for programmatic use without NestJS.
+ * Validates each entity's metadata, sets the executor,
+ * UUID generator (uuidVersion), encryption and validation providers
+ * on each provided entity, and creates a YdbRepository for it.
  *
- * Повторный вызов полностью заменяет конфигурацию: если провайдеры
- * не переданы, прошлые сбрасываются (актуально для тестов и hot-restart).
+ * Repeated calls fully replace the configuration: if providers
+ * are not passed, previous ones are reset (relevant for tests and hot-restart).
  *
  * @example
  * ```ts
@@ -50,25 +50,25 @@ export function configureEntities(
     encryptionProvider?: YdbEncryptionProvider;
     blindIndexProvider?: YdbBlindIndexProvider;
     validationProvider?: YdbValidationProvider;
-    /** Версия генерируемых UUID для PK: v7 (по умолчанию) или v4. */
+    /** Version of generated UUIDs for PK: v7 (default) or v4. */
     uuidVersion?: 'v4' | 'v7';
     /**
-     * Формат сериализации Security AAD (#165): 'v2' (по умолчанию) или
-     * 'legacy' — только для переходного периода (дешифровка старого ciphertext).
+     * Security AAD serialization format (#165): 'v2' (default) or
+     * 'legacy' — only for the transition period (decryption of old ciphertext).
      */
     aadFormat?: AadFormat;
     /**
-     * Автоматическое определение формата AAD при чтении (#165): true (по
-     * умолчанию) — при сбое основного формата пробуется второй, legacy-строки
-     * читаемы после апгрейда на v2; false — строгий режим после перешифровки.
+     * Automatic AAD format detection on read (#165): true (by
+     * default) — on primary format failure the second is tried, legacy rows
+     * remain readable after upgrade to v2; false — strict mode after
+     * re-encryption.
      */
     aadReadFallback?: boolean;
     /**
-     * Скоуп независимой ORM-конфигурации (#199), создаётся через
-     * createOrmScope(). По умолчанию — процессный скоуп 'default'
-     * (прежнее поведение одиночной конфигурации). Один класс сущности
-     * может принадлежать только одному активному скоупу: регистрация
-     * в чужом скоупе — ошибка.
+     * Scope of an independent ORM configuration (#199), created via
+     * createOrmScope(). Defaults to the process-wide 'default' scope
+     * (legacy single-configuration behavior). An entity class can belong
+     * to only one active scope: registration in a foreign scope is an error.
      */
     scope?: YdbOrmScope;
   },
@@ -82,8 +82,8 @@ export function configureEntities(
 
   const scope = options.scope ?? getDefaultOrmScope();
 
-  // 1. Валидируем все сущности ДО привязки к скоупу: невалидная
-  // сущность не получает executor/провайдеры и не оставляет владения.
+  // 1. Validate all entities BEFORE binding to scope: an invalid
+  // entity does not receive executor/providers and leaves no ownership.
   for (const entity of entities) {
     assertEntityClass(entity);
     const issues = validateEntityMetadataIssues(
@@ -103,15 +103,15 @@ export function configureEntities(
     }
   }
 
-  // 2. Привязываем сущности к скоупу (идемпотентно) и запоминаем,
-  // какие из них были ново заявлены — для отката при ошибке конфигурации.
+  // 2. Bind entities to scope (idempotently) and remember
+  // which ones were newly claimed — for rollback on configuration error.
   const newlyClaimed = claimEntitiesForScopeWithTracking(scope, entities);
 
-  // 3. Применяем runtime-конфигурацию. Снимаем снимок состояния
-  // каждого класса сущности перед применением, чтобы при ошибке
-  // в середине цикла откатить все мутации (executor, providers, uuidGenerator,
-  // aadFormat, scope, transactions, repository) и оставить сущности
-  // в точно таком же состоянии, как до вызова configureEntities.
+  // 3. Apply runtime configuration. Take a snapshot of each entity
+  // class state before applying, so that on error mid-loop we can
+  // roll back all mutations (executor, providers, uuidGenerator,
+  // aadFormat, scope, transactions, repository) and leave entities
+  // in exactly the same state as before configureEntities.
   const runtimeSnapshots = new Map<typeof YdbBaseEntity, EntityRuntime>();
   for (const entity of entities) {
     const entityClass = entity as unknown as typeof YdbBaseEntity;

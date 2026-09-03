@@ -1,65 +1,66 @@
 /**
- * Ядро проверки готовности схемы БД (#152): чистая функция над статусами
- * миграций (`YdbMigrationRunner.status`) и, опционально, расхождениями
- * схемы (`YdbSchemaSyncer.verify`). Никакого I/O — CLI лишь рендерит
- * результат и выбирает exit-код.
+ * Core of the database schema readiness check (#152): a pure function over
+ * migration statuses (`YdbMigrationRunner.status`) and, optionally, schema
+ * drift (`YdbSchemaSyncer.verify`). No I/O — the CLI merely renders the
+ * result and chooses the exit code.
  *
- * Различимые состояния:
- *  - `ok`           — всё применено (и схема совпадает, если проверялась);
- *  - `pending`      — есть неприменённые миграции;
- *  - `interrupted`  — есть записи `state='started'` (#101): прошлый запуск
- *    оборвался посреди миграции, БД может быть частично изменена;
- *  - `modified`     — содержимое применённой миграции изменилось (#101);
- *  - `schema-drift` — схема БД расходится с метаданными сущностей
- *    (проверяется только если в конфиге CLI заданы entities).
+ * Distinguishable states:
+ *  - `ok`           — everything is applied (and the schema matches, if checked);
+ *  - `pending`      — there are unapplied migrations;
+ *  - `interrupted`  — there are `state='started'` records (#101): a previous
+ *    run broke off mid-migration, the DB may be partially changed;
+ *  - `modified`     — the content of an applied migration changed (#101);
+ *  - `schema-drift` — the DB schema diverges from the entity metadata
+ *    (checked only when entities are configured in the CLI config).
  *
- * Прерванные и изменённые миграции НЕ считаются успешно применёнными —
- * у таких статусов `applied=false` (флаг «причина» сохранён, #212).
- * Orphan-записи (файл удалён после применения) — информационные: сами по
- * себе готовность не ломают, но всегда выводятся в отчёте.
+ * Interrupted and modified migrations are NOT considered successfully
+ * applied — such statuses have `applied=false` (the "reason" flag is kept,
+ * #212). Orphan records (file deleted after application) are informational:
+ * on their own they do not break readiness, but are always shown in the report.
  */
 import type { YdbSchemaIssue } from '../schema/schema-sync.js';
 import type { YdbMigrationStatus } from './migration-runner.js';
 
-/** Состояние готовности схемы БД для migration:check / migration:status. */
+/** Database schema readiness state for migration:check / migration:status. */
 export type MigrationCheckState =
   'ok' | 'pending' | 'interrupted' | 'modified' | 'schema-drift';
 
-/** Состояния, означающие «не готово», в порядке приоритета. */
+/** The "not ready" states, in priority order. */
 export const MIGRATION_CHECK_STATES: readonly Exclude<
   MigrationCheckState,
   'ok'
 >[] = ['interrupted', 'modified', 'pending', 'schema-drift'];
 
+/** Verdict of a readiness evaluation combining migration statuses and optional schema drift. */
 export interface MigrationCheckVerdict {
-  /** true — только когда нет ни одного состояния «не готово». */
+  /** true — only when there is no "not ready" state at all. */
   ready: boolean;
   /**
-   * Определяющее состояние: первое по приоритету из обнаруженных
-   * (или 'ok'). По нему выбирается exit-код команды.
+   * The decisive state: the first by priority among the detected ones
+   * (or 'ok'). The command's exit code is selected from it.
    */
   state: MigrationCheckState;
-  /** Все обнаруженные состояния «не готово» в порядке приоритета. */
+  /** All detected "not ready" states in priority order. */
   states: Array<Exclude<MigrationCheckState, 'ok'>>;
-  /** Всего миграций в директории (без orphan-записей). */
+  /** Total migrations in the directory (excluding orphan records). */
   totalMigrations: number;
   /**
-   * Успешно применённых (без interrupted/modified/orphan) — для отчётов;
-   * готовность определяется полем ready, а не этим числом.
+   * Successfully applied (excluding interrupted/modified/orphan) — for
+   * reports; readiness is determined by the `ready` field, not this number.
    */
   appliedCount: number;
   pending: string[];
   interrupted: string[];
   modified: string[];
-  /** Информационные записи без файла миграции (на exit-код не влияют). */
+  /** Informational records without a migration file (do not affect the exit code). */
   orphaned: string[];
 }
 
 /**
- * Exit-коды `migration:check` / `migration:status` (#152).
- * Детерминированы состоянием; help/успех — 0. Ошибка выполнения
- * команды (подключение, I/O, неожиданное исключение) — отдельный код 5,
- * чтобы CI не путал её с ожидаемым «не готово».
+ * Exit codes for `migration:check` / `migration:status` (#152).
+ * Determined by the state; help/success — 0. A command execution error
+ * (connection, I/O, unexpected exception) is a separate code 5, so CI does
+ * not confuse it with the expected "not ready".
  */
 export const MIGRATION_STATE_EXIT_CODES: Record<MigrationCheckState, number> =
   Object.freeze({
@@ -70,26 +71,26 @@ export const MIGRATION_STATE_EXIT_CODES: Record<MigrationCheckState, number> =
     modified: 4,
   });
 
-/** Exit-код по определяющему состоянию вердикта. */
+/** Exit code for the verdict's decisive state. */
 export function migrationStateExitCode(state: MigrationCheckState): number {
   return MIGRATION_STATE_EXIT_CODES[state];
 }
 
 /**
- * Здоровая «применённая» миграция (#212): единственная точка истины для
- * «applied=true не означает проблему». Изменённая после применения и
- * прерванная миграции сюда не проходят в любой форме входных данных —
- * и новые (applied=false + флаг), и legacy/ручные (applied=true + флаг).
+ * A healthy "applied" migration (#212): the single source of truth that
+ * "applied=true does not mean a problem". Migrations modified after being
+ * applied and interrupted migrations never pass here in any input shape —
+ * neither new (applied=false + flag) nor legacy/manual (applied=true + flag).
  */
 function isHealthilyApplied(status: YdbMigrationStatus): boolean {
   return status.applied && !status.interrupted && !status.contentChanged;
 }
 
 /**
- * Сводит статусы миграций (+ опциональные issues схемы) к вердикту.
- * Приоритет при нескольких состояниях: interrupted > modified >
- * pending > schema-drift — сначала то, что блокирует повторный запуск
- * миграций, потом обычное «не применено», затем информационный drift.
+ * Reduces migration statuses (+ optional schema issues) to a verdict.
+ * Priority with multiple states: interrupted > modified > pending >
+ * schema-drift — first what blocks re-running migrations, then the plain
+ * "not applied", then the informational drift.
  */
 export function evaluateMigrationCheck(
   statuses: YdbMigrationStatus[],
@@ -104,9 +105,9 @@ export function evaluateMigrationCheck(
   for (const status of statuses) {
     if (status.orphan) {
       orphaned.push(status.name);
-      // Orphan-запись в состоянии `started`/с изменённым хешем всё равно
-      // блокирует: она попадает и в соответствующий список проблем.
-      // Чистый applied-orphan — только информационный.
+      // An orphan record in the `started` state or with a changed hash still
+      // blocks: it lands in the corresponding problem list too.
+      // A clean applied orphan is informational only.
       if (!status.interrupted && !status.contentChanged) continue;
     }
     if (status.interrupted) interrupted.push(status.name);

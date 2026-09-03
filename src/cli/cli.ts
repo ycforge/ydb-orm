@@ -80,7 +80,7 @@ Exit-коды migration:check / migration:status / migration:show (#152):
 Неизвестные флаги и пустые значения опций считаются ошибкой (#103).
 `;
 
-/** Команды проверки готовности: любые их сбои — exit 5 (#152). */
+/** Readiness-check commands: any of their failures is exit 5 (#152). */
 const MIGRATION_VERIFY_COMMANDS = new Set([
   'migration:check',
   'migration:show',
@@ -93,9 +93,9 @@ async function main(): Promise<void> {
     args = parseArgs(process.argv.slice(2));
     await runCommand(args);
   } catch (error) {
-    // Exit-код может быть помечен источником (#152): у команд проверки
-    // любая ошибка выполнения (конфиг, подключение, неожиданный сбой) —
-    // отдельный код 5; остальные команды — прежний 1.
+    // The exit code may carry a source marker (#152): for the verification
+    // commands any execution failure (config, connection, unexpected crash)
+    // is the dedicated code 5; the other commands keep the old 1.
     const code = exitCodeOf(error);
     process.exitCode =
       code === DEFAULT_EXIT_CODE &&
@@ -107,7 +107,7 @@ async function main(): Promise<void> {
     console.error(
       formatError(error, {
         verbose,
-        // Полезная диагностика окружения при verbose (#103).
+        // Useful environment diagnostics when verbose (#103).
         context: [
           `cwd: ${process.cwd()}`,
           `argv: ${JSON.stringify(process.argv.slice(2))}`,
@@ -150,8 +150,8 @@ async function runCommand(args: CliArgs): Promise<void> {
         error.name === 'PromptCancelledError' &&
         process.exitCode === 130
       ) {
-        // Отмена ввода (EOF/Ctrl+C/Ctrl+D) — чистый выход без записи файла:
-        // сообщение уже напечатано, стек не нужен.
+        // Input cancelled (EOF/Ctrl+C/Ctrl+D) — clean exit without writing a
+        // file: the message is already printed, no stack trace needed.
         return;
       }
       throw error;
@@ -200,7 +200,8 @@ async function runCommand(args: CliArgs): Promise<void> {
         args.positional as string,
         plan,
       );
-      // Сводка расхождений, попавших в миграцию (и оставшихся warnings).
+      // Summary of the discrepancies that landed in the migration (plus the
+      // remaining warnings).
       const issues = diffSchemas(expected, existing);
       if (issues.length) {
         console.log('Schema diff (entity vs database):');
@@ -224,8 +225,8 @@ async function runCommand(args: CliArgs): Promise<void> {
     }
     const { driver, executor, close } = await connectCli(config);
     try {
-      // Проверяем декораторы заранее: syncer.verify молча пропускает
-      // недекорированные классы
+      // Check decorators up front: syncer.verify silently skips
+      // undecorated classes
       for (const entity of config.entities) {
         requireEntityMeta(entity);
       }
@@ -235,10 +236,10 @@ async function runCommand(args: CliArgs): Promise<void> {
         console.log('Schema OK — no issues found');
       } else {
         console.error(`Found ${issues.length} schema issue(s):`);
-        // Расхождения пишутся в stderr — цвет решаем по stderr, а не по
-        // stdout (#103): при `ydb-orm schema:verify 2>issues.txt` ANSI-коды
-        // не должны уезжать в перенаправленный файл, а при
-        // `... | cat` — теряться, если stderr остался TTY.
+        // Discrepancies are written to stderr — color is decided by stderr,
+        // not by stdout (#103): with `ydb-orm schema:verify 2>issues.txt`
+        // ANSI codes must not leak into the redirected file, and with
+        // `... | cat` they must not be lost if stderr stays a TTY.
         console.error(renderSchemaDiff(issues, { stream: process.stderr }));
         process.exitCode = 1;
       }
@@ -249,8 +250,8 @@ async function runCommand(args: CliArgs): Promise<void> {
   }
 
   if (command === 'metadata:dump') {
-    // Read-only экспорт метаданных (#37): БД не подключается вовсе — ни
-    // драйвера, ни executor'а; конфиг нужен только ради списка entities.
+    // Read-only metadata export (#37): the DB is not touched at all — no
+    // driver, no executor; the config is needed only for the entities list.
     if (!config.entities?.length) {
       throw new Error(
         'metadata:dump requires "entities" in the CLI config ' +
@@ -258,16 +259,16 @@ async function runCommand(args: CliArgs): Promise<void> {
       );
     }
     const dump = buildMetadataDump(config.entities);
-    // Команда по природе JSON-only: единственный режим вывода — весь дамп
-    // в stdout, детерминированный (стабильный порядок и структура).
+    // The command is JSON-only by nature: the single output mode is the whole
+    // dump to stdout, deterministic (stable order and structure).
     console.log(JSON.stringify(dump, null, 2));
     return;
   }
 
   if (command === 'entity:diagram') {
-    // Read-only Mermaid ER-диаграмма (#36): тот же канонический источник,
-    // что у metadata:dump (#37); БД не подключается вовсе. Вся валидация
-    // и построение — до первого байта вывода/записи файла.
+    // Read-only Mermaid ER diagram (#36): the same canonical source as
+    // metadata:dump (#37); the DB is not touched at all. All validation
+    // and building happen before the first byte of output/file write.
     if (!config.entities?.length) {
       throw new Error(
         'entity:diagram requires "entities" in the CLI config ' +
@@ -285,8 +286,8 @@ async function runCommand(args: CliArgs): Promise<void> {
   }
 
   if (command === 'migration:repair') {
-    // Восстановление после прерванной миграции (#101): запись в
-    // ydb_migrations осталась в состоянии "started" и блокирует migration:run.
+    // Recovery after an interrupted migration (#101): the ydb_migrations
+    // record is stuck in "started" state and blocks migration:run.
     requireName(command, args.positional);
     if (!args.asApplied && !args.asReverted) {
       throw new Error(
@@ -341,8 +342,9 @@ async function runCommand(args: CliArgs): Promise<void> {
     command === 'migration:show' ||
     command === 'migration:status'
   ) {
-    // Единый read-only workflow проверки (#152): состояния и exit-коды
-    // см. migrations/migration-check.ts. Миграции и схема не меняются.
+    // A single read-only verification workflow (#152): states and exit codes
+    // are documented in migrations/migration-check.ts. Migrations and the
+    // schema are never modified.
     const verdict = await runMigrationVerification({
       command,
       migrationsDir,

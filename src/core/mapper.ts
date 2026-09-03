@@ -29,17 +29,15 @@ import {
 } from '@ydbjs/value/primitive';
 import { Optional } from '@ydbjs/value/optional';
 
-/** Границы знакового 32-битного целого. */
+/** Signed 32-bit integer bounds. */
 const INT32_MIN = -2147483648; // -2^31
 const INT32_MAX = 2147483647; // 2^31 - 1
 
-/** Границы знакового 64-битного целого. */
+/** Signed 64-bit integer bounds. */
 const INT64_MIN = -9223372036854775808n; // -2^63
 const INT64_MAX = 9223372036854775807n; // 2^63 - 1
 
-/**
- * Конструкторы YDB-типов для null-значений (Optional<null>).
- */
+/** YDB type constructors for null values (Optional<null>). */
 const nullTypeFactories = {
   Uuid: () => new UuidType(),
   Utf8: () => new Utf8Type(),
@@ -57,8 +55,8 @@ const nullTypeFactories = {
 } satisfies Record<YdbPrimitive, () => unknown>;
 
 /**
- * Безопасное строковое представление значения для сообщений об ошибках:
- * не раскрывает содержимое больших строк и бинарных данных.
+ * Safe string representation of a value for error messages:
+ * does not expose contents of large strings and binary data.
  */
 function valuePreview(value: unknown): string {
   if (value === null) return 'null';
@@ -84,7 +82,7 @@ function valuePreview(value: unknown): string {
     case 'function':
       return `<function ${value.name ?? 'anonymous'}>`;
     default: {
-      // Произвольный объект — показываем JSON, а не "[object Object]".
+      // Arbitrary object — show JSON, not "[object Object]".
       try {
         const json = JSON.stringify(value);
         if (json !== undefined) {
@@ -100,12 +98,12 @@ function valuePreview(value: unknown): string {
   }
 }
 
-/** Суффикс имени поля для сообщения об ошибке (если поле указано). */
+/** Field name suffix for error messages (if field is specified). */
 function fieldSuffix(field: string | undefined): string {
   return field ? ` (field "${field}")` : '';
 }
 
-/** Оборачивает ошибку конвертации, добавляя контекст (поле, тип, значение). */
+/** Wraps a conversion error, adding context (field, type, value). */
 function wrapConversionError(
   type: YdbPrimitive,
   value: unknown,
@@ -119,20 +117,19 @@ function wrapConversionError(
 }
 
 /**
- * Нормализация JS-даты: принимает Date, число (мс от эпохи) или ISO-строку.
+ * Normalizes a JS date: accepts Date, number (epoch ms), or ISO string.
  *
- * Внимание (точность): JS `Date` хранит только миллисекунды. YDB `Timestamp` —
- * микросекунды. Конвертация идёт как `getTime() * 1000n`, поэтому
- * субмиллисекундные значения (микро-/наносекунды) принципиально не могут быть
- * сохранены: при записи они обнуляются, при чтении YDB-микросекунды теряют
- * младшие три разряда. Используйте `Timestamp` только для миллисекундной
- * точности.
+ * Note (precision): JS `Date` stores only milliseconds. YDB `Timestamp` —
+ * microseconds. Conversion is `getTime() * 1000n`, so sub-millisecond
+ * values (micro-/nanoseconds) fundamentally cannot be preserved: they are
+ * zeroed on write, and YDB microseconds lose the lower three digits on read.
+ * Use `Timestamp` only for millisecond precision.
  */
 function toJsDate(value: Date | number | string): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
-/** Проверяет корректность даты; невалидные значения (Invalid Date) отклоняются. */
+/** Checks date validity; invalid values (Invalid Date) are rejected. */
 function toValidJsDate(value: Date | number | string): Date {
   const date = toJsDate(value);
   if (Number.isNaN(date.getTime())) {
@@ -141,7 +138,7 @@ function toValidJsDate(value: Date | number | string): Date {
   return date;
 }
 
-/** Обёртки JS-значений в YDB-значения с валидацией типов и диапазонов. */
+/** Wrappers of JS values into YDB values with type and range validation. */
 const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   Uuid: (value: string) => new Uuid(value),
   Utf8: (value: string) => new Utf8(value),
@@ -161,8 +158,8 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   },
   Int64: (value: bigint | number | string) => {
     if (typeof value === 'number' && !Number.isSafeInteger(value)) {
-      // JS number небезопасен выше Number.MAX_SAFE_INTEGER (2^53 - 1):
-      // BigInt(value) превратит уже округлённое число в другой BigInt.
+      // JS number is unsafe above Number.MAX_SAFE_INTEGER (2^53 - 1):
+      // BigInt(value) would turn the already rounded number into a different BigInt.
       throw new TypeError(
         `Int64 value must be a safe integer, got ${valuePreview(value)} (use bigint or string for exact values above 2^53 - 1)`,
       );
@@ -171,7 +168,7 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
     try {
       asBigInt = BigInt(value);
     } catch (err) {
-      // BigInt() бросает сырой RangeError для дробных/NaN — добавим контекст.
+      // BigInt() throws a raw RangeError for fractions/NaN — add context.
       throw new TypeError(
         `Int64 value must be an integer, got ${valuePreview(value)}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -187,7 +184,7 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   Date: (value: Date | number | string) => new YdbDate(toValidJsDate(value)),
   Datetime: (value: Date | number | string) =>
     new Datetime(toValidJsDate(value)),
-  // См. JSDoc `toJsDate` про миллисекундную точность Timestamp.
+  // See JSDoc `toJsDate` for millisecond precision of Timestamp.
   Timestamp: (value: Date | number | string) =>
     new Timestamp(toValidJsDate(value)),
   Json: (value: any) =>
@@ -197,11 +194,11 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
 };
 
 /**
- * Преобразует JS-значение в YDB-значение.
+ * Converts a JS value to a YDB value.
  *
- * @param type целевой YDB-тип
- * @param value JS-значение (null → Optional<null>)
- * @param field имя поля для контекста ошибок конвертации (необязательно)
+ * @param type target YDB type
+ * @param value JS value (null → Optional<null>)
+ * @param field field name for conversion error context (optional)
  */
 export function mapToYdb(type: YdbPrimitive, value: unknown, field?: string) {
   const wrap = valueMappers[type];

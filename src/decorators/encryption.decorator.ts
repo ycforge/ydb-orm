@@ -5,46 +5,58 @@ import {
 } from '../metadata/entity-metadata.js';
 import type { EncryptedFieldMeta } from '../metadata/entity-metadata.js';
 
-/** Суффикс synthetic-колонки blind index (см. @YdbEncrypted({ blindIndex })). */
+/**
+ * Suffix of the synthetic blind-index column (see @YdbEncrypted({ blindIndex })).
+ * Used by persistence, schema sync, metadata validation, and CLI.
+ */
 export const BLIND_INDEX_SUFFIX = '_bi';
 
 /**
- * Имя synthetic-колонки blind index для зашифрованного поля:
- * `{propertyKey}_bi`. Единственная точка именования — persistence, schema
- * sync, валидация метаданных и CLI используют её вместо inline-шаблонов.
+ * Name of the synthetic blind-index column for an encrypted field:
+ * `{propertyKey}_bi`. The single naming point — persistence, schema sync,
+ * metadata validation and the CLI use it instead of inline templates.
+ *
+ * @param propertyKey - The entity property name.
+ * @returns Blind index column name with `_bi` suffix.
  */
 export function blindIndexColumnName(propertyKey: string): string {
   return `${propertyKey}${BLIND_INDEX_SUFFIX}`;
 }
 
+/**
+ * Options for @YdbEncrypted decorator.
+ */
 export interface YdbEncryptedOptions {
   blindIndex?: boolean;
   aadOverride?: string;
   /**
-   * Ленивая дешифровка (по умолчанию false): поле не дешифруется
-   * при чтении из БД — в инстансе остаётся ciphertext. Дешифровка
-   * выполняется явно: await entity.decryptField('field') или
-   * await entity.decryptLazyFields(). toJSON() бросает ошибку,
-   * пока lazy-поле не дешифровано. Экономит CPU на запросах,
-   * где значение поля не нужно.
+   * Lazy decryption (default false): the field is not decrypted when read
+   * from the DB — ciphertext stays on the instance. Decryption is done
+   * explicitly: await entity.decryptField('field') or
+   * await entity.decryptLazyFields(). toJSON() throws an error until a
+   * lazy field has been decrypted. Saves CPU on queries where the field
+   * value is not needed.
    */
   lazy?: boolean;
 }
 
 /**
- * Помечает поле как шифруемое. Без параметров = { blindIndex: true }.
- * Шифротекст всегда хранится в YDB-колонке `Bytes` (raw bytes) — тип из
- * @YdbColumn для таких полей игнорируется, объявлять его не нужно.
- * Опция lazy: true откладывает дешифровку до явного вызова
- * decryptField()/decryptLazyFields() на инстансе.
+ * Marks a field as encrypted. No parameters = { blindIndex: true }.
+ * Ciphertext is always stored in a YDB `Bytes` column (raw bytes) — the
+ * type from @YdbColumn is ignored for such fields and need not be declared.
+ * The lazy: true option defers decryption until an explicit call to
+ * decryptField()/decryptLazyFields() on the instance.
  *
- * Семантика наследования и повторного применения: последняя декларация
- * побеждает (last-write-wins, как у @YdbEnum) — повторное применение на
- * том же классе и переопределение унаследованного свойства не создаёт
- * дублей в метаданных. Иначе дешифровка обработала бы поле дважды:
- * второй проход отдал бы провайдеру уже расшифрованный plaintext как
- * ciphertext. Метаданные клонируются перед изменением (copy-on-write),
- * чтобы наследники не портили метаданные родительского класса.
+ * Inheritance and re-application semantics: the last declaration wins
+ * (last-write-wins, like @YdbEnum) — re-applying on the same class and
+ * overriding an inherited property does not create duplicates in metadata.
+ * Otherwise decryption would process the field twice: the second pass would
+ * hand the provider already-decrypted plaintext as if it were ciphertext.
+ * Metadata is cloned before being modified (copy-on-write), so that
+ * subclasses do not corrupt the parent class's metadata.
+ *
+ * @param options - Encryption options: blindIndex, aadOverride, lazy.
+ * @returns Property decorator function.
  */
 export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
   return (target, propertyKey) => {
@@ -65,12 +77,15 @@ export function YdbEncrypted(options?: YdbEncryptedOptions): PropertyDecorator {
 }
 
 /**
- * Помечает поле первичного ключа как участника AAD (Additional Authenticated Data).
- * Может применяться только к колонкам, объявленным через @YdbPrimaryColumn.
+ * Marks a primary key field as a participant of the AAD (Additional
+ * Authenticated Data). Can only be applied to columns declared via
+ * @YdbPrimaryColumn.
  *
- * Семантика наследования и повторного применения: дедупликация по имени поля
- * (как у @YdbPrimaryColumn) — повторное объявление на наследнике или на том же
- * классе не создаёт дублей в AAD-строке.
+ * Inheritance and re-application semantics: deduplication by field name
+ * (like @YdbPrimaryColumn) — a re-declaration on a subclass or on the same
+ * class does not create duplicates in the AAD string.
+ *
+ * @returns Property decorator function.
  */
 export function YdbSecurityAAD(): PropertyDecorator {
   return (target, propertyKey) => {

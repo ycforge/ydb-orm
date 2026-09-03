@@ -1,19 +1,19 @@
 /**
- * Интеграционные регресс-тесты read-only контракта (#152).
+ * Integration regression tests of the read-only contract (#152).
  *
- * В отличие от юнит-спеков с швом inspectBookkeeping, здесь вызывается
- * РЕАЛЬНЫЙ runMigrationVerification() с РЕАЛЬНЫМ дефолтным путём чтения
- * таблицы учёта (readBookkeepingSnapshot → YdbSchemaSyncer.describeTable
- * через Table service). Подменяются только транспортные границы:
- *  - driver.createClient(TableServiceDefinition) → фейковый Table client
- *    (DescribeTable отдаёт управляемые метаданные);
- *  - executor — строгий мок: ЛЮБОЙ не-SELECT бросает исключение, поэтому
- *    попытка CREATE/ALTER/INSERT/... из verification-пути роняет тест,
- *    а не проходит незамеченным; все выполненные SQL записываются и
- *    сверяются построчно.
+ * Unlike the unit specs with an inspectBookkeeping seam, here the REAL
+ * runMigrationVerification() is called with the REAL default path of reading
+ * the bookkeeping table (readBookkeepingSnapshot → YdbSchemaSyncer.describeTable
+ * via the Table service). Only transport boundaries are replaced:
+ *  - driver.createClient(TableServiceDefinition) → a fake Table client
+ *    (DescribeTable returns controlled metadata);
+ *  - executor — a strict mock: ANY non-SELECT throws, so an attempted
+ *    CREATE/ALTER/INSERT/... from the verification path fails the test
+ *    loudly rather than passing unnoticed; all executed SQL is recorded and
+ *    compared line by line.
  *
- * loadMigrations инжектируется только чтобы не зависеть от ФС — таблица
- * учёта в этих тестах читается настоящим кодом.
+ * loadMigrations is injected only to avoid depending on the filesystem — the
+ * bookkeeping table in these tests is read by the real code.
  */
 import { jest } from '@jest/globals';
 import { create } from '@bufbuild/protobuf';
@@ -36,7 +36,7 @@ import {
 
 type AnyRecord = Record<string, unknown>;
 
-/** Строгий executor: SELECT — ок (пишем SQL, отдаём строки), остальное — падение. */
+/** Strict executor: SELECT — ok (records SQL, returns rows), everything else — failure. */
 function makeStrictExecutor(resultRows: AnyRecord[] = []) {
   const executedSql: string[] = [];
 
@@ -62,7 +62,7 @@ function makeStrictExecutor(resultRows: AnyRecord[] = []) {
         return Promise.resolve()
           .then(() => {
             if (!sql.trimStart().startsWith('SELECT')) {
-              // Попытка DDL/DML из read-only пути — громкое падение теста.
+              // An attempted DDL/DML from the read-only path — a loud test failure.
               throw new Error(
                 `READ-ONLY VIOLATION: non-SELECT executed in verification path: ${sql}`,
               );
@@ -79,9 +79,9 @@ function makeStrictExecutor(resultRows: AnyRecord[] = []) {
   return {
     executor: executor as unknown,
     executedSql,
-    /** Ни одного запроса к БД вообще. */
+    /** No DB query at all. */
     expectNoSqlAtAll: () => expect(executor).not.toHaveBeenCalled(),
-    /** Ровно ожидаемый список SQL (без лишних probe/probe-like запросов). */
+    /** Exactly the expected list of SQL (no extra probe/probe-like queries). */
     expectExactly(expected: string[]) {
       expect(executedSql).toEqual(expected);
     },
@@ -213,8 +213,8 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
   ];
 
   describe('initialized modern bookkeeping (hash/state present)', () => {
-    // В таблице нет записей для '2-Pending' и '4-Missing' — они и есть
-    // pending; запись '3-Started' осталась от оборванного запуска.
+    // The table has no records for '2-Pending' and '4-Missing' — they are
+    // the pending ones; the '3-Started' record was left from an interrupted run.
     const rows: AnyRecord[] = [
       {
         id: 1,
@@ -230,7 +230,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
         hash: 'hs',
         state: 'started',
       },
-      // Имя совпадает с файлом, хеш различается — modified после apply.
+      // Name matches the file, hash differs — modified after apply.
       {
         id: 5,
         timestamp: 5000,
@@ -238,7 +238,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
         hash: 'h5-old',
         state: 'applied',
       },
-      // Запись без файла — orphan.
+      // Record without a file — orphan.
       {
         id: 9,
         timestamp: 9000,
@@ -280,7 +280,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
             migrations: files,
           });
 
-          // Семантика #101 сохранена: applied/pending/interrupted/
+          // #101 semantics preserved: applied/pending/interrupted/
           // modified/orphan.
           expect(verdict.pending.sort()).toEqual(['2-Pending', '4-Missing']);
           expect(verdict.interrupted).toEqual(['3-Started']);
@@ -317,7 +317,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
             expect(gone).toMatchObject({ orphan: true, applied: true });
           }
 
-          // Единственный допустимый SQL — голый SELECT таблицы учёта.
+          // The only allowed SQL is the bare SELECT of the bookkeeping table.
           mock.expectExactly([
             'SELECT `id`, `timestamp`, `name`, `hash`, `state` FROM `ydb_migrations`',
           ]);
@@ -327,8 +327,8 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
   });
 
   describe('legacy bookkeeping (no hash/state columns): read without ALTER', () => {
-    // Легаси-таблица: запись есть только у '1-LegacyApplied' — она applied
-    // по имени (семантика #101 для записей без хеша).
+    // Legacy table: only '1-LegacyApplied' has a record — it is applied
+    // by name (#101 semantics for records without a hash).
     const rows: AnyRecord[] = [
       { id: 1, timestamp: 1000, name: '1-LegacyApplied' },
     ];
@@ -352,7 +352,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
           migrations: files,
         });
 
-        // Легаси-семантика (#101): записи без хеша подразумевают applied.
+        // Legacy semantics (#101): records without a hash imply applied.
         expect(verdict.appliedCount).toBe(1);
         expect(verdict.pending).toEqual(['2-LegacyPending']);
         expect(verdict.modified).toEqual([]);
@@ -389,8 +389,8 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
             migrations: files,
           });
 
-          // «Не применено ничего»: все файлы — pending, exit-код по
-          // контракту #152 (pending → 1), таблица НЕ создаётся.
+          // "Nothing applied": all files are pending, exit code per the
+          // #152 contract (pending → 1), the table is NOT created.
           expect(verdict.state).toBe('pending');
           expect(verdict.pending).toEqual(['1-New', '2-New']);
           expect(verdict.totalMigrations).toBe(2);
@@ -410,7 +410,7 @@ describe('runMigrationVerification: real path emits no DDL/DML (#152)', () => {
             );
           }
 
-          // Ни одного SQL: читать нечего, создавать нельзя.
+          // No SQL at all: nothing to read, nothing may be created.
           mock.expectNoSqlAtAll();
         });
       }

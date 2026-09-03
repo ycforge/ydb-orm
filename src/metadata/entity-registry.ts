@@ -1,54 +1,55 @@
 /**
- * Реестр сущностей: декоратор @YdbEntity регистрирует класс в момент
- * загрузки модуля. Нужен schema sync (опция `sync` в forRoot), чтобы
- * находить все сущности без явного списка entities в опциях модуля.
+ * Entity registry: @YdbEntity decorator registers the class at module
+ * load time. Needed for schema sync (`sync` option in forRoot) to find
+ * all entities without an explicit entities list in module options.
  *
- * Важно: класс попадает в реестр только если его файл был импортирован
- * (обычно это происходит через YdbOrmModule.forFeature / импорты модулей NestJS).
+ * Important: a class enters the registry only if its file was imported
+ * (typically via YdbOrmModule.forFeature / NestJS module imports).
  *
- * Владение сущностями (#142): у каждого экземпляра YdbCoreModule (то есть
- * у каждого Nest-приложения) есть собственный скоуп — createEntityScope()
- * вызывается на статической стороне forRootAsync, а провайдеры forFeature
- * привязывают сущности к скоупу СВОЕГО приложения через DI-токен
- * YDB_CORE_SCOPE. Порядок резолва провайдеров роли не играет: сущность
- * физически не может попасть в чужое приложение. Приложение, упавшее
- * с Duplicate YDB module initialization, уносит свои привязки с собой.
+ * Entity ownership (#142): each YdbCoreModule instance (i.e., each
+ * NestJS application) has its own scope — createEntityScope() is called
+ * on the static side of forRootAsync, and forFeature providers bind
+ * entities to THEIR application's scope via the YDB_CORE_SCOPE DI token.
+ * Provider resolution order doesn't matter: an entity physically cannot
+ * end up in a foreign application. An application that fails with
+ * Duplicate YDB module initialization takes its bindings with it.
  *
- * Вне активного приложения (CLI, standalone, unit-тесты)
- * getRegisteredYdbEntities() без аргумента возвращает весь глобальный
- * реестр — прежнее поведение; повторная регистрация идемпотентна (Set).
+ * Outside an active application (CLI, standalone, unit tests),
+ * getRegisteredYdbEntities() without an argument returns the entire
+ * global registry — previous behavior; re-registration is idempotent (Set).
  */
 type EntityCtor = new (...args: any[]) => any;
 
-/** Все задекорированные классы за жизнь процесса (никогда не чистится). */
+/** All decorated classes for the lifetime of the process (never cleared). */
 const registry = new Set<EntityCtor>();
 
-/** Скоуп сущностей одного приложения: обычный Set, им владеет его ядро. */
+/** Scope of entities for one application: a plain Set, owned by its core. */
 export type YdbEntityAppScope = Set<EntityCtor>;
 
-/** Создаёт пустой скоуп для нового экземпляра ядра (вызов из forRootAsync). */
+/** Creates an empty scope for a new core instance (called from forRootAsync). */
 export function createEntityScope(): YdbEntityAppScope {
   return new Set<EntityCtor>();
 }
 
+/** Registers an `@YdbEntity`-decorated class in the process-global registry. */
 export function registerYdbEntity(target: EntityCtor): void {
-  // Декоратор выполняется при загрузке модуля и не знает ни про одно
-  // приложение — регистрация только процессно-глобальная. Привязку к
-  // конкретному приложению делает YdbOrmModule.forFeature (#142).
+  // The decorator runs at module load time and knows about no application —
+  // registration is process-global only. Binding to a specific application
+  // is done by YdbOrmModule.forFeature (#142).
   registry.add(target);
 }
 
 /**
- * Явно привязывает сущности к скоупу конкретного приложения (#142).
+ * Explicitly binds entities to a specific application's scope (#142).
  *
- * Вызывается из фабрики AR-провайдера (YdbOrmModule.forFeature): декоратор
- * @YdbEntity выполняется один раз за жизнь процесса (кеш ESM-модулей),
- * поэтому повторное приложение в том же процессе не «перерегистрирует»
- * свои сущности само — без явной привязки schema sync увидел бы пустой
- * набор. Скоуп приходит через DI-токен YDB_CORE_SCOPE и гарантированно
- * принадлежит контейнеру того приложения, в котором создан провайдер,
- * поэтому привязка корректна и ДО claim ядра (сущность просто ждёт в
- * скоупе будущего приложения), и после него.
+ * Called from the AR provider factory (YdbOrmModule.forFeature): the
+ * @YdbEntity decorator runs once per process lifetime (ESM module cache),
+ * so a re-application in the same process won't "re-register" its entities
+ * on its own — without explicit binding, schema sync would see an empty
+ * set. The scope comes via the YDB_CORE_SCOPE DI token and is guaranteed
+ * to belong to the container of the application where the provider was
+ * created, so the binding is correct both BEFORE the core claim (entity
+ * just waits in the future application's scope) and after it.
  */
 export function requestEntitiesForApp(
   scope: YdbEntityAppScope,
@@ -61,8 +62,9 @@ export function requestEntitiesForApp(
 }
 
 /**
- * Сущности для schema sync/verify. С аргументом — набор конкретного
- * приложения; без аргумента (CLI, standalone) — весь глобальный реестр.
+ * Entities for schema sync/verify. With argument — the set of a specific
+ * application; without argument (CLI, standalone) — the entire global
+ * registry.
  */
 export function getRegisteredYdbEntities(
   scope?: YdbEntityAppScope,

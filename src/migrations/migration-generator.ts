@@ -18,25 +18,25 @@ import {
   YdbTtlMetadata,
 } from '../decorators/ttl.decorator.js';
 
-/** План миграции: DDL для up/down и предупреждения о ручных правках. */
+/** Migration plan: DDL for up/down plus warnings about manual edits. */
 export interface PlannedMigration {
   up: string[];
   down: string[];
   warnings: string[];
   /**
-   * Предположения о переименовании колонок (#23): НЕ выполняются и не
-   * применяются автоматически — рендерятся комментариями внутри up()/down()
-   * сгенерированного файла. Для каждой пары соответствующие ADD/DROP
-   * в up/down подавляются: применение переименования — явное решение.
+   * Likely column renames (#23): NOT executed and not applied automatically —
+   * they are rendered as comments inside up()/down() of the generated file.
+   * For each pair the corresponding ADD/DROP in up/down is suppressed:
+   * applying the rename is an explicit decision.
    */
   suggestions?: string[];
 }
 
-/** Восстанавливает YdbTtlMetadata из фактических настроек TTL в БД. */
+/** Reconstructs YdbTtlMetadata from the actual TTL settings in the DB. */
 function ttlMetaFromActual(actual: YdbTableTtl): YdbTtlMetadata {
   return {
-    // expire_after_seconds — целые секунды; конвертация через микросекунды
-    // (точность YDB Interval) без потерь
+    // expire_after_seconds is whole seconds; conversion via microseconds
+    // (the precision of the YDB Interval) is lossless
     interval: microsecondsToIsoDuration(
       actual.expireAfterSeconds * MICROSECONDS_PER_SECOND,
     ),
@@ -46,10 +46,10 @@ function ttlMetaFromActual(actual: YdbTableTtl): YdbTtlMetadata {
 }
 
 /**
- * Валидирует входы planMigration (#102). Массивы сопоставляются строго
- * по индексу (expected[i] ↔ existing[i]) — это часть публичного контракта,
- * поэтому расхождение длин должно падать с понятной ошибкой, а не молча
- * порождать неверный DDL.
+ * Validates planMigration inputs (#102). Arrays are matched strictly by
+ * index (expected[i] <-> existing[i]) — that is part of the public contract,
+ * so a length mismatch must fail with a clear error rather than silently
+ * producing wrong DDL.
  */
 function validatePlanInputs(
   expected: ExpectedTableSchema[],
@@ -80,24 +80,24 @@ function validatePlanInputs(
 }
 
 /**
- * Чистая функция: строит план миграции по ожидаемым схемам сущностей
- * и текущему состоянию БД (null — таблицы нет).
- * Используется `migration:generate`.
+ * Pure function: builds a migration plan from expected entity schemas and the
+ * current DB state (null — the table does not exist).
+ * Used by `migration:generate`.
  *
- * Политика безопасности (#88):
- *  - отсутствующие индексы и TTL создаются в up и откатываются в down;
- *  - лишние индексы и TTL не удаляются — только предупреждение;
- *  - расхождение существующего индекса (unique/колонки) только
- *    диагностируется — пересоздание индекса небезопасно делать молча;
- *  - PK, типы колонок и лишние колонки не меняются (как раньше).
+ * Safety policy (#88):
+ *  - missing indexes and TTL are created in up and rolled back in down;
+ *  - extra indexes and TTL are not removed — only a warning;
+ *  - a divergence of an existing index (unique/columns) is only diagnosed —
+ *    recreating an index silently is unsafe;
+ *  - PK, column types and extra columns are not changed (as before).
  *
- * Вероятные переименования (#23): если ровно одна лишняя колонка БД и одна
- * новая колонка сущности совпадают по типу и не затрагивают PK/индексы/TTL/
- * blind-index, план НЕ генерирует для этой пары ADD/DROP, а кладёт
- * `ALTER TABLE ... RENAME COLUMN ... TO ...` в suggestions (комментарий
- * в файле миграции). YQL пока не поддерживает RENAME COLUMN — применение
- * всегда ручное. При малейшей неоднозначности (несколько кандидатов,
- * участие ключевых колонок и т.п.) поведение прежнее: ADD/DROP + warning.
+ * Likely renames (#23): if exactly one extra DB column and one new entity
+ * column match by type and do not touch PK/indexes/TTL/blind-index, the plan
+ * does NOT generate ADD/DROP for that pair, and instead puts
+ * `ALTER TABLE ... RENAME COLUMN ... TO ...` into suggestions (a comment in
+ * the migration file). YQL does not support RENAME COLUMN yet — applying is
+ * always manual. At the slightest ambiguity (several candidates, key columns
+ * involved, etc.) the previous behavior applies: ADD/DROP + warning.
  */
 export function planMigration(
   expected: ExpectedTableSchema[],
@@ -123,8 +123,9 @@ export function planMigration(
     const check = checkTableSchema(schema, current);
 
     if (!check.primaryKeyMatches) {
-      // #89: перестановка PK-колонок — тоже расхождение (порядок значим),
-      // но DDL не генерируем: PK в YDB не меняется, только ручная миграция.
+      // #89: a reordering of PK columns is also a divergence (order matters),
+      // but no DDL is generated: a PK cannot be altered in YDB, manual
+      // migration required.
       warnings.push(
         `Table "${schema.tableName}": ${describePrimaryKeyMismatch(check)} — ` +
           `YDB cannot alter a primary key, manual migration required`,
@@ -143,8 +144,8 @@ export function planMigration(
       );
     }
 
-    // #23: вероятное переименование — только подсказка, ADD/DROP для пары
-    // подавляются. Лишняя колонка по-прежнему не удаляется автоматически.
+    // #23: likely rename — only a hint, ADD/DROP for the pair is suppressed.
+    // The extra column is still not dropped automatically.
     const renamedTargets = new Set(
       check.likelyRenames.map((rename) => rename.to),
     );
@@ -166,7 +167,7 @@ export function planMigration(
       );
       if (autoAdd.length) {
         up.push(generateAddColumnsYql(schema.tableName, autoAdd));
-        // down — в обратном порядке через unshift, чтобы up/down были симметричны
+        // down — in reverse order via unshift, so that up/down stay symmetric
         for (const [column] of autoAdd) {
           down.unshift(
             `ALTER TABLE ${quoteIdentifier(schema.tableName)} DROP COLUMN ${quoteIdentifier(column)}`,
@@ -175,13 +176,13 @@ export function planMigration(
       }
     }
 
-    // Отсутствующие индексы: создаём в up, удаляем в down (#88).
+    // Missing indexes: create in up, drop in down (#88).
     for (const idx of check.missingIndexes) {
       up.push(generateAddIndexYql(schema.tableName, idx));
       down.unshift(generateDropIndexYql(schema.tableName, idx.name));
     }
 
-    // Существующий индекс расходится с метаданными — только диагностируем.
+    // Existing index diverges from metadata — diagnose only.
     for (const mismatch of check.uniqueMismatches) {
       warnings.push(
         `Table "${schema.tableName}" index "${mismatch.name}": ` +
@@ -197,15 +198,15 @@ export function planMigration(
           `recreate the index manually if needed`,
       );
     }
-    // Лишние индексы никогда не удаляем автоматически.
+    // Extra indexes are never dropped automatically.
     for (const extra of check.extraIndexes) {
       warnings.push(
         `Table "${schema.tableName}" has extra index "${extra.name}" — not dropped automatically`,
       );
     }
 
-    // TTL: отсутствующий ставим, изменённый заменяем; down восстанавливает
-    // прежнее состояние БД (сброс или старые настройки).
+    // TTL: a missing one is set, a changed one is replaced; down restores the
+    // previous DB state (reset or the old settings).
     if (check.missingTtl.length && check.missingTtl[0].expected) {
       up.push(
         generateSetTtlYql(schema.tableName, check.missingTtl[0].expected),
@@ -223,7 +224,7 @@ export function planMigration(
         ),
       );
     }
-    // TTL без метаданных в сущности не сбрасываем автоматически.
+    // TTL that has no metadata in the entity is not reset automatically.
     for (const extra of check.extraTtl) {
       warnings.push(
         `Table "${schema.tableName}" has extra TTL on column "${extra.actual.column}" ` +
@@ -236,9 +237,9 @@ export function planMigration(
 }
 
 /**
- * Рендерит блок комментариев с подсказками о переименовании (#23).
- * Подсказки никогда не попадают в исполняемые statements: YQL не
- * поддерживает RENAME COLUMN, применение — только вручную после проверки.
+ * Renders a comment block with rename hints (#23).
+ * Hints never end up as executable statements: YQL has no RENAME COLUMN,
+ * applying is done manually only after verification.
  */
 function renderSuggestionsBlock(
   suggestions: string[] | undefined,
@@ -253,9 +254,9 @@ function renderSuggestionsBlock(
 }
 
 /**
- * Рендерит файл миграции по плану. Если план пуст — up/down остаются
- * пустыми с комментарием. Подсказки о переименовании рендерятся
- * комментариями внутри up()/down(), а не исполняемыми statements (#23).
+ * Renders a migration file from a plan. If the plan is empty, up/down stay
+ * empty with a comment. Rename hints are rendered as comments inside
+ * up()/down(), not as executable statements (#23).
  */
 export function renderMigrationFile(
   className: string,

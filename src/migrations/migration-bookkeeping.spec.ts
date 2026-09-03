@@ -6,7 +6,7 @@ import {
 } from './migration-bookkeeping.js';
 import { MIGRATIONS_TABLE } from './migration-runner.js';
 
-/** Мок executor-а: записывает SQL, отдаёт строки для SELECT. */
+/** Executor mock: records SQL, returns rows for SELECT. */
 function makeExecutor(rows: Record<string, unknown>[] = []) {
   const executedSql: string[] = [];
   const executor: any = jest.fn((strings: TemplateStringsArray) => {
@@ -60,7 +60,7 @@ describe('readBookkeepingSnapshot (#152, read-only)', () => {
 
     expect(snapshot).toEqual({ exists: false, legacy: false, records: [] });
     expect(describeTable).toHaveBeenCalledWith(MIGRATIONS_TABLE);
-    // Ни одного запроса: таблицы нет — читать нечего, создавать нельзя.
+    // No queries at all: no table — nothing to read, nothing to create.
     expect(mock.executedSql).toEqual([]);
   });
 
@@ -92,7 +92,7 @@ describe('readBookkeepingSnapshot (#152, read-only)', () => {
     expect(snapshot.legacy).toBe(false);
     expect(snapshot.records.map((r) => r.name)).toEqual(['1-A', '2-B']);
 
-    // Ровно один голый SELECT, без CREATE/ALTER/probe.
+    // Exactly one bare SELECT, no CREATE/ALTER/probe.
     expect(mock.executedSql).toHaveLength(1);
     const sql = mock.executedSql[0];
     expect(sql).toMatch(
@@ -105,7 +105,7 @@ describe('readBookkeepingSnapshot (#152, read-only)', () => {
     const mock = makeExecutor(rows);
     const describeTable = jest.fn((): Promise<any> =>
       Promise.resolve({
-        // Легаси-таблица до #101: только базовые колонки.
+        // Legacy table before #101: only the base columns.
         columns: new Map([
           ['id', 3 as never],
           ['timestamp', 3 as never],
@@ -133,7 +133,7 @@ describe('readBookkeepingSnapshot (#152, read-only)', () => {
     ]);
 
     const sql = mock.executedSql[0];
-    // Колонки hash/state НЕ запрашиваются и НИЧЕГО не добавляется.
+    // The hash/state columns are NOT requested and NOTHING is added.
     expect(sql).toBe('SELECT `id`, `timestamp`, `name` FROM `ydb_migrations`');
     expect(mock.executedSql.every((s) => !/ALTER/i.test(s))).toBe(true);
   });

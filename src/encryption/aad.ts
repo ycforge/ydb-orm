@@ -1,34 +1,41 @@
 /**
- * Сериализация Security AAD (#165).
+ * Security AAD serialization (#165).
  *
- * `legacy` — исторический формат `name=value;name=value` (конкатенация без
- * экранирования): значения с вложенными разделителями создают коллизии.
- * Например, `{ a: 'x;b=y', b: '' }` и `{ a: 'x', b: 'y;b=' }` кодируются
- * одинаково как `a=x;b=y;b=`, поэтому при shared-key AEAD-провайдере
- * ciphertext можно перенести между такими записями, не поймав расхождение
- * аутентифицированных данных. Формат оставлен только как переходный режим
- * для дешифровки существующего ciphertext (см. `YdbModuleOptions.aadFormat`).
+ * `legacy` — the historical `name=value;name=value` format (concatenation
+ * without escaping): values containing nested separators create collisions.
+ * For example, `{ a: 'x;b=y', b: '' }` and `{ a: 'x', b: 'y;b=' }` encode
+ * identically as `a=x;b=y;b=`, so with a shared-key AEAD provider a
+ * ciphertext can be moved between such records without the authenticated
+ * data mismatch being caught. The format is kept only as a transitional
+ * mode for decrypting existing ciphertext (see `YdbModuleOptions.aadFormat`).
  *
- * `v2` (по умолчанию) — версионированная, каноническая, self-delimiting
- * покомпонентная сериализация. Строка начинается с префикса `v2:`, затем для
- * каждого поля в порядке `metadata.aadFields` (фиксированном) идёт блок
- * `len(name):name` + признак присутствия `0|1` + опционально `len(value):value`.
- * Формат однозначен:
- * - порядок полей фиксирован (перестановка значений даёт другую строку);
- * - длина префиксирована — значения с любыми разделителями безопасны;
- * - отсутствующее/null-значение кодируется явным маркером `0`, поэтому
- *   `{ a: 'x' }` и `{ a: 'x', b: null }` не могут совпасть.
- * Значения приводятся к строке через `String(value)` — как в legacy, чтобы
- * для одного и того же поля шифрование и дешифровка давали одинаковый AAD
- * (Uuid, Date и т.п. конвертируются в строку на обоих путях).
+ * `v2` (default) — a versioned, canonical, self-delimiting per-component
+ * serialization. The string starts with the prefix `v2:`, then for each
+ * field in the fixed `metadata.aadFields` order a block of
+ * `len(name):name` + a presence flag `0|1` + optionally `len(value):value`.
+ * The format is unambiguous:
+ * - field order is fixed (permuting values produces a different string);
+ * - length is prefixed, so values containing any delimiters are safe;
+ * - a missing/null value is encoded with an explicit `0` marker, so
+ *   `{ a: 'x' }` and `{ a: 'x', b: null }` cannot coincide.
+ * Values are coerced to strings via `String(value)` — as in legacy, so that
+ * encrypt and decrypt of the same field yield the same AAD (Uuid, Date, etc.
+ * convert to a string on both paths).
  */
 export type AadFormat = 'legacy' | 'v2';
 
+/** The default AAD format: the safe, canonical `v2`. */
 export const DEFAULT_AAD_FORMAT: AadFormat = 'v2';
 
 const AAD_V2_PREFIX = 'v2:';
 
-/** Каноническая v2-сериализация tuple AAD (#165). */
+/**
+ * Canonical v2 serialization of tuple AAD (#165).
+ *
+ * @param names - Ordered field names from metadata (fixed order).
+ * @param valueOf - Function returning the value for a given field name.
+ * @returns Serialized AAD string with `v2:` prefix.
+ */
 export function serializeAadV2(
   names: readonly string[],
   valueOf: (name: string) => unknown,
@@ -46,7 +53,13 @@ export function serializeAadV2(
   return out;
 }
 
-/** Легаси-сериализация `name=value;...` (только для миграции на v2). */
+/**
+ * Legacy serialization `name=value;...` (for migration to v2 only).
+ *
+ * @param names - Ordered field names from metadata.
+ * @param valueOf - Function returning the value for a given field name.
+ * @returns Serialized AAD string in legacy format.
+ */
 export function serializeAadLegacy(
   names: readonly string[],
   valueOf: (name: string) => unknown,
@@ -61,13 +74,18 @@ export function serializeAadLegacy(
 }
 
 /**
- * Значения AAD нормализуются в строку детерминированно (Uuid/Date/Bytes и т.п.
- * конвертируются одинаково при шифровании и дешифровании:
- * - Date/Datetime/Timestamp — ISO-строка;
- * - Bytes — base64 (канонический, обратимый, ASCII-safe);
- * - остальные примитивы — String().
- * Объекты и массивы недопустимы: в PK/AAD-колонках их быть не может, а
- * молчаливый `[object Object]` стёр бы различие между записями.
+ * Value normalization for AAD: values are coerced to a string
+ * deterministically (Uuid/Date/Bytes etc. convert the same way during
+ * encrypt and decrypt):
+ * - Date/Datetime/Timestamp — ISO string;
+ * - Bytes — base64 (canonical, reversible, ASCII-safe);
+ * - other primitives — String().
+ * Objects and arrays are not allowed: they cannot occur in PK/AAD columns,
+ * and a silent `[object Object]` would erase the distinction between records.
+ *
+ * @param value - The value to normalize.
+ * @returns Normalized string representation.
+ * @throws If value is not a supported scalar type.
  */
 export function toAadString(value: unknown): string {
   switch (typeof value) {
@@ -91,8 +109,13 @@ export function toAadString(value: unknown): string {
 }
 
 /**
- * Сборка AAD по выбранному формату. По умолчанию — безопасный `v2`;
- * `legacy` нужен только в переходный период для чтения старых записей.
+ * Builds the AAD according to the selected format. Defaults to the safe `v2`;
+ * `legacy` is only needed during the transition to read old records.
+ *
+ * @param names - Ordered field names from metadata.
+ * @param valueOf - Function returning the value for a given field name.
+ * @param format - AAD format: 'v2' (default) or 'legacy'.
+ * @returns Serialized AAD string.
  */
 export function buildAad(
   names: readonly string[],

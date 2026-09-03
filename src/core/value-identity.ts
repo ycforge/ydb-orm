@@ -1,20 +1,19 @@
 /**
- * Инъективная каноническая кодировка YDB-значений в строковый ключ (#174).
+ * Injective canonical encoding of YDB values into a string key (#174).
  *
- * Нужна везде, где Map/Set идентифицируют строки по значению колонки:
- * - дедупликация PK/FK между IN(...)-чанками в fetchByColumnIn (#86);
- * - группировка inverse-строк и владельцев в relations-мапах (#174);
- * - повторяющиеся PK-компоненты, гидратированные в РАЗНЫЕ инстансы
- *   (два `Uint8Array([1,2])` и две равные `Date`) должны считаться одним
- *   значением — сравнение по ссылке дало бы «не найден» для валидных связей.
+ * Needed wherever Map/Set identify rows by column value:
+ * - PK/FK deduplication across IN(...) chunks in fetchByColumnIn (#86);
+ * - grouping of inverse rows and owners in relations maps (#174);
+ * - repeated PK components hydrated into DIFFERENT instances
+ *   (two `Uint8Array([1,2])` and two equal `Date`) must count as one
+ *   value — reference comparison would give "not found" for valid relations.
  *
- * Конкатенация с разделителем (`String(a) + '|' + String(b)`) НЕинъективна:
- * ('a|b', 'c') и ('a', 'b|c') дают один ключ 'a|b|c'. Поэтому используется
- * двоичная кодировка без разделителей:
- * [тег типа][длина payload (4 байта, big-endian)][payload].
- * Границы компонентов восстанавливаются однозначно по объявленной длине,
- * типы различаются тегом, поэтому разные значения не могут дать одинаковый
- * ключ.
+ * Concatenation with a delimiter (`String(a) + '|' + String(b)`) is NON-injective:
+ * ('a|b', 'c') and ('a', 'b|c') produce the same key 'a|b|c'. Therefore a
+ * delimiter-free binary encoding is used:
+ * [type tag][payload length (4 bytes, big-endian)][payload].
+ * Component boundaries are recovered unambiguously by the declared length,
+ * types are distinguished by tag, so different values cannot produce the same key.
  */
 
 const valueTag = {
@@ -30,7 +29,7 @@ const valueTag = {
 
 const textEncoder = new TextEncoder();
 
-/** Добавляет payload с префиксом длины (4 байта BE) — самоделимитация. */
+/** Adds payload with length prefix (4 bytes BE) — self-delimiting. */
 function appendLengthPrefixed(out: number[], payload: Uint8Array): void {
   const len = payload.length;
   out.push(
@@ -42,7 +41,7 @@ function appendLengthPrefixed(out: number[], payload: Uint8Array): void {
   for (let i = 0; i < len; i++) out.push(payload[i]);
 }
 
-/** IEEE-754 double как 8 байт BE. */
+/** IEEE-754 double as 8 bytes BE. */
 function appendFloat64(out: number[], value: number): void {
   const buf = new ArrayBuffer(8);
   new DataView(buf).setFloat64(0, value);
@@ -52,11 +51,11 @@ function appendFloat64(out: number[], value: number): void {
 const VALUE_HEX_CHARS = '0123456789abcdef';
 
 /**
- * Канонический value-ключ кортежа YDB-значений: инъективное отображение
- * компонентов (string | number | bigint | boolean | Uint8Array | Date |
- * null/undefined) в hex-строку. Детерминировано: одинаковые значения —
- * одинаковый ключ, разные — гарантированно разные. Bytes и Date
- * сравниваются ПО ЗНАЧЕНИЮ, а не по ссылке.
+ * Canonical value-key of a YDB value tuple: injective mapping
+ * of components (string | number | bigint | boolean | Uint8Array | Date |
+ * null/undefined) to a hex string. Deterministic: same values — same key,
+ * different — guaranteed different. Bytes and Date compared BY VALUE,
+ * not by reference.
  */
 export function valueIdentityKey(components: readonly unknown[]): string {
   const out: number[] = [];
@@ -71,7 +70,7 @@ export function valueIdentityKey(components: readonly unknown[]): string {
         appendLengthPrefixed(out, textEncoder.encode(value));
         break;
       case 'number': {
-        // -0 и 0 — одно значение по SameValueZero (как в Set).
+        // -0 and 0 are one value per SameValueZero (like in Set).
         out.push(valueTag.number);
         appendFloat64(out, Object.is(value, -0) ? 0 : value);
         break;
@@ -85,8 +84,8 @@ export function valueIdentityKey(components: readonly unknown[]): string {
         break;
       case 'object': {
         if (ArrayBuffer.isView(value)) {
-          // Bytes-колонки YDB гидратируются в Uint8Array; сравнение
-          // побайтовое (String() дал бы '[object Uint8Array]' для всех).
+          // YDB bytes columns hydrate to Uint8Array; comparison
+          // is bytewise (String() would give '[object Uint8Array]' for all).
           const view = value;
           out.push(valueTag.bytes);
           appendLengthPrefixed(
@@ -94,8 +93,8 @@ export function valueIdentityKey(components: readonly unknown[]): string {
             new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
           );
         } else if (value instanceof Date) {
-          // Date/Datetime/Timestamp-колонки; невалидная дата — ошибка
-          // конфигурации, а не источник коллизий.
+          // Date/Datetime/Timestamp columns; invalid date is a
+          // configuration error, not a collision source.
           if (Number.isNaN(value.getTime())) {
             throw new Error(
               'Invalid Date in value identity key: cannot build identity key',

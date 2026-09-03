@@ -11,9 +11,9 @@ import type {
 import type { YdbRetrySleepFn } from './retry.js';
 
 /**
- * Интеграционные тесты подключения retry-политики к executor'у (#27):
- * политика реально вызывается для операций executor'а, попытки не
- * перемножаются с внутренним ретраем SDK, классификация/отмена работают.
+ * Integration tests for wiring the retry policy into an executor (#27):
+ * the policy is actually invoked for executor operations, attempts do not
+ * multiply with the SDK's internal retry, and classification/cancellation work.
  */
 
 function ydbErr(code: number): YDBError {
@@ -29,7 +29,7 @@ function recordingSleep(): { sleep: YdbRetrySleepFn; delays: number[] } {
   return { sleep, delays };
 }
 
-/** Простой фейковый запрос: без событий SDK, поведение задаётся тестом. */
+/** Simple fake query: no SDK events, behavior is set by the test. */
 interface FakeQueryState {
   signals: Array<AbortSignal | undefined>;
   paramsList: Array<Record<string, unknown>>;
@@ -86,8 +86,8 @@ function makeSimpleFlakyExecutor(
   return executor;
 }
 
-describe("withRetryPolicy(): политика вызывается через операции executor'а", () => {
-  it('выключенная политика возвращает executor как есть (#98 не меняется)', () => {
+describe('withRetryPolicy(): policy invoked via executor operations', () => {
+  it('disabled policy returns executor as-is (#98 unchanged)', () => {
     const base = makeSimpleFlakyExecutor(['ok'], {
       signals: [],
       paramsList: [],
@@ -96,10 +96,10 @@ describe("withRetryPolicy(): политика вызывается через о
     expect(withRetryPolicy(base, undefined)).toBe(base);
   });
 
-  it('транзитные ошибки ретраятся: три исполнения, параметры воспроизводятся', async () => {
+  it('transient errors retried: three executions, parameters reproduced', async () => {
     const { sleep, delays } = recordingSleep();
     const state: FakeQueryState = { signals: [], paramsList: [] };
-    // fail, fail, ok — и далее ok (на случай лишних попыток)
+    // fail, fail, ok — and then ok (in case of excess attempts)
     const base = makeSimpleFlakyExecutor(
       ['fail-aborted', 'fail-aborted', 'ok'],
       state,
@@ -116,15 +116,15 @@ describe("withRetryPolicy(): политика вызывается через о
 
     expect(rows).toEqual([[{ id: 'x' }]]);
     expect(state.paramsList).toHaveLength(3);
-    // Параметры билдера воспроизводятся на каждой попытке политики:
+    // Builder parameters are reproduced on each policy attempt:
     for (const params of state.paramsList) {
       expect(params).toEqual({ ':p1': 'v1' });
     }
-    // Задержки политики: 100 -> 200 (дефолты, jitter выключен).
+    // Policy delays: 100 -> 200 (defaults, jitter disabled).
     expect(delays).toEqual([100, 200]);
   });
 
-  it('детерминированная ошибка не ретрается — одно исполнение', async () => {
+  it('deterministic error not retried — single execution', async () => {
     const { sleep } = recordingSleep();
     const boom = ydbErr(Code.BAD_REQUEST);
     let calls = 0;
@@ -158,14 +158,14 @@ describe("withRetryPolicy(): политика вызывается через о
     expect(calls).toBe(1);
   });
 
-  it('исчерпание maxAttempts: ровно N исполнений, последняя ошибка как есть', async () => {
+  it('maxAttempts exhaustion: exactly N executions, last error as-is', async () => {
     const { sleep } = recordingSleep();
     const state: FakeQueryState = { signals: [], paramsList: [] };
     const base = makeSimpleFlakyExecutor(['fail-aborted'], state);
 
     const last = new Error('last');
-    // Подменить последнюю ошибку нельзя (скрипт всегда abort) — проверяем
-    // число исполнений: ровно maxAttempts, без умножения.
+    // The last error cannot be swapped out (the script always aborts) — we
+    // check the execution count: exactly maxAttempts, without multiplication.
     await expect(
       withRetryPolicy(base, { maxAttempts: 4, sleep })`SELECT 1`.idempotent(
         true,
@@ -176,7 +176,7 @@ describe("withRetryPolicy(): политика вызывается через о
   });
 });
 
-describe('withRetryPolicy(): отмена и сигналы попытки', () => {
+describe('withRetryPolicy(): cancellation and attempt signals', () => {
   function honoringSleep(): { sleep: YdbRetrySleepFn } {
     const sleep: YdbRetrySleepFn = (_ms, signal) => {
       if (signal?.aborted) {
@@ -190,7 +190,7 @@ describe('withRetryPolicy(): отмена и сигналы попытки', () 
     return { sleep };
   }
 
-  it('сигнал пользователя доходит до каждой попытки запроса', async () => {
+  it('user signal reaches every query attempt', async () => {
     const { sleep } = honoringSleep();
     const controller = new AbortController();
     const state: FakeQueryState = { signals: [], paramsList: [] };
@@ -199,13 +199,13 @@ describe('withRetryPolicy(): отмена и сигналы попытки', () 
 
     await wrapped`SELECT 1`.signal(controller.signal);
 
-    // Единственная попытка получила связанный сигнал попытки политики:
+    // The single attempt received the policy's linked per-attempt signal:
     expect(state.signals).toHaveLength(1);
     expect(state.signals[0]).toBeInstanceOf(AbortSignal);
     expect(controller.signal.aborted).toBe(false);
   });
 
-  it('отмена во время backoff останавливает операцию с причиной отмены', async () => {
+  it('cancellation during backoff stops operation with cancellation reason', async () => {
     const { sleep } = honoringSleep();
     const controller = new AbortController();
     const state: FakeQueryState = { signals: [], paramsList: [] };
@@ -230,11 +230,11 @@ describe('withRetryPolicy(): отмена и сигналы попытки', () 
       message: 'stop-after-first-attempt',
     });
     void pendingReject;
-    // Ровно одна попытка БД: отмена запретила вторую.
+    // Exactly one DB attempt: cancellation blocked the second.
     expect(state.signals).toHaveLength(1);
   });
 
-  it('уже отменённый сигнал политики — ни одного обращения к БД', async () => {
+  it('already aborted policy signal — zero DB calls', async () => {
     const { sleep } = recordingSleep();
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
@@ -252,11 +252,12 @@ describe('withRetryPolicy(): отмена и сигналы попытки', () 
   });
 });
 
-describe('withRetryPolicy(): гашение внутреннего ретрая SDK (событие retry)', () => {
+describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => {
   /**
-   * Имитация SDK-запроса (@ydbjs/query): внутренний цикл хочет повторять
-   * транзитную ошибку бесконечно; событие 'retry' эмитится после задержки,
-   * следующая попытка начинается с throwIfAborted на сигнале запроса.
+   * Imitates an SDK query (@ydbjs/query): the internal loop wants to retry
+   * a transient error forever; the 'retry' event fires after the delay,
+   * and the next attempt starts with a throwIfAborted check on the query
+   * signal.
    */
   function makeSdkLikeExecutor(options: {
     failuresBeforeSuccess: number;
@@ -299,11 +300,11 @@ describe('withRetryPolicy(): гашение внутреннего ретрая 
                 failureCount += 1;
                 options.executions.push(failureCount);
                 const boom = ydbErr(Code.ABORTED);
-                // SDK-стратегия решает повторить: событие после задержки.
+                // SDK strategy decides to retry: event after the delay.
                 for (const listener of listeners) {
                   listener({ attempt: failureCount, error: boom });
                 }
-                // Политика отменила сигнал — следующей попытки не будет:
+                // The policy cancelled the signal — no next attempt:
                 if (signal?.aborted) {
                   const abortError = new Error('The operation was aborted');
                   abortError.name = 'AbortError';
@@ -322,7 +323,7 @@ describe('withRetryPolicy(): гашение внутреннего ретрая 
     return executor;
   }
 
-  it('одна попытка политики = одна попытка SDK: попытки НЕ перемножаются', async () => {
+  it('one policy attempt = one SDK attempt: attempts do NOT multiply', async () => {
     const { sleep } = recordingSleep();
     const executions: number[] = [];
     const base = makeSdkLikeExecutor({
@@ -339,13 +340,13 @@ describe('withRetryPolicy(): гашение внутреннего ретрая 
     await expect(wrapped`SELECT 1`.idempotent(true)).resolves.toEqual([
       [{ done: true }],
     ]);
-    // Две транзитные неудачи + успех = РОВНО 3 обращения к БД. Внутренний
-    // цикл SDK (неограниченный бюджет) погашен политикой: без гашения
-    // каждая попытка политики уходила бы в бесконечный цикл SDK.
+    // Two transient failures + success = EXACTLY 3 DB calls. The SDK's
+    // internal loop (unbounded budget) is silenced by the policy: without
+    // silencing, each policy attempt would spin in the SDK's infinite loop.
     expect(executions).toEqual([1, 2, 3]);
   });
 
-  it('исходная ошибка доходит до политики, а не AbortError от отмены', async () => {
+  it('original error reaches policy, not AbortError from cancellation', async () => {
     const { sleep } = recordingSleep();
     const executions: number[] = [];
     const base = makeSdkLikeExecutor({ failuresBeforeSuccess: 1, executions });
@@ -363,14 +364,14 @@ describe('withRetryPolicy(): гашение внутреннего ретрая 
     await expect(wrapped`SELECT 1`.idempotent(true)).resolves.toEqual([
       [{ done: true }],
     ]);
-    // Политика увидела именно YDBError ABORTED, а не AbortError подмены:
+    // The policy saw exactly the YDBError ABORTED, not a substituted AbortError:
     expect(seenErrors).toHaveLength(1);
     expect(seenErrors[0]).toBeInstanceOf(YDBError);
   });
 });
 
-describe('withRetryPolicy(): transaction() пробрасывается как есть', () => {
-  it('хэндл транзакции не оборачивается политикой', async () => {
+describe('withRetryPolicy(): transaction() passed through as-is', () => {
+  it('transaction handle not wrapped by policy', async () => {
     const openedOptions: YdbTransactionOptions[] = [];
     const handle: YdbTransactionHandle = {
       execute: async (fn) =>
@@ -396,13 +397,13 @@ describe('withRetryPolicy(): transaction() пробрасывается как �
   });
 });
 
-describe('withRetryPolicy(): правило идемпотентности (#27, fail-safe)', () => {
+describe('withRetryPolicy(): idempotency rule (#27, fail-safe)', () => {
   /**
-   * SDK-подобный запрос с внутренним «бесконечным» циклом повтора
-   * (как @ydbjs/query): всегда-повторяемые статусы ретраются независимо
-   * от пометки idempotent, событие 'retry' эмитится после каждой неудачи,
-   * следующая попытка выполняется только при живом сигнале.
-   * realExecutions — счётчик РЕАЛЬНЫХ обращений к БД.
+   * SDK-like query with an internal "infinite" retry loop (like
+   * @ydbjs/query): always-retried statuses retry regardless of the
+   * idempotent flag, the 'retry' event fires after each failure, and the
+   * next attempt runs only while the signal is live.
+   * realExecutions — counter of REAL DB calls.
    */
   function makeSdkLikeExecutor(options: {
     failuresBeforeSuccess: number;
@@ -459,7 +460,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
                 for (const listener of listeners) {
                   listener({ attempt: failures, error: boom });
                 }
-                // Политика погасила внутренний цикл — следующей попытки нет:
+                // The policy silenced the internal loop — no next attempt:
                 if (signal?.aborted) {
                   const abortError = new Error('The operation was aborted');
                   abortError.name = 'AbortError';
@@ -480,7 +481,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
 
   const TRANSIENT = [Code.ABORTED, Code.UNAVAILABLE, Code.OVERLOADED];
 
-  it('(1) непомеченный запрос + транзитная ошибка → ровно одна попытка БД', async () => {
+  it('(1) unmarked query + transient error → exactly one DB attempt', async () => {
     const { sleep } = recordingSleep();
     const realExecutions: number[] = [];
     const base = makeSdkLikeExecutor({
@@ -499,12 +500,12 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
     await expect(wrapped`UPSERT users SET ...`).rejects.toBeInstanceOf(
       YDBError,
     );
-    // Внутренний цикл SDK хочет повторять бесконечно — политика гасит его:
-    // РОВНО одно обращение к БД, повтор записи невозможен.
+    // The SDK's internal loop wants to retry forever — the policy silences
+    // it: EXACTLY one DB call, a write retry is impossible.
     expect(realExecutions).toHaveLength(1);
   });
 
-  it('(2) помеченный idempotent запрос ретраится до maxAttempts', async () => {
+  it('(2) idempotent-marked query retried up to maxAttempts', async () => {
     const { sleep } = recordingSleep();
     const realExecutions: number[] = [];
     const marks: boolean[] = [];
@@ -525,11 +526,11 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
       wrapped`SELECT * FROM users`.idempotent(true),
     ).resolves.toEqual([[{ done: true }]]);
     expect(realExecutions).toEqual([1, 2, 3]);
-    // Пометка проброшена в SDK-запрос на каждой попытке:
+    // The flag is forwarded to the SDK query on each attempt:
     expect(marks).toEqual([true, true, true]);
   });
 
-  it('(3) непомеченная запись не ретраится ни при одном из транзитных статусов', async () => {
+  it('(3) unmarked write not retried for any transient status', async () => {
     for (const code of TRANSIENT) {
       const { sleep } = recordingSleep();
       const realExecutions: number[] = [];
@@ -546,7 +547,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
     }
   });
 
-  it('(4) помеченный запрос ретрается при каждом из транзитных статусов', async () => {
+  it('(4) marked query retried for each transient status', async () => {
     for (const code of TRANSIENT) {
       const { sleep } = recordingSleep();
       const realExecutions: number[] = [];
@@ -565,8 +566,8 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
     }
   });
 
-  it('(5) попытки политики и SDK не перемножаются в обе стороны', async () => {
-    // a) непомеченный: один реальный вызов при «вечном» желании SDK повторять.
+  it('(5) policy and SDK attempts do not multiply in either direction', async () => {
+    // a) unmarked: one real call despite the SDK's "eternal" wish to retry.
     {
       const { sleep } = recordingSleep();
       const realExecutions: number[] = [];
@@ -581,7 +582,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
       ).rejects.toBeInstanceOf(YDBError);
       expect(realExecutions).toHaveLength(1);
     }
-    // b) помеченный: исчерпание ровно на maxAttempts, без лишних попыток SDK.
+    // b) marked: exhausts exactly at maxAttempts, without extra SDK attempts.
     {
       const { sleep } = recordingSleep();
       const realExecutions: number[] = [];
@@ -604,7 +605,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
     }
   });
 
-  it('.idempotent(false)/без пометки — одно исполнение; пометка доходит до SDK', async () => {
+  it('.idempotent(false)/no mark — single execution; mark reaches SDK', async () => {
     const { sleep } = recordingSleep();
     const marks: boolean[] = [];
     const realExecutions: number[] = [];
@@ -622,7 +623,7 @@ describe('withRetryPolicy(): правило идемпотентности (#27,
     ).rejects.toBeInstanceOf(YDBError);
     expect(realExecutions).toHaveLength(1);
 
-    // Успешный помеченный запрос: флаг дошёл до SDK-запроса.
+    // Successful marked query: the flag reached the SDK query.
     const okBase = makeSdkLikeExecutor({
       failuresBeforeSuccess: 0,
       statusCodes: TRANSIENT,

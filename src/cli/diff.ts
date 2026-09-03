@@ -1,8 +1,8 @@
 /**
- * Человекочитаемый цветной вывод расхождений схемы «сущности vs БД»
- * для команд CLI (`schema:verify`, `migration:generate`).
- * ANSI-коды вручную, без зависимостей; цвет отключается при не-TTY
- * выводе и по переменной окружения NO_COLOR.
+ * Human-readable colored output of schema "entity vs DB" discrepancies for
+ * CLI commands (`schema:verify`, `migration:generate`).
+ * ANSI codes are produced by hand, with no dependencies; color is disabled
+ * on non-TTY output and by the NO_COLOR environment variable.
  */
 import type { YdbSchemaIssue } from '../schema/schema-sync.js';
 
@@ -13,7 +13,7 @@ const YELLOW = '\x1b[33m';
 const BLUE = '\x1b[34m';
 const GRAY = '\x1b[90m';
 
-/** Маркер и цвет по типу расхождения. */
+/** Marker and color per discrepancy kind. */
 const KIND_STYLE: Record<
   YdbSchemaIssue['kind'],
   { marker: string; color: string }
@@ -34,10 +34,11 @@ const KIND_STYLE: Record<
 };
 
 /**
- * Цвет включён, только если целевой поток вывода — TTY и не задана
- * NO_COLOR (#103). Раньше TTY проверялся только у stdout, хотя расхождения
- * в schema:verify пишутся в stderr — при перенаправлении stdout ANSI-коды
- * попадали в файл, а при перенаправлении stderr цвет зря отключался.
+ * Color is enabled only when the target output stream is a TTY and NO_COLOR
+ * is not set (#103). Previously TTY was checked only against stdout although
+ * schema:verify writes discrepancies to stderr — ANSI codes leaked into a
+ * file when redirecting stdout, and color was needlessly disabled when
+ * redirecting stderr.
  */
 export function shouldUseColor(
   stream: NodeJS.WriteStream = process.stdout,
@@ -45,24 +46,24 @@ export function shouldUseColor(
   return Boolean(stream.isTTY) && !process.env.NO_COLOR;
 }
 
-/** Оборачивает текст в ANSI-цвет, если раскраска включена. */
+/** Wraps text in ANSI color, if coloring is enabled. */
 function paint(text: string, color: string, colorEnabled: boolean): string {
   return colorEnabled ? `${color}${text}${RESET}` : text;
 }
 
-/** Убирает префикс `Table "<name>" ` из сообщения — таблица уже в заголовке группы. */
+/** Strips the `Table "<name>" ` prefix from the message — the table is already in the group heading. */
 function stripTablePrefix(issue: YdbSchemaIssue): string {
   return issue.message.replace(`Table "${issue.tableName}" `, '');
 }
 
 /**
- * Для type-mismatch переформатирует сообщение в «было → стало»:
+ * For type-mismatch, reformats the message as "was → became":
  * `column "c" type mismatch: expected Utf8, actual Int32`
  * → `column "c": Int32 → Utf8`.
- * Аналогично для index-columns-mismatch:
+ * Likewise for index-columns-mismatch:
  * `index "i" columns mismatch: expected [a, b], actual [b, a]`
  * → `index "i": [b, a] → [a, b]`,
- * и для ttl-mismatch:
+ * and for ttl-mismatch:
  * `TTL mismatch: expected PT2H ..., actual P1D ...`
  * → `TTL: P1D ... → PT2H ...`.
  */
@@ -94,11 +95,11 @@ function formatIssueText(issue: YdbSchemaIssue): string {
 }
 
 /**
- * Рендерит список расхождений, сгруппированный по таблицам.
- * Возвращает многострочную строку (без завершающего перевода строки).
+ * Renders the list of discrepancies, grouped by table.
+ * Returns a multi-line string (without a trailing newline).
  *
- * Цвет определяется по потоку, куда вывод реально попадает: опция
- * `stream` (по умолчанию stdout) или явный `color`.
+ * Color is decided by the stream the output actually lands in: the `stream`
+ * option (defaults to stdout) or the explicit `color` option.
  */
 export function renderSchemaDiff(
   issues: YdbSchemaIssue[],
@@ -106,7 +107,7 @@ export function renderSchemaDiff(
 ): string {
   const colorEnabled = options?.color ?? shouldUseColor(options?.stream);
 
-  // Группировка по таблицам с сохранением исходного порядка.
+  // Group by tables, preserving the original order.
   const byTable = new Map<string, YdbSchemaIssue[]>();
   for (const issue of issues) {
     const list = byTable.get(issue.tableName) ?? [];

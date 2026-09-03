@@ -1,21 +1,26 @@
 import 'reflect-metadata';
 
+/** Metadata key for enum columns (`@YdbEnum`). */
 export const YDB_ENUM_KEY = 'ydb:enum';
 
 export interface YdbEnumMeta {
   propertyKey: string;
   values: readonly string[];
-  /** 'Utf8' хранит строковые значения, 'Int32' — порядковый номер. По умолчанию: 'Utf8'. */
+  /** 'Utf8' stores string values, 'Int32' — the ordinal number. Default: 'Utf8'. */
   storage: 'Utf8' | 'Int32';
 }
 
 /**
- * Декоратор enum-колонки: маппинг enum ↔ Utf8 (строковое значение) или Int32 (порядковый номер).
+ * Enum column decorator: maps an enum ↔ Utf8 (string value) or Int32
+ * (ordinal number).
  *
- * Семантика наследования и повторного применения: последняя декларация
- * побеждает (last-write-wins). Переопределение @YdbEnum на свойстве,
- * унаследованном от родителя, заменяет values/storage — а не игнорируется.
- * Для каждого propertyKey в метаданных остаётся ровно одна запись.
+ * Inheritance and re-application semantics: the last declaration wins
+ * (last-write-wins). Overriding @YdbEnum on a property inherited from a
+ * parent replaces values/storage — it is not ignored. Each propertyKey has
+ * exactly one entry in the metadata.
+ *
+ * @param options - Enum options: values array and optional storage type.
+ * @returns Property decorator function.
  * @example
  *   enum Status { ACTIVE = 'active', INACTIVE = 'inactive' }
  *
@@ -44,6 +49,12 @@ export function YdbEnum(options: {
   };
 }
 
+/**
+ * Returns the enum metadata for an entity class.
+ *
+ * @param target - Entity class constructor.
+ * @returns Array of enum metadata entries.
+ */
 export function getYdbEnumMetadata(
   target: new (...args: any[]) => any,
 ): YdbEnumMeta[] {

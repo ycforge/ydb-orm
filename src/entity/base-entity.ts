@@ -20,18 +20,18 @@ import {
 } from '../persistence/entity-persistence.js';
 
 /**
- * Базовый класс Active Record.
+ * Active Record base class.
  *
- * Содержит только публичные статические фасады и instance helpers.
- * Вся реализация CRUD/шифрования/relations живёт в `YdbEntityPersistence`
- * и `YdbEntityRelations`, доступных через `YdbRepository` из entity-runtime.
+ * Contains only public static facades and instance helpers.
+ * All CRUD/encryption/relations implementation lives in `YdbEntityPersistence`
+ * and `YdbEntityRelations`, accessible via `YdbRepository` from entity-runtime.
  */
 export class YdbBaseEntity {
-  // ---- Runtime setters (публичный API для тестов и standalone-конфигурации) ----
+  // ---- Runtime setters (public API for tests and standalone configuration) ----
 
   /**
-   * Устанавливает executor. Передача undefined сбрасывает executor
-   * (нужно при повторном бутстрапе и очистке состояния в тестах).
+   * Sets the executor. Passing undefined resets the executor
+   * (needed for re-bootstrap and state cleanup in tests).
    */
   static setExecutor(this: typeof YdbBaseEntity, db?: YdbExecutor): void {
     getEntityRuntime(this).executor = db;
@@ -39,8 +39,8 @@ export class YdbBaseEntity {
   }
 
   /**
-   * Устанавливает encryption-провайдер. Передача undefined сбрасывает
-   * провайдер (нужно при повторном бутстрапе без шифрования).
+   * Sets the encryption provider. Passing undefined resets
+   * the provider (needed for re-bootstrap without encryption).
    */
   static setEncryptionProvider(
     this: typeof YdbBaseEntity,
@@ -51,8 +51,8 @@ export class YdbBaseEntity {
   }
 
   /**
-   * Устанавливает blind-index-провайдер. Передача undefined сбрасывает
-   * провайдер (нужно при повторном бутстрапе без шифрования).
+   * Sets the blind index provider. Passing undefined resets
+   * the provider (needed for re-bootstrap without encryption).
    */
   static setBlindIndexProvider(
     this: typeof YdbBaseEntity,
@@ -63,8 +63,8 @@ export class YdbBaseEntity {
   }
 
   /**
-   * Устанавливает validation-провайдер. Передача undefined сбрасывает
-   * провайдер (нужно при повторном бутстрапе и очистке состояния в тестах).
+   * Sets the validation provider. Passing undefined resets
+   * the provider (needed for re-bootstrap and state cleanup in tests).
    */
   static setValidationProvider(
     this: typeof YdbBaseEntity,
@@ -75,10 +75,10 @@ export class YdbBaseEntity {
   }
 
   /**
-   * Устанавливает формат сериализации Security AAD (#165): 'v2' (по
-   * умолчанию, безопасный) или 'legacy' — только для переходного периода,
-   * когда в БД ещё есть ciphertext, написанный старым форматом. Передача
-   * undefined возвращает формат по умолчанию.
+   * Sets the Security AAD serialization format (#165): 'v2' (default,
+   * secure) or 'legacy' — only for the transitional period when the
+   * database still has ciphertext written in the old format. Passing
+   * undefined returns the default format.
    */
   static setAadFormat(this: typeof YdbBaseEntity, format?: AadFormat): void {
     getEntityRuntime(this).aadFormat = format;
@@ -86,11 +86,12 @@ export class YdbBaseEntity {
   }
 
   /**
-   * Управляет автоматическим определением формата AAD при дешифровке (#165).
-   * По умолчанию (undefined → true) при сбое основного формата делается
-   * повтор вторым: записи, написанные legacy-форматом, читаемы сразу после
-   * апгрейда на v2-дефолт. После полной перешифровки данных передайте
-   * `false` — строгий режим, ошибка формата не маскируется.
+   * Controls automatic AAD format detection on decryption (#165).
+   * Default (undefined → true): on primary format failure, a second
+   * attempt is made with the other format — records written in legacy
+   * format are readable immediately after upgrading to v2 default.
+   * After full data re-encryption, pass `false` — strict mode, format
+   * error is not masked.
    */
   static setAadReadFallback(
     this: typeof YdbBaseEntity,
@@ -127,6 +128,12 @@ export class YdbBaseEntity {
 
   // ---- CRUD facades ----
 
+  /**
+   * Finds a single entity by the given criteria.
+   * @param where - Filter criteria (column-value pairs).
+   * @param options - Query options (transaction, timeout, limit, offset, signal, idempotent).
+   * @returns The entity instance or null if not found.
+   */
   static async find<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     where: Record<string, any>,
@@ -135,6 +142,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).find(where, options);
   }
 
+  /**
+   * Finds all entities matching the criteria.
+   * @param where - Filter criteria (column-value pairs). Defaults to {} (all rows).
+   * @param options - Query options (transaction, timeout, limit, offset, signal, idempotent).
+   * @returns Array of entity instances.
+   */
   static async findAll<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     where: Record<string, any> = {},
@@ -143,6 +156,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).findAll(where, options);
   }
 
+  /**
+   * Finds a single entity by the given criteria (alias for `find`).
+   * @param where - Filter criteria (column-value pairs).
+   * @param options - Query options (transaction, timeout, limit, offset, signal, idempotent).
+   * @returns The entity instance or null if not found.
+   */
   static async findOneBy<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     where: Record<string, any>,
@@ -151,6 +170,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).findOneBy(where, options);
   }
 
+  /**
+   * Finds all entities matching the criteria (alias for `findAll`).
+   * @param where - Filter criteria (column-value pairs).
+   * @param options - Query options (transaction, timeout, limit, offset, signal, idempotent).
+   * @returns Array of entity instances.
+   */
   static async findBy<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     where: Record<string, any>,
@@ -159,6 +184,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).findBy(where, options);
   }
 
+  /**
+   * Counts entities matching the criteria.
+   * @param where - Filter criteria (column-value pairs). Defaults to {} (all rows).
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns Number of matching rows.
+   */
   static async count(
     this: typeof YdbBaseEntity,
     where: Record<string, any> = {},
@@ -167,6 +198,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository(this).count(where, options);
   }
 
+  /**
+   * Saves (inserts or updates) an entity instance.
+   * @param entity - Entity instance to save.
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns The saved entity instance (with generated PK if applicable).
+   */
   static async save<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     entity: T,
@@ -175,6 +212,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).save(entity, options);
   }
 
+  /**
+   * Inserts multiple entities in a single batch (grouped by columns).
+   * @param entities - Array of entity instances to insert.
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns Array of saved entity instances.
+   */
   static async insertMany<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     entities: T[],
@@ -183,6 +226,13 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).insertMany(entities, options);
   }
 
+  /**
+   * Updates entities matching the criteria with the given patch.
+   * @param where - Filter criteria (column-value pairs).
+   * @param patch - Partial object with columns to update.
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns Number of affected rows.
+   */
   static async updateBy(
     this: typeof YdbBaseEntity,
     where: Record<string, any>,
@@ -192,6 +242,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository(this).updateBy(where, patch, options);
   }
 
+  /**
+   * Deletes an entity by primary key value(s).
+   * @param pkValue - Primary key value (single value for single PK, object for composite PK).
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns The deleted entity instance or null if not found.
+   */
   static async delete<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     pkValue: string | number | Record<string, any>,
@@ -200,6 +256,12 @@ export class YdbBaseEntity {
     return getOrCreateRepository<T>(this).delete(pkValue, options);
   }
 
+  /**
+   * Deletes all entities matching the criteria.
+   * @param where - Filter criteria (column-value pairs).
+   * @param options - Query options (transaction, timeout, signal, idempotent).
+   * @returns Number of deleted rows.
+   */
   static async deleteBy(
     this: typeof YdbBaseEntity,
     where: Record<string, any>,
@@ -208,16 +270,20 @@ export class YdbBaseEntity {
     return getOrCreateRepository(this).deleteBy(where, options);
   }
 
+  /**
+   * Returns a query builder for the entity.
+   * @returns YdbQueryBuilder instance for fluent query construction.
+   */
   static query<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
   ): YdbQueryBuilder<T> {
     return getOrCreateRepository<T>(this).query();
   }
 
-  // ---- @internal мосты для YdbQueryBuilder ----
+  // ---- @internal bridges for YdbQueryBuilder ----
 
   /**
-   * @internal Мост для YdbQueryBuilder: собрать WHERE по метаданным сущности.
+   * @internal Bridge for YdbQueryBuilder: build WHERE clause from entity metadata.
    */
   static _buildWhereClause(
     this: typeof YdbBaseEntity,
@@ -232,7 +298,7 @@ export class YdbBaseEntity {
   }
 
   /**
-   * @internal Мост для YdbQueryBuilder: выполнить SELECT и вернуть сущности.
+   * @internal Bridge for YdbQueryBuilder: execute SELECT and return entities.
    */
   static async _executeSelect<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
@@ -252,7 +318,7 @@ export class YdbBaseEntity {
   }
 
   /**
-   * @internal Мост для YdbQueryBuilder: выполнить COUNT-запрос.
+   * @internal Bridge for YdbQueryBuilder: execute COUNT query.
    */
   static async _executeCount(
     this: typeof YdbBaseEntity,
@@ -274,8 +340,8 @@ export class YdbBaseEntity {
   // ---- Instance helpers ----
 
   /**
-   * Сериализация в JSON: исключает synthetic {field}_bi колонки
-   * и внутренние служебные поля.
+   * Serialization to JSON: excludes synthetic {field}_bi columns
+   * and internal service fields.
    */
   toJSON(): Record<string, any> {
     const meta = getYdbEntityMetadata(this.constructor as typeof YdbBaseEntity);

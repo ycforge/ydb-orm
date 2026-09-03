@@ -1,15 +1,15 @@
 /**
- * @ycforge/ydb-orm/nest — NestJS-интеграция пакета.
+ * @ycforge/ydb-orm/nest — NestJS integration for the package.
  *
- * Подпакет существует, чтобы основной пакет @ycforge/ydb-orm оставался
- * каркасно-нейтральным (работает без NestJS). Здесь собраны:
- * - модули NestJS: YdbOrmModule / YdbCoreModule (+ внутренние провайдеры);
- * - DI-токены и помощники репозиториев: YDB_*, getRepositoryToken,
+ * The subpackage exists so the main @ycforge/ydb-orm package remains
+ * framework-neutral (works without NestJS). It contains:
+ * - NestJS modules: YdbOrmModule / YdbCoreModule (+ internal providers);
+ * - DI tokens and repository helpers: YDB_*, getRepositoryToken,
  *   getActiveRecordInitToken, InjectRepository;
- * - типы async-опций (YdbModuleAsyncOptions / YdbOptionsFactory).
+ * - async option types (YdbModuleAsyncOptions / YdbOptionsFactory).
  *
- * Для удобства NestJS-приложений реэкспортируется и весь публичный API
- * основного пакета — достаточно одного импорта.
+ * For convenience, the entire public API of the main package is also
+ * re-exported — a single import is sufficient for NestJS applications.
  */
 export * from '../index.js';
 export { YdbOrmModule } from './ydb-orm.module.js';

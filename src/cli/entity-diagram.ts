@@ -1,22 +1,23 @@
 /**
- * entity:diagram (#36): read-only рендер канонических метаданных сущностей
- * в Mermaid ER-диаграмму.
+ * entity:diagram (#36): read-only rendering of canonical entity metadata
+ * into a Mermaid ER diagram.
  *
- * Гарантии:
- *  - НИКАКОГО I/O в БД: ни драйвера, ни executor'а, ни DDL, ни миграций —
- *    функция синхронная и работает только с метаданными классов;
- *  - единственный источник данных — канонический дамп metadata:dump (#37)
- *    (buildMetadataDump): обход декораторов не дублируется; вся строгая
- *    валидация (класс без @YdbEntity, конфликт таблиц #92, отсутствие PK,
- *    join-колонки #87, join-таблицы #90/#139) наследуется оттуда — невалидные
- *    метаданные роняют команду до первого байта вывода;
- *  - детерминизм: стабильный порядок блоков сущностей, колонок и связей —
- *    повторный вызов на тех же сущностях даёт побайтово одинаковую диаграмму,
- *    порядок входного списка на вывод не влияет;
- *  - корректный Mermaid для произвольных имён: имена таблиц/метки связей
- *    всегда в двойных кавычках с экранированием, имена колонок приводятся
- *    к допустимому виду (оригинал сохраняется комментарием) — malformed-
- *    вывод невозможен.
+ * Guarantees:
+ *  - NO DB I/O whatsoever: no driver, no executor, no DDL, no migrations —
+ *    the function is synchronous and works only with class metadata;
+ *  - the only data source is the canonical metadata:dump (#37)
+ *    (buildMetadataDump): the decorator walk is not duplicated; all the
+ *    strict validation (class without @YdbEntity, table-name conflict #92,
+ *    missing PK, join columns #87, join tables #90/#139) is inherited from
+ *    there — invalid metadata fails the command before the first byte of
+ *    output;
+ *  - determinism: stable ordering of entity blocks, columns and relations —
+ *    calling the function again on the same entities yields a byte-identical
+ *    diagram, and the input list order does not affect the output;
+ *  - valid Mermaid for arbitrary names: table names/relation labels are
+ *    always double-quoted with escaping, column names are normalized to a
+ *    permissible form (the original is kept as a comment) — malformed
+ *    output is impossible.
  */
 
 import fs from 'node:fs';
@@ -32,11 +33,12 @@ import type {
 type EntityCtor = new (...args: any[]) => any;
 
 /**
- * Строит Mermaid ER-диаграмму для переданного списка сущностей.
+ * Builds a Mermaid ER diagram for the given list of entities.
  *
- * Список задаёт состав диаграммы (обычно config.entities из ydb-orm.config.ts);
- * порядок вывода от него не зависит. Чистая синхронная функция: БД не трогает,
- * ошибок конфигурации не глотает (все они всплывают из buildMetadataDump).
+ * The list defines the diagram composition (usually config.entities from
+ * ydb-orm.config.ts); the output order does not depend on it. A pure
+ * synchronous function: it never touches the DB and does not swallow
+ * configuration errors (all of them surface from buildMetadataDump).
  */
 export function buildEntityDiagram(entities: EntityCtor[]): string {
   const dump = buildMetadataDump(entities);
@@ -44,16 +46,17 @@ export function buildEntityDiagram(entities: EntityCtor[]): string {
 }
 
 /**
- * Записывает диаграмму в файл без риска молчаливой перезаписи:
- * существующий файл — ошибка (флаг 'wx'), запись атомарнее check-then-write.
+ * Writes the diagram to a file without risking a silent overwrite:
+ * an existing file is an error (the 'wx' flag), the write is atomic w.r.t.
+ * check-then-write.
  */
 export function writeDiagramFile(filePath: string, diagram: string): void {
   let fd: number;
   try {
     fd = fs.openSync(filePath, 'wx');
   } catch (error) {
-    // Проверка по коду без instanceof: в VM-окружениях (jest ESM) ошибка
-    // из нативного fs может не наследовать Error этого контекста.
+    // Check by code, not instanceof: in VM environments (jest ESM) a native
+    // fs error may not inherit this context's Error.
     if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') {
       throw new Error(
         `File already exists: ${filePath} — entity:diagram never overwrites ` +
@@ -69,9 +72,9 @@ export function writeDiagramFile(filePath: string, diagram: string): void {
   }
 }
 
-// ─────────────────────────── Рендеринг ──────────────────────────────────────
+// ─────────────────────────── Rendering ──────────────────────────────────────
 
-/** Одна связь на диаграмме: `left <cardinality> right : label`. */
+/** One edge on the diagram: `left <cardinality> right : label`. */
 interface DiagramEdge {
   left: string;
   leftCard: string;
@@ -84,11 +87,11 @@ interface DiagramEdge {
 function renderDiagram(dump: MetadataDump): string {
   const lines: string[] = ['erDiagram'];
 
-  // Физические FK-колонки связей — для маркеров FK в блоках.
+  // Physical FK columns of relations — for FK markers in blocks.
   const foreignKeys = collectForeignKeys(dump.entities);
 
-  // Блоки сущностей: сначала обычные таблицы, затем join-таблицы m2m;
-  // каждая группа отсортирована по имени таблицы (детерминизм).
+  // Entity blocks: ordinary tables first, then m2m join tables; each group
+  // is sorted by table name (determinism).
   for (const entity of dump.entities) {
     lines.push(...renderEntityBlock(entity, foreignKeys.get(entity.table)));
   }
@@ -104,10 +107,10 @@ function renderDiagram(dump: MetadataDump): string {
 }
 
 /**
- * Собирает по каждой таблице множество её FK-колонок — для маркеров FK
- * в блоках: many-to-one/one-to-one держат FK у себя, у one-to-many колонка
- * физически живёт в целевой таблице (если та участвует в диаграмме).
- * Направление и кратность связей считаются отдельно.
+ * Collects, per table, the set of its FK columns — for FK markers in blocks:
+ * many-to-one/one-to-one keep the FK on their own side, while in one-to-many
+ * the column physically lives in the target table (if the latter is part of
+ * the diagram). Edge direction and cardinality are computed separately.
  */
 function collectForeignKeys(
   entities: DumpedEntity[],
@@ -144,8 +147,8 @@ function collectForeignKeys(
 }
 
 /**
- * Блок сущности: PK-колонки идут первыми в порядке объявления (порядок
- * составного PK значим в YDB, #89), остальные — по алфавиту (как в дампе).
+ * Entity block: PK columns come first in declaration order (composite-PK
+ * order matters in YDB, #89), the rest alphabetically (as in the dump).
  */
 function renderEntityBlock(
   entity: DumpedEntity,
@@ -161,7 +164,7 @@ function renderEntityBlock(
   return [`  ${quoteMermaid(entity.table)} {`, ...body, '  }'];
 }
 
-/** Колонки блока: PK — в порядке primaryKey, остальные — как в дампе. */
+/** Block columns: PK first in primaryKey order, the rest as in the dump. */
 function orderColumns(entity: DumpedEntity): DumpedColumn[] {
   const byName = new Map(entity.columns.map((column) => [column.name, column]));
   const ordered: DumpedColumn[] = [];
@@ -175,7 +178,7 @@ function orderColumns(entity: DumpedEntity): DumpedColumn[] {
   return ordered;
 }
 
-/** Строка атрибута: тип, имя, ключи (PK/FK), комментарий с оригиналом. */
+/** Attribute line: type, name, keys (PK/FK), comment with original. */
 function renderAttribute(
   column: DumpedColumn,
   foreignKeys: Set<string> | undefined,
@@ -188,8 +191,8 @@ function renderAttribute(
 }
 
 /**
- * Универсальная строка атрибута: `    <тип> <имя>[ PK[, FK][ "оригинал"]]`.
- * Имя квотировать нельзя — при санитизации оригинал сохраняется комментарием.
+ * Universal attribute line: `    <type> <name>[ PK[, FK][ "original"]]`.
+ * Name cannot be quoted — original preserved as comment during sanitization.
  */
 function renderAttributeLine(
   rawType: string,
@@ -201,13 +204,13 @@ function renderAttributeLine(
 
   const parts = [`    ${type} ${safe.name}`];
   if (keys.length) parts.push(` ${keys.join(', ')}`);
-  // Оригинальное имя сохраняется комментарием: sanitized-имя может
-  // отличаться от физической колонки.
+  // Preserve the original name as a comment: the sanitized name may
+  // differ from the physical column.
   if (safe.changed) parts.push(` ${quoteMermaid(rawName)}`);
   return parts.join('');
 }
 
-/** Блок физической join-таблицы many-to-many: обе колонки — PK + FK. */
+/** Physical many-to-many join table block: both columns are PK + FK. */
 function renderJoinTableBlock(joinTable: DumpedJoinTable): string[] {
   return [
     `  ${quoteMermaid(joinTable.table)} {`,
@@ -224,27 +227,27 @@ function renderJoinTableBlock(joinTable: DumpedJoinTable): string[] {
   ];
 }
 
-// ────────────────────────────── Связи ───────────────────────────────────────
+// ────────────────────────────── Relations ────────────────────────────────────
 
 /**
- * Связи диаграммы, детерминированно упорядоченные.
+ * Diagram edges, deterministically ordered.
  *
- *  - one-to-many ↔ many-to-one с одной и той же FK-колонкой дают одну линию:
- *    если «дочерняя» сторона (владелец FK) входит в дамп, линию рисует её
- *    many-to-one; однонаправленный one-to-many (обратной many-to-one нет)
- *    рисуется от родителя. Кратность всегда ||--o{ (родитель слева).
- *  - one-to-one: ||--o| (FK уникален, nullable-семантика в метаданных
- *    отсутствует); двусторонние one-to-one с двумя разными FK-колонками дают
- *    две линии — это две физические связи.
- *  - many-to-many рисуется через физическую join-таблицу двумя линиями
- *    ||--o{ (владелец → join → обратная сторона); сами свойства-списки
- *    отдельных линий не порождают.
+ *  - one-to-many ↔ many-to-one with the same FK column yield one line:
+ *    if the "child" side (FK owner) is in the dump, its many-to-one draws the
+ *    line; unidirectional one-to-many (no reverse many-to-one) draws from
+ *    the parent. Cardinality is always ||--o{ (parent on the left).
+ *  - one-to-one: ||--o| (FK is unique, no nullable semantics in metadata);
+ *    bidirectional one-to-one with two different FK columns yields two lines
+ *    — these are two physical relationships.
+ *  - many-to-many is drawn via the physical join table with two lines
+ *    ||--o{ (owner → join → inverse side); the list properties themselves
+ *    do not generate separate lines.
  */
 function collectEdges(dump: MetadataDump): DiagramEdge[] {
   const edges: DiagramEdge[] = [];
 
-  // Ключи линий, которые уже нарисованы стороной-владельцем FK:
-  // "<parent>|<child>|<fk>" — чтобы парный one-to-many не задублировал линию.
+  // Keys of edges already drawn by the FK-owning side:
+  // "<parent>|<child>|<fk>" — so the paired one-to-many doesn't duplicate.
   const fkOwnedEdges = new Set<string>();
 
   for (const entity of dump.entities) {
@@ -333,26 +336,27 @@ function renderEdge(edge: DiagramEdge): string {
   );
 }
 
-// ─────────────────────── Экранирование и санитизация ───────────────────────
+// ─────────────────────── Escaping and sanitization ──────────────────────────
 
 /**
- * Имя таблицы/сущности, метка связи (после двоеточия) или комментарий
- * атрибута в Mermaid ER: всегда в двойных кавычках — так безопасны пробелы,
- * точки, дефисы, юникод и любые другие символы, кроме самой двойной кавычки
- * и переводов строк, которые заменяются.
+ * Table/entity name, relation label (after colon), or attribute comment
+ * in Mermaid ER: always double-quoted — safe for spaces, dots, dashes,
+ * unicode and any other characters except the double quote itself and
+ * newlines, which are replaced.
  */
 function quoteMermaid(value: string): string {
-  // Двойная кавычка закрыла бы строку; переводы строк ломают однострочность.
+  // A double quote would close the string; newlines break the single-line form.
   return `"${value.replace(/"/g, "'").replace(/\s+/g, ' ').trim()}"`;
 }
 
 const ATTRIBUTE_SAFE = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /**
- * Имя атрибута в блоке Mermaid ER квотировать нельзя — грамматика требует
- * слово из букв/цифр/подчёркиваний, начинающееся с буквы. Недопустимые
- * символы заменяются на '_'; изменённое имя помечается, чтобы рендер добавил
- * комментарий с оригиналом. Пустое имя невозможно: fallback гарантирует слово.
+ * Attribute name in a Mermaid ER block cannot be quoted — grammar requires
+ * a word of letters/digits/underscores starting with a letter. Invalid
+ * characters are replaced with '_'; changed name is flagged so the renderer
+ * adds a comment with the original. Empty name is impossible: fallback
+ * guarantees a word.
  */
 function sanitizeAttributeName(name: string): {
   name: string;
@@ -365,8 +369,9 @@ function sanitizeAttributeName(name: string): {
 }
 
 /**
- * YDB-примитив по построению — простое слово (Utf8, Int32, ...), но рендер
- * защищается и от неожиданного значения: malformed-вывод исключён всегда.
+ * YDB primitive when rendered — just a simple word (Utf8, Int32, ...), but
+ * render guards against unexpected values too: malformed output is always
+ * excluded.
  */
 function sanitizeWord(value: string, fallback: string): string {
   return ATTRIBUTE_SAFE.test(value) ? value : fallback;

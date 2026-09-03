@@ -1,15 +1,15 @@
 /**
- * Генерация shell-автодополнения для бинаря `ydb-orm`.
- * Скрипты собираются строками, без внешних зависимостей.
+ * Shell-completion generation for the `ydb-orm` binary.
+ * Scripts are assembled from strings, without external dependencies.
  */
 
-/** Команда CLI с описанием (используется в completion-скриптах). */
+/** CLI command with a description (used in completion scripts). */
 interface CliCommand {
   name: string;
   description: string;
 }
 
-/** Все команды CLI, участвующие в автодополнении. */
+/** All CLI commands participating in completion. */
 export const CLI_COMMANDS: CliCommand[] = [
   { name: 'migration:create', description: 'Create an empty migration' },
   {
@@ -42,7 +42,7 @@ export const CLI_COMMANDS: CliCommand[] = [
   { name: 'completion', description: 'Print shell completion script' },
 ];
 
-/** Флаги, которые парсит CLI (см. parseArgs в args.ts). */
+/** Flags the CLI parses (see parseArgs in args.ts). */
 export const CLI_FLAGS = [
   '--config',
   '--dir',
@@ -53,11 +53,12 @@ export const CLI_FLAGS = [
   '--verbose',
 ];
 
-/** Поддерживаемые шеллы. */
+/** Supported shells. */
 export const COMPLETION_SHELLS = ['bash', 'zsh', 'fish'] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];
 
+/** Narrowing guard: whether the string names a supported completion shell. */
 export function isCompletionShell(shell: string): shell is CompletionShell {
   return (COMPLETION_SHELLS as readonly string[]).includes(shell);
 }
@@ -66,7 +67,7 @@ function commandNames(): string {
   return CLI_COMMANDS.map((c) => c.name).join(' ');
 }
 
-/** Bash completion-скрипт. */
+/** Bash completion script. */
 function renderBash(): string {
   return `# bash completion for ydb-orm
 _ydb_orm() {
@@ -100,7 +101,7 @@ complete -F _ydb_orm ydb-orm
 `;
 }
 
-/** Zsh completion-скрипт. */
+/** Zsh completion script. */
 function renderZsh(): string {
   const commands = CLI_COMMANDS.map(
     (c) => `    '${c.name}:${c.description}'`,
@@ -146,7 +147,7 @@ _ydb_orm "$@"
 `;
 }
 
-/** Fish completion-скрипт. */
+/** Fish completion script. */
 function renderFish(): string {
   const lines: string[] = ['# fish completion for ydb-orm', ''];
   lines.push(
@@ -182,8 +183,8 @@ function renderFish(): string {
 }
 
 /**
- * Возвращает completion-скрипт для указанного шелла.
- * Бросает Error с понятным сообщением для неизвестного шелла.
+ * Returns the completion script for the given shell.
+ * Throws an Error with a clear message for an unknown shell.
  */
 export function renderCompletionScript(shell: string): string {
   switch (shell) {

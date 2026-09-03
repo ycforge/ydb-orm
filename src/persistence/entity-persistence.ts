@@ -56,22 +56,22 @@ import {
 import { resolveManyToManyJoinTable } from '../relations/resolve-join-table.js';
 
 /**
- * Конструктор сущности, совместимый с YdbBaseEntity.
+ * Entity constructor type compatible with YdbBaseEntity.
  */
 export type YdbEntityConstructor<T extends YdbBaseEntity> = {
   new (): T;
 } & typeof YdbBaseEntity;
 
 /**
- * Контекст одной операции гидратации: identity guard против двойного
- * afterFind на одном инстансе (см. YdbEntityPersistence.hydrate).
+ * Context for a single hydration operation: an identity guard against firing
+ * afterFind twice on the same instance (see YdbEntityPersistence.hydrate).
  */
 export interface HydrationContext {
   seen: WeakSet<object>;
 }
 
 /**
- * Зависимости persistence: executor и опциональные провайдеры.
+ * Persistence dependencies: the executor plus optional providers.
  */
 export interface PersistenceDeps {
   encryptionProvider?: YdbEncryptionProvider;
@@ -79,37 +79,38 @@ export interface PersistenceDeps {
   validationProvider?: YdbValidationProvider;
   uuidGenerator?: () => string;
   /**
-   * Формат сериализации Security AAD (#165). По умолчанию безопасный `v2`;
-   * `legacy` — только для переходного периода (дешифровка старого ciphertext).
+   * Security AAD serialization format (#165). Defaults to the safe `v2`;
+   * `legacy` is intended only for a transition period (decrypting old ciphertext).
    */
   aadFormat?: AadFormat;
   /**
-   * Автоматическое определение формата AAD при дешифровке (#165, по умолчанию
-   * true): если расшифровка основным форматом упала, повторяется вторым.
-   * Без этого смена дефолта на `v2` сделала бы незаписи, написанные старым
-   * `legacy`-форматом, нечитаемыми сразу после апгрейда. После полной
-   * перешифровки данных выключите (`false`) — строгий режим: сбой формата
-   * больше не маскируется, а поверхностно неверный AAD падает первым
-   * исключением.
+   * Automatic AAD format detection during decryption (#165, default true): if
+   * decryption with the primary format fails, retry with the secondary one.
+   * Without this, switching the default to `v2` would make rows written with
+   * the old `legacy` format unreadable immediately after an upgrade. Once data
+   * has been fully re-encrypted, disable it (`false`) for strict mode: format
+   * failures are no longer masked, and a superficially wrong AAD throws on the
+   * first exception.
    */
   aadReadFallback?: boolean;
   /**
-   * @internal Общий контекст гидратации одной операции чтения.
-   * Прокидывается в persistence связанных сущностей при догрузке связей.
+   * @internal Shared hydration context of one read operation.
+   * Forwarded to the persistence of related entities when loading relations.
    */
   hydrationContext?: HydrationContext;
 }
 
 /**
- * Состояние lazy-дешифровки инстансов: поле → ciphertext из БД.
- * Записывается при instantiate(); снимается после decryptField().
- * WeakMap — не мешает сборке мусора и не виден в Object.entries/toJSON.
+ * Per-instance lazy-decryption state: field -> ciphertext from the DB.
+ * Populated at instantiate(); cleared after decryptField().
+ * A WeakMap so it neither blocks garbage collection nor shows up in
+ * Object.entries/toJSON.
  */
 const lazyPendingCiphertext = new WeakMap<object, Map<string, any>>();
 
 /**
- * Проверяет, есть ли у инстанса недешифрованные lazy-поля.
- * Экспортируется для toJSON() в YdbBaseEntity.
+ * Returns whether the instance still has any undecrypted lazy fields.
+ * Exported for toJSON() in YdbBaseEntity.
  */
 export function hasLazyPendingCiphertext(instance: object): boolean {
   const pending = lazyPendingCiphertext.get(instance);
@@ -117,7 +118,7 @@ export function hasLazyPendingCiphertext(instance: object): boolean {
 }
 
 /**
- * Возвращает имена недешифрованных lazy-полей инстанса.
+ * Returns the names of the instance's undecrypted lazy fields.
  */
 export function getLazyPendingFieldNames(instance: object): string[] {
   const pending = lazyPendingCiphertext.get(instance);
@@ -125,7 +126,7 @@ export function getLazyPendingFieldNames(instance: object): string[] {
 }
 
 /**
- * Расширенная схема: entity поля + synthetic {field}_bi колонки.
+ * Extended schema: entity fields plus synthetic {field}_bi columns.
  */
 export function getEntityDbSchema(
   meta: YdbEntityMetadata,
@@ -145,20 +146,20 @@ export interface WhereBuildContext {
 }
 
 /**
- * Окружение построения одного WHERE-узла.
+ * Environment of building a single WHERE node.
  *
- * `forbidEncrypted` включается внутри related-предикатов (#17): фильтрация
- * по колонкам связанных сущностей разрешена только для нешифрованных колонок
- * (blind index тоже запрещён — подзапрос по связанной таблице не имеет
- * доступа к провайдеру хешей корневого запроса и усложнил бы семантику).
+ * `forbidEncrypted` is enabled inside related predicates (#17): filtering by
+ * related-entity columns is allowed only for non-encrypted columns (the blind
+ * index is also forbidden — a subquery against a related table has no access
+ * to the root query's hash provider and would complicate the semantics).
  */
 export interface WhereBuildEnv {
   forbidEncrypted: boolean;
 }
 
 /**
- * Persistence-класс: все CRUD-операции, шифрование/дешифровка,
- * lifecycle hooks, enum-конвертация, timestamp-автопростановка.
+ * Persistence class: all CRUD operations, encryption/decryption,
+ * lifecycle hooks, enum conversion, and timestamp auto-fill.
  */
 export class YdbEntityPersistence<T extends YdbBaseEntity> {
   constructor(
@@ -167,7 +168,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     private readonly options: PersistenceDeps = {},
   ) {}
 
-  /** Обновляет executor (вызывается из runtime при смене deps). */
+  /** Updates the executor (called from runtime when deps change). */
   setExecutor(executor: YdbExecutor | undefined): void {
     this.executor = executor;
   }
@@ -185,16 +186,16 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   private getExecutor(trx?: YdbExecutor): YdbExecutor {
-    // Резолв учитывает ambient-контекст транзакций (#98): auto-join,
-    // запрет смешивания с посторонним trx, предупреждения вне транзакции.
-    // Настройки берутся из конфигурации-владельца сущности (#199).
+    // Resolution accounts for the ambient transaction context (#98): auto-join,
+    // rejecting mixing with a foreign trx, and warnings outside a transaction.
+    // Settings come from the entity's owning configuration (#199).
     const db = resolveOperationExecutor(
       trx,
       this.executor,
       this.entityClass.name,
       getEntityRuntime(this.entityClass).transactions,
-      // Логгер СВОЕЙ конфигурации (#206): предупреждение warnOutsideTransaction
-      // уходит в логгер конфигурации-владельца сущности, а не напрямую в консоль.
+      // The configuration's own logger (#206): the warnOutsideTransaction warning
+      // goes to the owning configuration's logger, not straight to the console.
       resolveExecutorLogger(this.executor),
     );
     if (!db) {
@@ -279,8 +280,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * PK-поля сущности: из метаданных (поддерживается составной PK).
-   * Бросает ошибку, если первичный ключ не объявлен через @YdbPrimaryColumn.
+   * Returns the entity's PK fields from metadata (composite primary keys are
+   * supported). Throws if no primary key is declared via @YdbPrimaryColumn.
    */
   getPkFields(meta: YdbEntityMetadata): string[] {
     if (meta.primaryKeys.length === 0) {
@@ -292,9 +293,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Проверяет, что все компоненты PK заданы в объекте, и возвращает
-   * фильтр { pkField: value }. Бросает понятную ошибку, если какой-то
-   * компонент отсутствует (undefined/null).
+   * Verifies that every PK component is set on the given object and returns a
+   * { pkField: value } filter. Throws a clear error if any component is
+   * missing (undefined/null).
    */
   requirePkValues(
     meta: YdbEntityMetadata,
@@ -318,8 +319,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Строковое представление PK для контекста шифрования:
-   * значения всех компонентов, соединённые через ':'.
+   * String representation of the PK for the encryption context: the values of
+   * all components joined with ':'.
    */
   pkValueForContext(
     meta: YdbEntityMetadata,
@@ -420,19 +421,19 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Дешифрует поле с безопасным переходом форматов AAD (#165).
+   * Decrypts a field with a safe AAD format transition (#165).
    *
-   * Основной формат берётся из `buildAAD` (конфигурация `aadFormat`). Если
-   * расшифровка основным форматом упала и включён `aadReadFallback` (по
-   * умолчанию true), делается повтор второго формата: legacy-строки,
-   * написанные до введения v2, остаются читаемыми сразу после апгрейда
-   * (дефолт сменился на v2, а данные в БД ещё старые). Поля с `aadOverride`
-   * не зависят от формата — повтор бессмыслен, выполняем один вызов.
+   * The primary format comes from `buildAAD` (the `aadFormat` configuration).
+   * If decryption with the primary format fails and `aadReadFallback` is
+   * enabled (default true), a second attempt is made with the other format:
+   * legacy rows written before v2 was introduced stay readable right after an
+   * upgrade (the default switched to v2 while the DB data is still old). Fields
+   * with `aadOverride` are format-independent, so a fallback is pointless and
+   * only a single call is made.
    *
-   * Если упали ОБА формата — возвращается ошибка ПЕРВОГО (настроечного)
-   * формата: двойной сбой означает не «несовпадение формата», а
-   * испорченный ciphertext или неверный контекст, и падать нужно
-   * детерминированно.
+   * If BOTH formats fail, the error of the FIRST (configured) format is
+   * returned: a double failure means not "format mismatch" but corrupted
+   * ciphertext or a wrong context, so it must fail deterministically.
    */
   private async decryptWithAadFallback(
     provider: YdbEncryptionProvider,
@@ -460,18 +461,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Возвращает копию сущности с зашифрованными полями и _bi колонками.
-   * Исходный объект не мутируется: он должен хранить plaintext, иначе
-   * повторный save() зашифрует ciphertext повторно.
-   * Не шифруются: undefined (колонка опускается — омиссия) и null
-   * (колонка очищается). Явный null дополнительно очищает blind index
-   * ({field}_bi = null, #175): иначе старый хеш остался бы в строке и
-   * поиск прежнего plaintext вернул бы очищенную запись.
+   * Returns a copy of the entity with encrypted fields and _bi columns.
+   * The source object is not mutated: it must keep the plaintext, otherwise a
+   * repeated save() would re-encrypt the ciphertext.
+   * Not encrypted: undefined (the column is omitted) and null (the column is
+   * cleared). An explicit null additionally clears the blind index
+   * ({field}_bi = null, #175): otherwise the old hash would remain in the row
+   * and a lookup of the previous plaintext would return the cleared record.
    *
-   * Lazy-поля: если инстанс пришёл из БД и поле не менялось (в нём всё ещё
-   * ciphertext), оно прокидывается как есть — повторное шифрование и
-   * пересчёт blind index не нужны. Если пользователь присвоил новое
-   * значение, оно шифруется как обычный plaintext.
+   * Lazy fields: if the instance came from the DB and the field is unchanged
+   * (it still holds ciphertext), it is passed through as-is — no re-encryption
+   * or blind-index recalculation is needed. If the user assigned a new value,
+   * it is encrypted like regular plaintext.
    */
   async encryptEntity(
     entity: Record<string, any>,
@@ -501,8 +502,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const encrypted = { ...entity };
     for (const ef of meta.encryptedFields) {
       const value = entity[ef.propertyKey];
-      // undefined — поле не задано: колонки в результате вовсе нет
-      // (write-пути фильтруют по `!== undefined`). Омиссия, не очистка.
+      // undefined — the field is not set, so the column is absent from the
+      // result entirely (write paths filter by `!== undefined`). Omission, not clearing.
       if (value === undefined) continue;
 
       if (ef.lazy && pendingLazy?.get(ef.propertyKey) === value) {
@@ -510,9 +511,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         continue;
       }
 
-      // Явный null — очистка: ciphertext (уже null в spread) И blind index
-      // (#175). Старый хеш в {field}_bi иначе остался бы и поиск прежнего
-      // plaintext вернул бы очищенную строку.
+      // Explicit null — clearing: the ciphertext (already null in the spread)
+      // AND the blind index (#175). Otherwise the old hash in {field}_bi would
+      // remain and a lookup of the previous plaintext would return the cleared row.
       if (value === null) {
         if (ef.blindIndex) {
           encrypted[blindIndexColumnName(ef.propertyKey)] = null;
@@ -547,7 +548,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return encrypted;
   }
 
-  /** Дешифрует поля в результате запроса. Null/undefined и lazy-поля пропускаются. */
+  /** Decrypts fields in a query result. Null/undefined and lazy fields are skipped. */
   async decryptResult(
     result: Record<string, any> | Record<string, any>[] | null,
   ): Promise<void> {
@@ -593,14 +594,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Проверяет, является ли ключ логическим комбинатором WHERE.
+   * Returns whether the key is a logical WHERE combinator.
    */
   private isLogicalKey(key: string): boolean {
     return key === '$and' || key === '$or';
   }
 
   /**
-   * Проверяет, является ли значение объектом-оператором (хотя бы один ключ начинается с $).
+   * Returns whether the value is an operator object (at least one key starts with $).
    */
   private isOperatorObject(value: unknown): value is Record<string, any> {
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -611,7 +612,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Нормализует значение для WHERE: enum-конвертация, JSON-сериализация.
+   * Normalizes a value for WHERE: enum conversion, JSON serialization.
    */
   private normalizeWhereValue(field: string, value: any): any {
     if (value === null || value === undefined) return value;
@@ -623,12 +624,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Извлекает однозначный скаляр для AAD-поля из where-предиката (#166).
-   * Разрешено только прямое скалярное равенство или { $eq: scalar }.
-   * Всё, что не задаёт ровно один экземпляр ($in, $between, диапазоны,
-   * $ne, $like, логические группы, массивы, null) — отклоняется до запроса:
-   * запись шифруется с одним AAD, а при чтении контекст AAD у строк разный —
-   * дешифровка вернёт мусор или упадёт.
+   * Extracts a unique scalar for an AAD field from a where predicate (#166).
+   * Only a direct scalar equality or { $eq: scalar } is allowed. Anything that
+   * does not select exactly one instance ($in, $between, ranges, $ne, $like,
+   * logical groups, arrays, null) is rejected before the query: a record is
+   * encrypted with a single AAD, while on read the AAD context differs per row
+   * — decryption would return garbage or fail.
    */
   private extractUniqueAadValue(
     field: string,
@@ -667,7 +668,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Возвращает хеш blind index для зашифрованного поля.
+   * Returns the blind index hash for an encrypted field.
    */
   private async hashBlindIndexForWhere(field: string, value: string) {
     const provider = this.getBlindIndexProvider();
@@ -690,7 +691,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Рекурсивно строит SQL-условие для одного поля.
+   * Recursively builds the SQL condition for a single field.
    */
   private async buildFieldCondition(
     field: string,
@@ -710,8 +711,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
-    // Synthetic {field}_bi колонки в related-предикатах запрещены (#17):
-    // это производное шифрованного поля, а не самостоятельная колонка.
+    // Synthetic {field}_bi columns are forbidden in related predicates (#17):
+    // they are a derived value of an encrypted field, not a standalone column.
     if (env.forbidEncrypted && isSyntheticColumn(meta, field)) {
       throw new Error(
         `Cannot filter related entity ${this.entityClass.name} by blind index column "${field}": ` +
@@ -722,9 +723,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const ef = meta.encryptedFields.find((e) => e.propertyKey === field);
     const fieldType = dbSchema[field];
 
-    // Зашифрованные поля ищутся только по blind-index (равенство).
+    // Encrypted fields are searchable only via their blind index (equality).
     if (ef) {
-      // В related-предикатах шифрованные поля запрещены полностью (#17).
+      // Inside related predicates encrypted fields are entirely forbidden (#17).
       if (env.forbidEncrypted) {
         throw new Error(
           `Cannot filter related entity ${this.entityClass.name} by encrypted field "${field}": ` +
@@ -789,12 +790,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         : `(${subConditions.join(' AND ')})`;
     }
 
-    // Обычное равенство
+    // Plain equality
     if (value === null) return `${quotedField} IS NULL`;
     if (value === undefined) return undefined;
     const paramName = isRoot ? field : `${field}_${ctx.counter++}_eq`;
-    // Корневое равенство оставляем "сырым": bindParams сам выполнит
-    // enum/JSON-конвертацию по имени поля (для совместимости).
+    // Root equality is left "raw": bindParams performs the enum/JSON conversion
+    // itself by field name (for compatibility).
     ctx.values[paramName] = isRoot
       ? value
       : this.normalizeWhereValue(field, value);
@@ -804,7 +805,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Проверяет, является ли колонка JSON-совместимой для JSON_EXISTS/JSON_VALUE.
+   * Returns whether the column is JSON-compatible for JSON_EXISTS/JSON_VALUE.
    */
   private isJsonColumn(
     meta: YdbEntityMetadata,
@@ -819,9 +820,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Строит условие для одного оператора над полем. Логические `$and`/`$or`
-   * на уровне значения поля (#201) рекурсивно строят вложенные условия той же
-   * колонки — это делает JSON-предикаты (JSON_EXISTS/JSON_VALUE) композируемыми.
+   * Builds the condition for a single operator over a field. Logical `$and`/`$or`
+   * at the field-value level (#201) recursively build nested conditions of the
+   * same column — this makes JSON predicates (JSON_EXISTS/JSON_VALUE) composable.
    */
   private async buildSingleOperatorCondition(
     field: string,
@@ -1015,11 +1016,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Рекурсивно строит SQL-условие из WHERE-объекта.
+   * Recursively builds the SQL condition from a WHERE object.
    *
-   * Ключи резолвятся по приоритету: логический комбинатор ($and/$or) →
-   * колонка сущности → related-фильтр (#17, свойство-связь с объектом
-   * условий по колонкам связанной сущности).
+   * Keys resolve by priority: logical combinator ($and/$or) -> entity column ->
+   * related filter (#17, a relation property holding conditions on the related
+   * entity's columns).
    */
   private async buildWhereNode(
     node: Record<string, any>,
@@ -1055,9 +1056,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           parts.push(`(${subs.join(` ${combiner} `)})`);
         }
       } else if (!dbSchema[key] && this.findRelation(key)) {
-        // Related-фильтр (#17): ключ — свойство-связь, значение — предикат
-        // по колонкам связанной сущности. Колонки проверяются первыми:
-        // существующее поведение для полей не меняется.
+        // Related filter (#17): the key is a relation property and the value is
+        // a predicate over the related entity's columns. Columns are checked
+        // first, so existing behavior for fields is unchanged.
         const sql = await this.buildRelatedCondition(key, value, ctx);
         parts.push(sql);
       } else {
@@ -1077,9 +1078,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Общий конвейер WHERE для find/findAll/count/updateBy/deleteBy:
-   * рекурсивная поддержка операторов сравнения, $in, $like, $between,
-   * JSON-операторов и логических групп $and/$or.
+   * Common WHERE pipeline for find/findAll/count/updateBy/deleteBy: recursive
+   * support for comparison operators, $in, $like, $between, JSON operators,
+   * and the logical groups $and/$or.
    */
   async buildWhere(where: Record<string, any>): Promise<{
     whereClause: string;
@@ -1107,9 +1108,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     };
   }
 
-  // ---- Related-фильтры (#17): findAll({ relation: { column: value } }) ----
+  // ---- Related filters (#17): findAll({ relation: { column: value } }) ----
 
-  /** Ищет связь по имени свойства. */
+  /** Finds a relation by its property name. */
   private findRelation(propertyKey: string): RelationMetadata | undefined {
     return getYdbRelationsMetadata(this.entityClass).find(
       (r) => r.propertyKey === propertyKey,
@@ -1117,10 +1118,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * @internal Строит WHERE-узел предиката связанной сущности в ОБЩИЙ контекст
-   * параметров родительского запроса (#17). Шифрованные колонки запрещены.
-   * Вызывается на persistence-инстансе целевой сущности, поэтому enum/JSON-
-   * нормализация значений работает по метаданным цели.
+   * @internal Builds a WHERE node of a related-entity predicate into the SHARED
+   * parameter context of the parent query (#17). Encrypted columns are
+   * forbidden. It is invoked on the persistence instance of the target entity,
+   * so enum/JSON value normalization follows the target's metadata.
    */
   async buildRelatedPredicate(
     node: Record<string, any>,
@@ -1130,29 +1131,28 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Условие фильтрации корня по колонкам связанной сущности (#17).
+   * Condition to filter the root by the columns of a related entity (#17).
    *
-   * Стратегия — полуслияние через IN с некоррелированным подзапросом:
-   * семантика EXISTS без дубликатов корневых строк. Классический EXISTS
-   * не генерируется намеренно: ядро YQL не поддерживает коррелированные
-   * подзапросы (ссылку на внешний запрос), а некоррелированный EXISTS
-   * менял бы семантику на «существует хотя бы одна строка вообще».
+   * Strategy: a semi-join via IN with a non-correlated subquery — EXISTS
+   * semantics without duplicating root rows. A classic EXISTS is deliberately
+   * not generated: the YQL core does not support correlated subqueries (a
+   * reference to the outer query), and a non-correlated EXISTS would change the
+   * semantics to "at least one row exists at all".
    *
-   * Join-колонки и пути резолвятся только из существующих метаданных связи
-   * (@OneToMany/@ManyToOne/@OneToOne/@ManyToMany + @JoinTable); произвольные
-   * SQL-фрагменты невозможны. Все значения биндятся через общий контекст
-   * параметров (ctx) — интерполяции пользовательских значений нет.
+   * Join columns and paths are resolved only from existing relation metadata
+   * (@OneToMany/@ManyToOne/@OneToOne/@ManyToMany + @JoinTable); arbitrary SQL
+   * fragments are impossible. All values are bound through the shared parameter
+   * context (ctx) — there is no interpolation of user values.
    *
-   * Поддержанные формы:
+   * Supported forms:
    * - one-to-many: `root.pk IN (SELECT child.fk FROM target WHERE pred)`
    * - many-to-one / one-to-one: `root.fk IN (SELECT target.pk FROM target WHERE pred)`
    * - many-to-many: `root.pk IN (SELECT jt.owner FROM jt WHERE jt.inverse IN
    *   (SELECT target.pk FROM target WHERE pred))`
    *
-   * Формы, которые текущая рантайм-модель связей моделирует некорректно
-   * (составные PK на стороне соединения, необъявленные join-колонки,
-   * несовместимые типы, отсутствие @JoinTable), отвергаются с понятной
-   * ошибкой ДО выполнения SQL.
+   * Forms the current relation runtime models incorrectly (composite PKs on the
+   * join side, undeclared join columns, incompatible types, missing @JoinTable)
+   * are rejected with a clear error BEFORE executing the SQL.
    */
   private async buildRelatedCondition(
     relationPropertyKey: string,
@@ -1195,9 +1195,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const rootMeta = this.getMeta();
     const relationDesc = `"${relationPropertyKey}" (${relation.type}) of ${this.entityClass.name} -> ${Target.name}`;
 
-    // Предикат по колонкам цели строится persistence-инстансом ЦЕЛИ в общий
-    // контекст параметров родителя: уникальность имён обеспечивает общий
-    // счётчик, конвертация enum/JSON — метаданные цели.
+    // The predicate over the target's columns is built by the TARGET's
+    // persistence instance into the parent's shared parameter context: name
+    // uniqueness is guaranteed by the shared counter, and enum/JSON conversion
+    // by the target's metadata.
     const targetPersistence = new YdbEntityPersistence(Target, undefined, {});
     const innerWhere = await targetPersistence.buildRelatedPredicate(
       predicate as Record<string, any>,
@@ -1279,8 +1280,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
               `is supported from the owning side that declares the join table.`,
           );
         }
-        // resolveManyToManyJoinTable гарантирует одиночные PK обеих сторон:
-        // составной PK дал бы ошибку конфигурации выше по резолву.
+        // resolveManyToManyJoinTable guarantees single PKs on both sides: a
+        // composite PK would have raised a configuration error earlier in the
+        // resolution.
         const rootPk = rootMeta.primaryKeys[0];
         const targetPk = targetMeta.primaryKeys[0];
         return (
@@ -1298,9 +1300,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Совместимость типов join-колонок для related-фильтра (#17):
-   * сравнение разных YDB-типов в IN (...) упало бы уже на сервере —
-   * сообщаем о конфигурации связи раньше, с именами колонок и типов.
+   * Join-column type compatibility for a related filter (#17): comparing
+   * different YDB types in an IN (...) would fail only on the server, so we
+   * report the relation misconfiguration earlier, with the column names and types.
    */
   private assertCompatibleJoinTypes(
     relationDesc: string,
@@ -1332,8 +1334,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Создаёт инстанс сущности из строки БД.
-   * Synthetic {field}_bi колонки (blind index) в инстанс не попадают.
+   * Creates an entity instance from a DB row.
+   * Synthetic {field}_bi columns (blind index) never end up on the instance.
    */
   instantiate(row: Record<string, any>): T {
     const meta = this.getMeta();
@@ -1341,9 +1343,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const instance = new Ctor();
     const enums = getYdbEnumMetadata(this.entityClass);
     for (const [key, value] of Object.entries(row)) {
-      // Только объявленные колонки. Synthetic {field}_bi и ЛЮБЫЕ столбцы,
-      // выпиленные из метаданных (#164), в инстанс не попадают — иначе
-      // legacy-секреты утекли бы в toJSON()/JSON.stringify().
+      // Only declared columns. Synthetic {field}_bi and ANY column removed from
+      // the metadata (#164) are excluded from the instance — otherwise legacy
+      // secrets would leak into toJSON()/JSON.stringify().
       if (!meta.schema[key]) continue;
       const enumMeta = enums.find((e) => e.propertyKey === key);
       let converted = this.convertEnumIn(value, enumMeta);
@@ -1380,20 +1382,19 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Единый конвейер гидратации результатов SELECT: дешифровка →
-   * instantiate → [eager relations] → afterFind.
+   * Unified hydration pipeline for SELECT results: decryption ->
+   * instantiate -> [eager relations] -> afterFind.
    *
-   * Семантика lifecycle (#83):
-   * - afterFind вызывается ровно один раз для каждого инстанса в рамках
-   *   операции чтения и никогда — при пустом результате;
-   * - хуки корневых сущностей срабатывают после догрузки связей;
-   * - связанные сущности (fetchByColumnIn) проходят тот же конвейер с
-   *   `eager: false`: глубина eager остаётся равной 1, как и до #83,
-   *   что исключает бесконечную рекурсию на циклических/self-referencing
-   *   eager-связях.
+   * Lifecycle semantics (#83):
+   * - afterFind fires exactly once per instance within a read operation and
+   *   never on an empty result;
+   * - hooks of root entities fire after relations are loaded;
+   * - related entities (fetchByColumnIn) go through the same pipeline with
+   *   `eager: false`: eager depth stays 1, as before #83, which rules out
+   *   infinite recursion on cyclic/self-referencing eager relations.
    *
-   * `hydrationContext.seen` — identity guard: инстанс, уже попавший в
-   * гидратацию этой операции, не получит afterFind повторно.
+   * `hydrationContext.seen` is an identity guard: an instance already hydrated
+   * by this operation will not receive afterFind again.
    */
   private async hydrate(
     raw: Record<string, any>[],
@@ -1416,9 +1417,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       await this.loadEagerRelations(fresh, options, ctx);
     }
 
-    // afterFind может откладываться (#16): промежуточные уровни вложенного
-    // eager-пути срабатывают в пост-порядке — только после догрузки своих
-    // детей (см. YdbEntityRelations.loadRelationPath / fireAfterFindOn).
+    // afterFind can be deferred (#16): intermediate levels of a nested eager
+    // path fire in post-order — only after their own children are loaded
+    // (see YdbEntityRelations.loadRelationPath / fireAfterFindOn).
     if (
       (opts?.afterFind ?? true) &&
       getLifecycleHooks(this.entityClass).afterFind.length
@@ -1440,15 +1441,22 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Дефолтная проекция SELECT: только объявленные (физические) колонки
-   * сущности (#164). SELECT * утянул бы и столбцы, выпиленные из
-   * метаданных (например legacy recovery_token) — в инстансы и JSON
-   * они попадать не должны.
+   * Default SELECT projection: only the entity's declared (physical) columns
+   * (#164). SELECT * would also pull in columns removed from the metadata
+   * (e.g. a legacy recovery_token) — they must not reach instances or JSON.
    */
   private buildDefaultSelect(meta: YdbEntityMetadata): string {
     return Object.keys(meta.schema).map(quoteIdentifier).join(', ');
   }
 
+  /**
+   * Finds a single entity matching the conditions, or null if none match.
+   * Requires at least one non-empty WHERE condition — use findAll() to query
+   * without filters.
+   * @param where filter conditions (supports operators, relations, $and/$or).
+   * @param options query options (limit/offset, transaction, etc.).
+   * @returns the first matching entity, or null when nothing matches.
+   */
   async find(
     where: Record<string, any>,
     options?: QueryOptions,
@@ -1485,6 +1493,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return result;
   }
 
+  /**
+   * Finds all entities matching the conditions. With no conditions it returns
+   * the whole table's rows up to the resolveRetrieveLimit default of 100.
+   * @param where filter conditions (defaults to an empty filter).
+   * @param options query options (limit/offset semantics, transaction, etc.).
+   * @returns the matching entities.
+   */
   async findAll(
     where: Record<string, any> = {},
     options?: QueryOptions,
@@ -1511,6 +1526,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.hydrate(rows[0] ?? [], options);
   }
 
+  /**
+   * Counts entities matching the conditions.
+   * @param where filter conditions (defaults to an empty filter).
+   * @param options query options.
+   * @returns the number of matching rows.
+   */
   async count(
     where: Record<string, any> = {},
     options?: QueryOptions,
@@ -1532,6 +1553,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return Number(rows[0]?.[0]?.cnt ?? 0);
   }
 
+  /** Alias for find(). */
   async findOneBy(
     where: Record<string, any>,
     options?: QueryOptions,
@@ -1539,6 +1561,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.find(where, options);
   }
 
+  /** Alias for findAll(). */
   async findBy(
     where: Record<string, any>,
     options?: QueryOptions,
@@ -1546,11 +1569,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.findAll(where, options);
   }
 
+  /** Returns a fluent query builder scoped to this entity. */
   query(): YdbQueryBuilder<T> {
     return new YdbQueryBuilder<T>(this.entityClass);
   }
 
-  /** @internal Мост для YdbQueryBuilder. */
+  /** @internal Bridge for YdbQueryBuilder. */
   async executeSelect(
     sql: string,
     values: Record<string, any>,
@@ -1570,7 +1594,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.hydrate(rows[0] ?? [], options);
   }
 
-  /** @internal Мост для YdbQueryBuilder. */
+  /** @internal Bridge for YdbQueryBuilder. */
   async executeCount(
     sql: string,
     values: Record<string, any>,
@@ -1589,6 +1613,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return Number(rows[0]?.[0]?.cnt ?? 0);
   }
 
+  /**
+   * Upserts an entity: updates it if every PK component is set, otherwise
+   * inserts it (auto-filling a `uuid` / timestamp columns as needed).
+   * @param entity the entity to persist (mutated by timestamp/uuid fill).
+   * @param options query options.
+   * @returns the persisted entity.
+   */
   async save(entity: T, options?: QueryOptions): Promise<T> {
     const meta = this.getMeta();
     const pkFields = this.getPkFields(meta);
@@ -1720,6 +1751,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.instantiate(raw);
   }
 
+  /**
+   * Inserts many entities in batches (grouped by identical column sets, up to
+   * BATCH_SIZE rows per UPSERT). Auto-fills `uuid`/timestamp columns and runs
+   * beforeInsert/afterInsert lifecycle hooks for each entity.
+   * @param entities rows to insert.
+   * @param options query options.
+   * @returns the inserted entities (mutated by uuid/timestamp fill).
+   */
   async insertMany(entities: T[], options?: QueryOptions): Promise<T[]> {
     if (!entities.length) return [];
 
@@ -1747,8 +1786,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
-    // beforeInsert: как в insert() — до валидации, шифрования и формирования
-    // параметров; мутации полей из хуков попадают в БД.
+    // beforeInsert: as in insert() — before validation, encryption and
+    // parameter building; field mutations from the hooks reach the DB.
     for (const e of entities) {
       await this.callHooks('beforeInsert', e);
     }
@@ -1819,7 +1858,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
-    // afterInsert: только после успешного завершения всех батчей записи.
+    // afterInsert: only after all write batches have completed successfully.
     for (const e of entities) {
       await this.callHooks('afterInsert', e);
     }
@@ -1827,6 +1866,16 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return entities;
   }
 
+  /**
+   * Updates all rows matching `where` with the given patch (which must not
+   * overlap the WHERE fields). Refuses an empty WHERE/patch or a full-table
+   * update. Encrypted fields in the patch are re-encrypted with the AAD derived
+   * from the fixed WHERE predicate.
+   * @param where filter selecting the rows to update.
+   * @param patch the fields and new values to set.
+   * @param options query options.
+   * @returns the number of rows updated (via RETURNING over the PK).
+   */
   async updateBy(
     where: Record<string, any>,
     patch: Partial<Record<string, any>>,
@@ -1870,17 +1919,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       const encryptionProvider = this.requireEncryptionProvider();
       for (const ef of encryptedFieldsToProcess) {
         const value = data[ef.propertyKey];
-        // undefined — поле не задано: исключаем из patch (омиссия), чтобы
-        // колонка осталась как есть и в SET не попадала ни она, ни её
-        // blind index (#175). null же — ЯВНАЯ очистка, см. ниже.
+        // undefined — the field is not set: exclude it from the patch
+        // (omission), so the column stays untouched and neither it nor its
+        // blind index enters SET (#175). null, in contrast, is an EXPLICIT
+        // clearing — see below.
         if (value === undefined) {
           delete data[ef.propertyKey];
           continue;
         }
 
-        // Явный null — очистка ciphertext и blind index вместе (#175):
-        // иначе старый хеш в {field}_bi остался бы, и поиск прежнего
-        // plaintext вернул бы обновлённые строки.
+        // Explicit null — clear the ciphertext and the blind index together
+        // (#175): otherwise the old hash in {field}_bi would remain and a
+        // lookup of the previous plaintext would return the updated rows.
         if (value === null) {
           if (ef.blindIndex) {
             data[blindIndexColumnName(ef.propertyKey)] = null;
@@ -1991,6 +2041,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return rows[0]?.length ?? 0;
   }
 
+  /**
+   * Deletes the row identified by its primary key and returns the deleted
+   * entity (decrypted), or null if no such row exists. Runs beforeRemove if the
+   * entity declares it.
+   * @param pkValue the PK value, or an object with all PK components.
+   * @param options query options.
+   * @returns the deleted entity, or null when nothing matched.
+   */
   async delete(
     pkValue: string | number | Record<string, any>,
     options?: QueryOptions,
@@ -2044,6 +2102,13 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return this.instantiate(raw);
   }
 
+  /**
+   * Deletes all rows matching `where`. Refuses an empty or ineffective WHERE to
+   * prevent a full-table delete.
+   * @param where filter selecting the rows to delete.
+   * @param options query options.
+   * @returns the number of rows deleted (via RETURNING over the PK).
+   */
   async deleteBy(
     where: Record<string, any>,
     options?: QueryOptions,
@@ -2079,8 +2144,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Дешифрует одно lazy-поле (@YdbEncrypted({ lazy: true })) на инстансе.
-   * Идемпотентно: повторный вызов отдаёт закешированный plaintext.
+   * Decrypts a single lazy field (@YdbEncrypted({ lazy: true })) on an
+   * instance. Idempotent: a subsequent call returns the cached plaintext.
    */
   async decryptField(instance: T, name: string): Promise<any> {
     const meta = this.getMeta();
@@ -2142,7 +2207,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Дешифрует все lazy-поля инстанса. Идемпотентно.
+   * Decrypts all lazy fields of an instance. Idempotent.
    */
   async decryptLazyFields(instance: T): Promise<T> {
     const meta = this.getMeta();
@@ -2156,9 +2221,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Вызывает afterFind на переданных инстансах (в пост-порядке вложенного
-   * eager-пути #16). Инстансы промежуточного уровня уже гидратированы с
-   * `afterFind: false`, поэтому срабатывание здесь — ровно один раз.
+   * Fires afterFind on the given instances (in post-order of a nested eager
+   * path #16). Intermediate-level instances were already hydrated with
+   * `afterFind: false`, so firing here happens exactly once.
    */
   async fireAfterFind(instances: object[]): Promise<void> {
     if (!getLifecycleHooks(this.entityClass).afterFind.length) return;
@@ -2170,20 +2235,20 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   // ---- Relations helpers (delegated to YdbEntityRelations at repository level) ----
 
   /**
-   * Batch-загрузка по колонке IN (...). Используется relations-модулем.
+   * Batch load by an IN (...) column. Used by the relations module.
    *
-   * Guard-ы (#86):
-   * - пустой список значений — пустой результат БЕЗ выполнения SQL
-   *   (раньше уходил невалидный `WHERE col IN ()`);
-   * - дубликаты значений убираются до построения IN (...) — они раздували
-   *   список параметров и не меняли результат;
-   * - значения больше MAX_IN_CLAUSE_VALUES режутся на несколько чанков
-   *   (лимиты YDB на текст запроса/число параметров), результаты сливаются
-   * по порядку чанков без дубликатов строк (по PK).
+   * Guards (#86):
+   * - an empty value list returns an empty result WITHOUT executing SQL
+   *   (previously an invalid `WHERE col IN ()` was sent);
+   * - duplicate values are removed before building the IN (...) — they only
+   *   bloated the parameter list without changing the result;
+   * - more values than MAX_IN_CLAUSE_VALUES are split into several chunks
+   *   (YDB limits on query text/parameter count), and results are merged in
+   *   chunk order without duplicate rows (by PK).
    *
-   * `hydration.afterFind` (по умолчанию true): если false, гидратированные
-   * инстансы НЕ получают afterFind сразу — их послеFind откладывается для
-   * пост-порядка вложенного eager-пути (#16).
+   * `hydration.afterFind` (default true): when false, hydrated instances do NOT
+   * receive afterFind immediately — it is deferred for the post-order of a
+   * nested eager path (#16).
    */
   async fetchByColumnIn(
     column: string,
@@ -2203,7 +2268,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const uniqueValues = dedupeInValues(values);
     if (!uniqueValues.length) return [];
 
-    // PK для дедупликации результатов между чанками.
+    // PK used to deduplicate results across chunks.
     const pkFields = this.getPkFields(meta);
 
     const result: T[] = [];
@@ -2224,19 +2289,19 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         options,
       );
 
-      // Внутренний batch-фетч связей: без вложенной догрузки eager — глубина
-      // собственных eager-связей цели остаётся 1 (как до #83), иначе
-      // циклические связи рекурсируют. afterFind при этом обязателен для
-      // связанных сущностей (issue #83), но для промежуточных уровней
-      // вложенного eager-пути (#16) его можно отложить через hydration.
+      // Internal batch fetch of relations: no nested eager loading — the depth
+      // of the target's own eager relations stays 1 (as before #83), otherwise
+      // cyclic relations would recurse. afterFind is mandatory for related
+      // entities (issue #83), but for intermediate levels of a nested eager
+      // path (#16) it can be deferred via hydration.
       const hydrated = await this.hydrate(rows[0] ?? [], options, {
         eager: false,
         afterFind: hydration?.afterFind ?? true,
       });
 
       for (const entity of hydrated) {
-        // Инъективный ключ идентичности PK (#86): без разделительной
-        // конкатенации — 'a|b'+'c' и 'a'+'b|c' не должны совпадать.
+        // Injective PK identity key (#86): without delimiter concatenation —
+        // 'a|b'+'c' and 'a'+'b|c' must not collide.
         const key = valueIdentityKey(pkFields.map((f) => (entity as any)[f]));
         if (seenPks.has(key)) continue;
         seenPks.add(key);
@@ -2248,9 +2313,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Загружает eager relations для списка сущностей.
-   * Вызывается из find/findAll/executeSelect. Контекст гидратации
-   * прокидывается в связанные сущности (identity guard для afterFind).
+   * Loads eager relations for a list of entities.
+   * Called from find/findAll/executeSelect. The hydration context is forwarded
+   * to related entities (identity guard for afterFind).
    */
   private async loadEagerRelations(
     items: T[],
@@ -2273,7 +2338,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 }
 
-/** Проверяет, что колонка — synthetic blind index ({field}_bi) */
+/** Returns whether the column is a synthetic blind index ({field}_bi) */
 export function isSyntheticColumn(
   meta: YdbEntityMetadata,
   key: string,
@@ -2287,7 +2352,7 @@ export function isSyntheticColumn(
 }
 
 /**
- * Обратно-совместимый алиас канонического ключа PK: реализация перенесена
- * в core/value-identity.ts (#174) и обобщена до valueIdentityKey.
+ * Backward-compatible alias of the canonical PK key: the implementation moved
+ * to core/value-identity.ts (#174) and was generalized to valueIdentityKey.
  */
 export { valueIdentityKey as pkIdentityKey } from '../core/value-identity.js';

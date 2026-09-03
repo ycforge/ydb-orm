@@ -2,9 +2,9 @@ import { renderSchemaDiff, shouldUseColor } from './diff.js';
 import type { YdbSchemaIssue } from '../schema/schema-sync.js';
 
 /**
- * Спеки человекочитаемого diff-вывода расхождений схемы (#109): группировка
- * по таблицам, маркеры по видам issues, переформатирование «было → стало»,
- * отключение цвета (не-TTY поток и NO_COLOR — регрессия #103).
+ * Specs of human-readable schema-diff output (#109): grouping by tables,
+ * markers per issue kind, "was → became" reformatting, color disabling
+ * (non-TTY stream and NO_COLOR — the #103 regression).
  */
 
 const issue = (partial: Partial<YdbSchemaIssue>): YdbSchemaIssue => ({
@@ -22,13 +22,13 @@ describe('shouldUseColor (#103)', () => {
     else process.env.NO_COLOR = originalNoColor;
   });
 
-  it('цвет выключен для не-TTY потока', () => {
+  it('color disabled for non-TTY stream', () => {
     const fakeStream = { isTTY: false } as unknown as NodeJS.WriteStream;
     delete process.env.NO_COLOR;
     expect(shouldUseColor(fakeStream)).toBe(false);
   });
 
-  it('цвет включён только для TTY без NO_COLOR', () => {
+  it('color enabled only for TTY without NO_COLOR', () => {
     const ttyStream = { isTTY: true } as unknown as NodeJS.WriteStream;
     delete process.env.NO_COLOR;
     expect(shouldUseColor(ttyStream)).toBe(true);
@@ -39,7 +39,7 @@ describe('shouldUseColor (#103)', () => {
 });
 
 describe('renderSchemaDiff', () => {
-  it('группирует issues по таблицам с сохранением порядка', () => {
+  it('groups issues by tables preserving order', () => {
     const output = renderSchemaDiff(
       [
         issue({
@@ -54,8 +54,8 @@ describe('renderSchemaDiff', () => {
     );
 
     const lines = output.split('\n');
-    // Группы в порядке первого появления; повторные issues той же таблицы
-    // попадают в существующую группу (a: 2 шт., затем b)
+    // Groups keep first-appearance order; repeated issues of the same table
+    // join the existing group (a: 2 items, then b)
     expect(lines[0]).toBe('a');
     expect(lines[1]).toContain('does not exist');
     expect(lines[2]).toContain('is missing column "c"');
@@ -63,7 +63,7 @@ describe('renderSchemaDiff', () => {
     expect(lines[4]).toContain('is missing column "c"');
   });
 
-  it('маркеры соответствуют видам расхождений', () => {
+  it('markers match discrepancy kinds', () => {
     const output = renderSchemaDiff(
       [
         issue({
@@ -95,7 +95,7 @@ describe('renderSchemaDiff', () => {
     expect(output).not.toContain('undefined');
   });
 
-  it('переформатирует type-mismatch как «было → стало»', () => {
+  it('reformats type-mismatch as "was → became"', () => {
     const output = renderSchemaDiff(
       [
         issue({
@@ -111,7 +111,7 @@ describe('renderSchemaDiff', () => {
     expect(output).not.toContain('type mismatch:');
   });
 
-  it('переформатирует index-columns-mismatch и ttl-mismatch так же', () => {
+  it('reformats index-columns-mismatch and ttl-mismatch similarly', () => {
     const output = renderSchemaDiff(
       [
         issue({
@@ -132,7 +132,7 @@ describe('renderSchemaDiff', () => {
     expect(output).toContain('TTL: P1D on column "c" → PT2H on column "c"');
   });
 
-  it('префикс таблицы убирается из текста issue', () => {
+  it('table prefix stripped from issue text', () => {
     const output = renderSchemaDiff(
       [
         issue({
@@ -146,11 +146,11 @@ describe('renderSchemaDiff', () => {
     expect(output).toContain('is missing column "email"');
   });
 
-  it('пустой список issues — пустая строка', () => {
+  it('empty issues list yields empty string', () => {
     expect(renderSchemaDiff([], { color: false })).toBe('');
   });
 
-  it('с цветом текст обёрнут в ANSI-коды; без цвета — чистый текст', () => {
+  it('with color text wrapped in ANSI codes; without color plain text', () => {
     const issues = [
       issue({ kind: 'missing-table', message: 'Table "t" does not exist' }),
     ];

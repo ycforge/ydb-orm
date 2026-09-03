@@ -3,10 +3,10 @@ import { YdbEntityPersistence } from './entity-persistence.js';
 import { YdbEntityRelations } from '../relations/entity-relations.js';
 
 /**
- * Проводка QueryOptions.idempotent (#27): точки исполнения ORM обязаны
- * передавать явную пометку идемпотентности в нижележащий запрос — только
- * она разрешает retry-политике повторять запрос (fail-safe по умолчанию:
- * без пометки запрос выполняется ровно один раз).
+ * Threading of QueryOptions.idempotent (#27): ORM execution points must
+ * forward an explicit idempotency flag to the underlying query — only it
+ * allows the retry policy to repeat a request (fail-safe by default: without
+ * the flag the query runs exactly once).
  */
 
 function fakeQuery(marks: boolean[]): any {
@@ -28,8 +28,8 @@ function fakeQuery(marks: boolean[]): any {
   return query;
 }
 
-describe('QueryOptions.idempotent пробрасывается в запрос (#27)', () => {
-  it('persistence.executeQuery: пометка применяется при { idempotent: true }', async () => {
+describe('QueryOptions.idempotent is threaded into the query (#27)', () => {
+  it('persistence.executeQuery: marker applied when { idempotent: true }', async () => {
     const persistence: any = Object.create(YdbEntityPersistence.prototype);
 
     const marked: boolean[] = [];
@@ -41,7 +41,7 @@ describe('QueryOptions.idempotent пробрасывается в запрос (
     expect(unmarked).toEqual([]);
   });
 
-  it('relations.executeQuery: пометка применяется при { idempotent: true }', async () => {
+  it('relations.executeQuery: marker applied when { idempotent: true }', async () => {
     const relations: any = Object.create(YdbEntityRelations.prototype);
 
     const marked: boolean[] = [];

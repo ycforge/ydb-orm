@@ -1,19 +1,19 @@
 /**
- * Минималистичные интерактивные подсказки для CLI (#24) на node:readline —
- * без внешних зависимостей.
+ * Minimal interactive prompts for the CLI (#24) on node:readline —
+ * without external dependencies.
  *
- * Строки ввода собираются в очередь независимо от того, задан ли в момент
- * прихода вопрос: скриптовый/piped-ввод и ввод с терминала обрабатываются
- * одинаково детерминированно.
+ * Input lines are collected in a queue regardless of whether a question was
+ * pending when they arrived: scripted/piped input and terminal input are
+ * both handled deterministically.
  *
- * Отмена/EOF обрабатываются явно: закрытие входного потока, Ctrl+D и Ctrl+C
- * отклоняют активный вопрос ошибкой PromptCancelledError, чтобы мастер
- * гарантированно не зависал и ничего не писал на диск.
+ * Cancel/EOF are handled explicitly: the input stream closing, Ctrl+D and
+ * Ctrl+C reject an active question with a PromptCancelledError so the wizard
+ * never hangs and never writes to disk.
  */
 import readline from 'node:readline';
 import { Readable, Writable } from 'node:stream';
 
-/** Пользователь прервал ввод (EOF/Ctrl+D/Ctrl+C/отказ в подтверждении). */
+/** User interrupted input (EOF/Ctrl+D/Ctrl+C/declined confirmation). */
 export class PromptCancelledError extends Error {
   constructor(reason: string = 'EOF') {
     super(`Input cancelled (${reason})`);
@@ -21,6 +21,7 @@ export class PromptCancelledError extends Error {
   }
 }
 
+/** I/O streams backing the prompt reader (injectable for tests). */
 export interface PromptIo {
   input: Readable;
   output: Writable;
@@ -31,6 +32,11 @@ interface PendingQuestion {
   reject: (err: Error) => void;
 }
 
+/**
+ * Reads answers from input via node:readline: lines are queued and consumed
+ * on demand, so both terminal and scripted/piped input behave identically.
+ * Handles EOF, Ctrl+C (SIGINT) and explicit cancel(); see the class' methods.
+ */
 export class PromptReader {
   private readonly rl: readline.Interface;
   private readonly output: Writable;
@@ -53,28 +59,28 @@ export class PromptReader {
       }
     });
     this.rl.on('close', () => {
-      // Введённые ранее строки остаются валидными ответами: EOF считается
-      // отменой только когда очередь пуста и активного ответа нет.
+      // Previously entered lines remain valid answers: EOF is considered a
+      // cancellation only when the queue is empty and no answer is pending.
       this.eof = true;
       if (this.queue.length === 0) {
         this.rejectPending(new PromptCancelledError('EOF'));
       }
     });
-    // Срабатывает только в интерактивном режиме (TTY); в неинтерактивном
-    // SIGINT приходит как обычный сигнал процесса и обрабатывается в cli.ts.
+    // Fires only in interactive mode (TTY); in non-interactive mode SIGINT
+    // arrives as a normal process signal handled in cli.ts.
     this.rl.on('SIGINT', () =>
       this.rejectPending(new PromptCancelledError('SIGINT (Ctrl+C)')),
     );
   }
 
-  /** Отклоняет активный вопрос ошибкой (идемпотентно для прерываний). */
+  /** Rejects an active question with an error (idempotent for interruptions). */
   private rejectPending(err: Error): void {
     const waiting = this.pending;
     this.pending = null;
     waiting?.reject(err);
   }
 
-  /** Немедленная отмена (Ctrl+C): очередь ответов игнорируется. Идемпотентно. */
+  /** Immediate cancel (Ctrl+C): queued answers are ignored. Idempotent. */
   cancel(err: Error): void {
     if (this.interrupted) return;
     this.interrupted = err;
@@ -87,9 +93,9 @@ export class PromptReader {
   }
 
   /**
-   * Задаёт вопрос, возвращает ответ без концевых пробелов ('' — пустой ввод).
-   * После исчерпания ввода/отмены любой следующий вопрос отклоняется
-   * ошибкой PromptCancelledError.
+   * Poses a question and returns the answer without trailing spaces ('' — empty input).
+   * After input is exhausted/cancelled, any following question is rejected
+   * with a PromptCancelledError.
    */
   async ask(prompt: string): Promise<string> {
     if (this.interrupted) throw this.interrupted;
@@ -104,7 +110,7 @@ export class PromptReader {
     });
   }
 
-  /** Да/нет-вопрос со значением по умолчанию; неразборчивый ввод переспрашивается. */
+  /** Yes/no question with a default value; unrecognizable input re-prompts. */
   async confirm(prompt: string, defaultValue: boolean): Promise<boolean> {
     for (;;) {
       const hint = defaultValue ? '(Y/n)' : '(y/N)';
@@ -116,7 +122,7 @@ export class PromptReader {
     }
   }
 
-  /** Печатает строку в поток вывода мастера. */
+  /** Prints a line to the wizard's output stream. */
   writeLine(text: string): void {
     this.output.write(`${text}\n`);
   }

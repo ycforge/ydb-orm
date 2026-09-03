@@ -327,7 +327,7 @@ describe('runWithTransactionContext(): rejects invalid contexts at the boundary 
       runWithTransactionContext(fake, () => Promise.resolve('never')),
     ).toThrow('invalid context');
 
-    // Контекст не попал в ALS.
+    // The context did not reach the ALS.
     expect(getActiveTransaction()).toBeUndefined();
   });
 

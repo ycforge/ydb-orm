@@ -14,25 +14,25 @@ import {
 import { getYdbEntityMetadata } from './entity-metadata.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 
-/** Контекст валидации: какие провайдеры настроены в модуле. */
+/** Validation context: which providers are configured in the module. */
 export interface EntityValidationContext {
   encryptionProviderConfigured: boolean;
   blindIndexProviderConfigured: boolean;
 }
 
-/** Строгость диагностики. Модель валидации сейчас различает только 'error'. */
+/** Diagnostic severity. The validation model currently distinguishes only 'error'. */
 export type EntityValidationSeverity = 'error' | 'warning';
 
 /**
- * Структурированная диагностика проблемы в метаданных сущности (#213).
+ * Structured diagnostic of an issue in entity metadata (#213).
  *
- * - `code` — стабильный машинно-читаемый код правила (не менять и не
- *   выводить из текста; новые правила добавляют новые коды, а не парсят строки).
- * - `path` — локус проблемы в метаданных (сущность/поле/отношение), когда
- *   применимо; формат точечный, например `entity.User.email`.
- * - `message` — человекочитаемое описание (прежний текст).
- * - `severity` — строгость; сейчас все проблемы блокируют инициализацию,
- *   но тип оставляет место для будущих предупреждений.
+ * - `code` — stable machine-readable rule code (don't change or derive
+ *   from text; new rules add new codes, not parse strings).
+ * - `path` — locus of the issue in metadata (entity/field/relation),
+ *   when applicable; dot format, e.g., `entity.User.email`.
+ * - `message` — human-readable description (legacy text).
+ * - `severity` — severity; currently all issues block initialization,
+ *   but the type leaves room for future warnings.
  */
 export interface EntityValidationIssue {
   code: string;
@@ -41,12 +41,18 @@ export interface EntityValidationIssue {
   severity: EntityValidationSeverity;
 }
 
-/** Возвращает прежнее человекочитаемое представление диагностики. */
+/**
+ * Returns the legacy human-readable string representation of a
+ * structured validation diagnostic.
+ */
 export function validationIssueToMessage(issue: EntityValidationIssue): string {
   return issue.message;
 }
 
-/** Собирает список диагностик в прежний плоский список человекочитаемых строк. */
+/**
+ * Collects a list of structured diagnostics into the legacy flat list
+ * of human-readable strings.
+ */
 export function validationIssuesToMessages(
   issues: readonly EntityValidationIssue[],
 ): string[] {
@@ -85,19 +91,19 @@ function relationIssue(
 }
 
 /**
- * Типы YDB-колонок, которые нельзя использовать как Security AAD (#165):
- * значения этих колонок — объекты (JSON), и toAadString не имеет для них
- * детерминированного строкового представления.
+ * YDB column types that cannot be used as Security AAD (#165):
+ * values of these columns are objects (JSON), and toAadString has no
+ * deterministic string representation for them.
  */
 const AAD_UNSAFE_TYPES = new Set(['Json', 'JsonDocument']);
 
 /**
- * Валидация метаданных сущности при инициализации модуля.
- * Возвращает прежний плоский список человекочитаемых строк (пустой, если всё
- * в порядке) — обратная совместимость с прежним API.
+ * Validates entity metadata on module initialization.
+ * Returns the legacy flat list of human-readable strings (empty if all
+ * is well) — backward compatibility with the old API.
  *
- * Структурированный вариант с кодами/путями/severity — `validateEntityMetadataIssues`.
- * Чистая функция, без сети.
+ * Structured variant with codes/paths/severity — `validateEntityMetadataIssues`.
+ * Pure function, no network.
  */
 export function validateEntityMetadata(
   entity: typeof YdbBaseEntity,
@@ -107,9 +113,9 @@ export function validateEntityMetadata(
 }
 
 /**
- * Валидация метаданных сущности при инициализации модуля.
- * Возвращает список структурированных диагностик (пустой, если всё в порядке) —
- * вызывающий код решает, как бросать ошибку. Чистая функция, без сети.
+ * Validates entity metadata on module initialization.
+ * Returns a list of structured diagnostics (empty if all is well) —
+ * caller decides how to throw. Pure function, no network.
  */
 export function validateEntityMetadataIssues(
   entity: typeof YdbBaseEntity,
@@ -167,10 +173,10 @@ export function validateEntityMetadataIssues(
       );
     }
 
-    // Гарантия сериализуемости в AAD (#165): AAD-значение обязано быть
-    // скаляром, который toAadString переводит в строку детерминированно.
-    // Json/JsonDocument — объекты, для них шифрование упало бы в рантайме
-    // каждый раз; такое определяем на инициализации, а не в первом save().
+    // AAD serializability guarantee (#165): AAD value must be a scalar
+    // that toAadString converts to a string deterministically.
+    // Json/JsonDocument are objects; encryption would fail at runtime every
+    // time; we catch this at initialization, not on first save().
     const aadType = meta.schema[aadField];
     if (aadType && AAD_UNSAFE_TYPES.has(aadType)) {
       issues.push(
@@ -309,9 +315,9 @@ function validateRelation(
     return issues;
   }
 
-  // Строгий резолв join-колонки (#87): тот же резолвер, что и в рантайме
-  // relations. Невалидный селектор или отсутствие join-колонки — issue с
-  // понятным описанием, а не молчаливо угаданная строка.
+  // Strict join column resolution (#87): same resolver as in runtime
+  // relations. Invalid selector or missing join column — issue with
+  // clear description, not a silently guessed string.
   let joinColumn: string | undefined;
   if (rel.type !== 'many-to-many') {
     try {
@@ -391,10 +397,10 @@ function validateRelation(
         ),
       );
     } else {
-      // Ошибки конфигурации m2m (нет PK, составной PK, невыводимый тип
-      // join-колонки и т.п.) обнаруживаются тем же резолвером, который
-      // строит схему и читает рантайм (#87): module init падает с той же
-      // ошибкой, что позже дали бы schema sync/verify/relations.
+      // m2m configuration errors (no PK, composite PK, non-inferrable
+      // join column type, etc.) are caught by the same resolver that
+      // builds the schema and reads runtime (#87): module init fails with
+      // the same error that schema sync/verify/relations would give later.
       try {
         resolveRelationJoinTableDefinition(
           ownJoin ? entity : Target,

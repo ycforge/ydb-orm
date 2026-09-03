@@ -6,13 +6,12 @@ import { YdbMigration } from './migration.interface.js';
 
 const MIGRATION_FILE_RE = /\.(ts|mts|js|mjs)$/;
 
-/** Декларации и source map не содержат исполняемого кода миграций. */
+/** Declaration files and source maps contain no executable migration code. */
 const NON_CODE_FILE_RE = /(?:\.d\.ts|\.map)$/;
 
 /**
- * Тестовые файлы никогда не являются миграциями (#100):
- * случайно попавший `*.spec.ts`/`*.test.ts` не должен ронять
- * migration:run/show/check.
+ * Test files are never migrations (#100): a stray `*.spec.ts`/`*.test.ts`
+ * must not break migration:run/show/check.
  */
 const TEST_FILE_RE = /\.(spec|test)\.[^./]+$/;
 
@@ -23,7 +22,7 @@ function isMigrationFileName(file: string): boolean {
   return true;
 }
 
-/** Проверяет, что значение похоже на миграцию: класс или объект с up/down. */
+/** Checks whether a value looks like a migration: a class or object with up/down. */
 function isMigrationLike(candidate: unknown): boolean {
   if (typeof candidate === 'function') {
     const proto = (candidate as { prototype?: unknown }).prototype as
@@ -42,15 +41,15 @@ function isMigrationLike(candidate: unknown): boolean {
 }
 
 interface MigrationCandidate {
-  /** Имена экспортов, указывающих на этот класс/объект (для сообщений об ошибках). */
+  /** Names of the exports pointing at this class/object (for error messages). */
   names: string[];
   create: () => YdbMigration;
 }
 
 /**
- * Собирает все экспорты модуля, похожие на миграцию.
- * Экспорт `default` и именованный экспорт одного и того же класса —
- * один кандидат (дедупликация по значению).
+ * Collects all migration-like exports of a module.
+ * A `default` export and a named export of the same class are a single
+ * candidate (deduplicated by value).
  */
 function collectCandidates(mod: Record<string, any>): MigrationCandidate[] {
   const byValue = new Map<unknown, MigrationCandidate>();
@@ -74,25 +73,25 @@ function collectCandidates(mod: Record<string, any>): MigrationCandidate[] {
 }
 
 /**
- * Загружает миграции из директории: каждый файл `.ts`/`.js`/`.mts`/`.mjs`
- * должен экспортировать ровно одну миграцию (default или именованную).
- * Тестовые (`*.spec.*`, `*.test.*`) и декларационные файлы игнорируются (#100).
- * Node ≥ 22.18 импортирует .ts напрямую (type stripping).
+ * Loads migrations from a directory: every `.ts`/`.js`/`.mts`/`.mjs` file
+ * must export exactly one migration (default or named).
+ * Test (`*.spec.*`, `*.test.*`) and declaration files are ignored (#100).
+ * Node >= 22.18 imports .ts directly (type stripping).
  *
- * Имя миграции = имя файла без расширения (`<timestamp>-<Name>`);
- * сортировка — по имени файла. Файлы с одинаковым именем миграции
- * (например, исходник `.ts` рядом со скомпилированной копией `.js`)
- * приводят к ошибке, а не к молчаливому пропуску.
+ * The migration name is the file name without the extension
+ * (`<timestamp>-<Name>`); ordering is by file name. Files with the same
+ * migration name (e.g., a `.ts` source next to its compiled `.js` copy)
+ * produce an error rather than a silent skip.
  *
- * Каждой миграции присваивается стабильная идентичность (#101): SHA-256
- * содержимого файла (`migration.hash`). Переименование файла идентичность
- * не меняет, поэтому применённая миграция не выполнится повторно.
+ * Each migration gets a stable identity (#101): SHA-256 of the file content
+ * (`migration.hash`). Renaming the file does not change the identity, so an
+ * applied migration is not run again.
  */
 export async function loadMigrationsFromDir(
   dir: string,
 ): Promise<YdbMigration[]> {
-  // Несуществующая директория — ошибка, а не «No pending migrations» (#103):
-  // опечатка в --dir не должна выглядеть как отсутствие миграций.
+  // A nonexistent directory is an error, not "No pending migrations" (#103):
+  // a typo in --dir must not look like an absence of migrations.
   if (!fs.existsSync(dir)) {
     throw new Error(
       `Migration directory does not exist: ${path.resolve(dir)} ` +
@@ -119,9 +118,9 @@ export async function loadMigrationsFromDir(
       .update(fs.readFileSync(filePath))
       .digest('hex');
 
-    // Два файла с одинаковым содержимым — почти наверняка копия (#101):
-    // обе миграции применятся «успешно», но вторая упадёт на уже
-    // выполненном DDL. Раньше это всплывало только в рантайме БД.
+    // Two files with identical content are almost certainly copies (#101):
+    // both would apply "successfully", but the second would fail on
+    // already-executed DDL. Previously this surfaced only at DB runtime.
     const duplicateHashFile = fileByHash.get(contentHash);
     if (duplicateHashFile) {
       throw new Error(
@@ -143,8 +142,8 @@ export async function loadMigrationsFromDir(
           `(expected default or named export of a class or object with up()/down() methods)`,
       );
     }
-    // Несколько миграций в одном файле — неоднозначность (#100):
-    // раньше молча брался первый подошедший экспорт.
+    // Several migrations in one file are ambiguous (#100): previously the first
+    // matching export was silently taken.
     if (candidates.length > 1) {
       const names = candidates
         .flatMap((c) => c.names)
@@ -158,15 +157,15 @@ export async function loadMigrationsFromDir(
 
     const migration = candidates[0].create();
     migration.name ??= file.replace(MIGRATION_FILE_RE, '');
-    // Стабильная идентичность (#101): hash всегда берётся из содержимого
-    // файла. Явный hash в коде миграции не может ни перекрыть её (он никогда
-    // не используется как идентичность — всегда стирается на contentHash),
-    // ни «поручиться» за содержимое: у настоящего файла объявленный hash
-    // входит в его же содержимое, поэтому совпасть с contentHash не может
-    // в принципе, а расхождение = признак подделки/устаревшего шаблона (#169).
-    // Совпадение (теоретически возможное, если хешируемый контент когда-нибудь
-    // перестанет включать литерал объявления) принимается без вреда для
-    // безопасности — идентичность всё равно контентная.
+    // Stable identity (#101): the hash always comes from the file content. A
+    // hash declared in the migration code can neither override it (it is never
+    // used as the identity — always overwritten with contentHash), nor vouch
+    // for the content: in a real file the declared hash is part of its own
+    // content, so it cannot match contentHash in principle, and a mismatch is
+    // a sign of forgery/an outdated template (#169). A match (theoretically
+    // possible if the hashed content ever stops including the declaration
+    // literal) is accepted without harm to security — the identity is
+    // content-based anyway.
     if (migration.hash !== undefined && migration.hash !== contentHash) {
       throw new Error(
         `File ${file} declares its own migration hash ("${migration.hash}") ` +
@@ -179,8 +178,8 @@ export async function loadMigrationsFromDir(
     }
     migration.hash = contentHash;
 
-    // Дубли имени (в т.ч. `.ts` + скомпилированный `.js` рядом) —
-    // раньше второй файл молча skip-ался или дважды применялся в раннере (#100).
+    // Duplicate names (incl. `.ts` + a compiled `.js` next to it) — previously
+    // the second file was silently skipped or applied twice in the runner (#100).
     const duplicateFile = fileByName.get(migration.name);
     if (duplicateFile) {
       throw new Error(

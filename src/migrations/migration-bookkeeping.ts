@@ -1,18 +1,18 @@
 /**
- * Read-only доступ к таблице учёта миграций (#152).
+ * Read-only access to the migration bookkeeping table (#152).
  *
- * Проверка готовности (migration:check/status/show) обязана не менять БД,
- * поэтому путь YdbMigrationRunner.status → ensureMigrationsTable()
- * (CREATE TABLE IF NOT EXISTS + возможный ALTER для легаси-таблиц)
- * ей недоступен. Вместо этого:
- *  1. существование `ydb_migrations` определяется метаданными —
- *     DescribeTable через Table service (`YdbSchemaSyncer.describeTable`,
- *     #91: null только если таблицы действительно нет; остальные ошибки
- *     пробрасываются, ничего не «глотается»);
- *  2. записи читаются голым SELECT только тех колонок, что реально есть:
- *     у легаси-таблиц (созданных до #101) колонок `hash`/`state` может не
- *     быть — вместо ALTER их отсутствие просто учитывается при чтении;
- *  3. никакого DDL и записей здесь нет в принципе.
+ * The readiness check (migration:check/status/show) must not modify the DB,
+ * so the YdbMigrationRunner.status path (ensureMigrationsTable ->
+ * CREATE TABLE IF NOT EXISTS + possible ALTER for legacy tables) is off
+ * limits. Instead:
+ *  1. the existence of `ydb_migrations` is determined via metadata —
+ *     DescribeTable through the Table service (`YdbSchemaSyncer.describeTable`,
+ *     #91: null only when the table is truly absent; any other error
+ *     propagates, nothing is swallowed);
+ *  2. records are read via a bare SELECT of only the columns that actually
+ *     exist: legacy tables (created before #101) may lack `hash`/`state` —
+ *     instead of ALTER, their absence is merely accounted for on read;
+ *  3. no DDL or writes happen here at all.
  */
 import type { Driver } from '@ydbjs/core';
 import { quoteIdentifier } from '../core/sql-utils.js';
@@ -27,34 +27,34 @@ import {
   type AppliedMigration,
 } from './migration-runner.js';
 
-/** Снимок таблицы учёта миграций без каких-либо изменений схемы. */
+/** Snapshot of the migration bookkeeping table without any schema change. */
 export interface MigrationBookkeepingSnapshot {
-  /** Таблица учёта существует. */
+  /** The bookkeeping table exists. */
   exists: boolean;
   /**
-   * Легаси-формат (до #101): колонок `hash`/`state` нет — сопоставление
-   * по имени, все записи подразумеваются применёнными.
+   * Legacy format (pre-#101): the `hash`/`state` columns are absent —
+   * matching is by name and every record is implied applied.
    */
   legacy: boolean;
-  /** Записи учёта в порядке применения. */
+  /** Bookkeeping records in application order. */
   records: AppliedMigration[];
 }
 
-/** Зависимости чтения снимка: драйвер (метаданные) + executor (SELECT). */
+/** Snapshot-read dependencies: driver (metadata) + executor (SELECT). */
 export interface MigrationBookkeepingDeps {
   driver: Driver;
   executor: YdbExecutor;
 }
 
 /**
- * Считывает состояние таблицы учёта БЕЗ создания/изменения.
- * Отсутствие таблицы — нормальный результат ({ exists: false }), а не
- * ошибка: свежая база ещё не инициализирована миграциями.
+ * Reads the state of the bookkeeping table WITHOUT creating or modifying
+ * anything. A missing table is a normal result ({ exists: false }), not an
+ * error: a fresh database has not been initialized with migrations yet.
  */
 export async function readBookkeepingSnapshot(
   deps: MigrationBookkeepingDeps,
   options?: {
-    /** Шов для тестов (по умолчанию DescribeTable через YdbSchemaSyncer). */
+    /** Test seam (defaults to DescribeTable via YdbSchemaSyncer). */
     describeTable?: (tableName: string) => Promise<YdbTableDescription | null>;
   },
 ): Promise<MigrationBookkeepingSnapshot> {

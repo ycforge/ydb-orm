@@ -1,13 +1,13 @@
 /**
- * Разбор аргументов командной строки CLI (#103).
+ * CLI command-line argument parsing (#103).
  *
- * Раньше неизвестные флаги молча становились позиционными аргументами
- * (`migration:create --nme foo` создавал миграцию с именем «--nme»),
- * а `--config`/`--dir` без значения тихо откатывались к дефолтам/env.
- * Теперь разбор строгий: неизвестный флаг или пустое значение — ошибка.
+ * Unknown flags used to be silently treated as positional arguments
+ * (`migration:create --nme foo` created a migration named "--nme"), and a
+ * `--config`/`--dir` without a value quietly fell back to defaults/env.
+ * Parsing is now strict: an unknown flag or an empty value is an error.
  */
 
-/** Ошибка разбора аргументов — печатается без стека, но с подсказкой. */
+/** Argument-parsing error — printed without a stack trace but with a hint. */
 export class CliArgsError extends Error {
   constructor(message: string) {
     super(message);
@@ -15,6 +15,7 @@ export class CliArgsError extends Error {
   }
 }
 
+/** Parsed CLI arguments. */
 export interface CliArgs {
   command?: string;
   positional?: string;
@@ -28,10 +29,10 @@ export interface CliArgs {
   help?: boolean;
 }
 
-/** Флаги, принимающие значение (арность 1). */
+/** Flags that take a value (arity 1). */
 const VALUE_FLAGS = new Set(['--config', '--dir', '--output']);
 
-/** Булевы флаги (арность 0). */
+/** Boolean flags (arity 0). */
 const BOOLEAN_FLAGS = new Set([
   '--json',
   '--as-applied',
@@ -67,13 +68,13 @@ function valueFlagKey(flag: string): 'config' | 'dir' | 'output' {
 }
 
 /**
- * Строго разбирает argv:
- *  - неизвестный флаг (`--nme`, `-x`) — ошибка, а не позиционный аргумент;
- *  - `--config`/`--dir`/`--output` без значения, с пустой строкой или со следующим
- *    флагом вместо значения — ошибка, а не тихий дефолт;
- *  - поддерживается синтаксис `--flag=value`;
- *  - больше одного позиционного аргумента после команды — ошибка,
- *    лишние аргументы больше не игнорируются молча.
+ * Strictly parses argv:
+ *  - an unknown flag (`--nme`, `-x`) is an error, not a positional argument;
+ *  - `--config`/`--dir`/`--output` with no value, an empty string, or the next
+ *    flag in place of a value is an error, not a silent default;
+ *  - `--flag=value` syntax is supported;
+ *  - more than one positional argument after the command is an error —
+ *    extra arguments are no longer silently ignored.
  */
 export function parseArgs(argv: string[]): CliArgs {
   const result: CliArgs = {};
@@ -99,8 +100,8 @@ export function parseArgs(argv: string[]): CliArgs {
       const key = valueFlagKey(flag);
       if (inlineValue === undefined) {
         const next = argv[i + 1];
-        // Следующий флаг вместо значения — почти наверняка опечатка:
-        // `--config --dir x` не должен превращаться в config="--dir".
+        // A following flag instead of a value is almost certainly a typo:
+        // `--config --dir x` must not turn into config="--dir".
         if (next === undefined || isFlagLike(next)) {
           throw new CliArgsError(
             `Option ${flag} requires a non-empty value ` +
@@ -169,10 +170,11 @@ function errorChain(error: unknown): ErrorWithCause[] {
 }
 
 /**
- * Форматирует ошибку для вывода в stderr (#103):
- *  - по умолчанию — сообщение и цепочка cause («Caused by: ...»);
- *  - при verbose — строки context, затем полный стек каждого звена цепочки.
- * Раньше печатался только error.message — стек и причина терялись.
+ * Formats an error for stderr output (#103):
+ *  - by default — the message and the cause chain ("Caused by: ...");
+ *  - with verbose — context lines first, then the full stack of every link
+ *    in the chain.
+ * Previously only error.message was printed — the stack and the cause were lost.
  */
 export function formatError(
   error: unknown,

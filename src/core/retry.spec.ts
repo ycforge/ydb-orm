@@ -14,19 +14,19 @@ import type { YdbRetrySleepFn } from './retry.js';
 import type { YdbExecutor } from '../core/interfaces.js';
 
 /**
- * Юнит-тесты retry-политики по типу ошибки (#27): классификация строго по
- * структурным статусам YDB, ограничение попыток, bounded exponential
- * backoff + jitter, отмена через AbortSignal и отсутствие скрытого
- * ретрая вокруг транзакций (#98). Все задержки инъецируются — реальных
- * снов нет, тесты детерминированы.
+ * Unit tests for the error-type-driven retry policy (#27): classification
+ * strictly by YDB structural status codes, attempt limiting, bounded
+ * exponential backoff + jitter, cancellation via AbortSignal, and the
+ * absence of hidden retry around transactions (#98). All delays are
+ * injected — no real sleeping, so the tests are deterministic.
  */
 
-/** YDB-ошибка с заданным статус-кодом (структурная классификация). */
+/** A YDB error with the given status code (structural classification). */
 function ydbErr(code: number): YDBError {
   return new YDBError(code, []);
 }
 
-/** Записывающая задержка: вместо сна копит вычисленные задержки. */
+/** Recording sleep: instead of sleeping, accumulates the computed delays. */
 function recordingSleep(): { sleep: YdbRetrySleepFn; delays: number[] } {
   const delays: number[] = [];
   const sleep: YdbRetrySleepFn = (ms) => {
@@ -36,14 +36,14 @@ function recordingSleep(): { sleep: YdbRetrySleepFn; delays: number[] } {
   return { sleep, delays };
 }
 
-/** Детерминированный rng: отдаёт значения из очереди по кругу. */
+/** Deterministic rng: yields values from the queue cyclically. */
 function seqRng(values: number[]) {
   let i = 0;
   return () => values[i++ % values.length];
 }
 
-describe('classifyYdbError(): классификация по статус-кодам (#27)', () => {
-  it('только ABORTED/UNAVAILABLE/OVERLOADED — transient', () => {
+describe('classifyYdbError(): classification by status codes (#27)', () => {
+  it('only ABORTED/UNAVAILABLE/OVERLOADED are transient', () => {
     expect([...TRANSIENT_YDB_STATUSES].sort((a, b) => a - b)).toEqual(
       [Code.ABORTED, Code.UNAVAILABLE, Code.OVERLOADED].sort((a, b) => a - b),
     );
@@ -53,18 +53,18 @@ describe('classifyYdbError(): классификация по статус-ко�
     expect(isTransientYdbError(ydbErr(Code.OVERLOADED))).toBe(true);
   });
 
-  it('статусы, которые SDK ретраит, политикой НЕ ретраются (политика строже)', () => {
-    // BAD_SESSION/SESSION_BUSY SDK всегда повторяет внутри себя — ORM-политика
-    // не должна дублировать это; иначе попытки перемножаются.
+  it('statuses that the SDK retries are NOT retried by the policy (policy is stricter)', () => {
+    // BAD_SESSION/SESSION_BUSY the SDK always retries internally — the ORM
+    // policy must not duplicate that; otherwise attempts multiply.
     expect(classifyYdbError(ydbErr(Code.BAD_SESSION))).toBe('fatal');
     expect(classifyYdbError(ydbErr(Code.SESSION_BUSY))).toBe('fatal');
-    // Условно-retryable у SDK — для политики fatal:
+    // Conditionally retryable in the SDK — fatal for the policy:
     expect(classifyYdbError(ydbErr(Code.SESSION_EXPIRED))).toBe('fatal');
     expect(classifyYdbError(ydbErr(Code.UNDETERMINED))).toBe('fatal');
     expect(classifyYdbError(ydbErr(Code.TIMEOUT))).toBe('fatal');
   });
 
-  it('детерминированные ошибки приложения/схемы/запроса — fatal', () => {
+  it('deterministic application/schema/query errors are fatal', () => {
     const deterministic = [
       Code.BAD_REQUEST,
       Code.UNAUTHORIZED,
@@ -83,7 +83,7 @@ describe('classifyYdbError(): классификация по статус-ко�
     }
   });
 
-  it('CommitError раскрывается в причину (структурно, без текста)', () => {
+  it('CommitError is unwrapped to the cause (structurally, without text)', () => {
     expect(
       classifyYdbError(new CommitError('commit failed', ydbErr(Code.ABORTED))),
     ).toBe('transient');
@@ -95,7 +95,7 @@ describe('classifyYdbError(): классификация по статус-ко�
     expect(classifyYdbError(new CommitError('commit failed'))).toBe('fatal');
   });
 
-  it('всё не-YDB (прикладные ошибки, отмены) — fatal', () => {
+  it('everything non-YDB (application errors, cancellations) is fatal', () => {
     const named = (name: string): Error =>
       Object.assign(new Error(name), { name });
 
@@ -111,7 +111,7 @@ describe('classifyYdbError(): классификация по статус-ко�
 });
 
 describe('computeRetryDelayMs(): bounded exponential backoff + jitter', () => {
-  it('экспоненциальный рост без jitter: base, 2*base, 4*base...', () => {
+  it('exponential growth without jitter: base, 2*base, 4*base...', () => {
     const opts = { baseDelayMs: 100, maxDelayMs: 10_000, jitterRatio: 0 };
     expect(computeRetryDelayMs(1, opts, seqRng([0]))).toBe(100);
     expect(computeRetryDelayMs(2, opts, seqRng([0]))).toBe(200);
@@ -119,7 +119,7 @@ describe('computeRetryDelayMs(): bounded exponential backoff + jitter', () => {
     expect(computeRetryDelayMs(4, opts, seqRng([0]))).toBe(800);
   });
 
-  it('рост ограничен maxDelayMs (bounded)', () => {
+  it('growth is bounded by maxDelayMs', () => {
     const opts = { baseDelayMs: 1000, maxDelayMs: 2500, jitterRatio: 0 };
     expect(computeRetryDelayMs(1, opts, seqRng([0]))).toBe(1000);
     expect(computeRetryDelayMs(2, opts, seqRng([0]))).toBe(2000);
@@ -127,14 +127,14 @@ describe('computeRetryDelayMs(): bounded exponential backoff + jitter', () => {
     expect(computeRetryDelayMs(10, opts, seqRng([0]))).toBe(2500);
   });
 
-  it('jitter сжимает задержку вниз в [(1-r)*raw, raw]', () => {
+  it('jitter compresses delay down to [(1-r)*raw, raw]', () => {
     const opts = { baseDelayMs: 200, maxDelayMs: 10_000, jitterRatio: 0.5 };
-    expect(computeRetryDelayMs(1, opts, seqRng([0]))).toBe(100); // нижняя граница
-    expect(computeRetryDelayMs(1, opts, seqRng([0.999999]))).toBe(200); // верхняя
+    expect(computeRetryDelayMs(1, opts, seqRng([0]))).toBe(100); // lower bound
+    expect(computeRetryDelayMs(1, opts, seqRng([0.999999]))).toBe(200); // upper bound
     expect(computeRetryDelayMs(1, opts, seqRng([0.5]))).toBe(150);
   });
 
-  it('jitter никогда не превышает raw и maxDelayMs', () => {
+  it('jitter never exceeds raw and maxDelayMs', () => {
     const opts = { baseDelayMs: 100, maxDelayMs: 300, jitterRatio: 1 };
     for (let attempt = 1; attempt <= 12; attempt += 1) {
       const delay = computeRetryDelayMs(attempt, opts, seqRng([0.99]));
@@ -144,15 +144,15 @@ describe('computeRetryDelayMs(): bounded exponential backoff + jitter', () => {
     }
   });
 
-  it('без опций используются дефолты политики', () => {
-    // Дефолты: base 100, jitterRatio 0.25; rng -> 0 даёт нижнюю границу
-    // коридора джиттера: round(100 * (1 - 0.25)) = 75.
+  it('defaults are used when no options provided', () => {
+    // Defaults: base 100, jitterRatio 0.25; rng -> 0 gives the lower bound of
+    // the jitter corridor: round(100 * (1 - 0.25)) = 75.
     expect(computeRetryDelayMs(1, undefined, seqRng([0]))).toBe(75);
   });
 });
 
-describe('validateYdbRetryPolicyOptions(): fail-fast валидация', () => {
-  it('undefined и корректные опции проходят', () => {
+describe('validateYdbRetryPolicyOptions(): fail-fast validation', () => {
+  it('undefined and valid options pass', () => {
     expect(() => validateYdbRetryPolicyOptions(undefined)).not.toThrow();
     const signal = new AbortController().signal;
     expect(() =>
@@ -170,7 +170,7 @@ describe('validateYdbRetryPolicyOptions(): fail-fast валидация', () => 
     ).not.toThrow();
   });
 
-  it('невалидные значения отклоняются сразу', async () => {
+  it('invalid values are rejected immediately', async () => {
     expect(() => validateYdbRetryPolicyOptions(null as never)).toThrow();
     expect(() => validateYdbRetryPolicyOptions(42 as never)).toThrow();
     expect(() => validateYdbRetryPolicyOptions({ maxAttempts: 0 })).toThrow(
@@ -203,15 +203,15 @@ describe('validateYdbRetryPolicyOptions(): fail-fast валидация', () => 
     expect(() =>
       validateYdbRetryPolicyOptions({ onRetry: 'nope' as never }),
     ).toThrow(/onRetry/);
-    // runWithRetry валидирует опции до первой попытки:
+    // runWithRetry validates options before the first attempt:
     await expect(
       runWithRetry(() => Promise.resolve(1), { maxAttempts: 0 }),
     ).rejects.toThrow(/maxAttempts/);
   });
 });
 
-describe('runWithRetry(): повторы только транзитных ошибок (#27)', () => {
-  it('успех с первой попытки — fn вызвана один раз', async () => {
+describe('runWithRetry(): retries only transient errors (#27)', () => {
+  it('success on first attempt — fn called once', async () => {
     const { sleep, delays } = recordingSleep();
     const fn = jest.fn(() => Promise.resolve('ok'));
 
@@ -220,7 +220,7 @@ describe('runWithRetry(): повторы только транзитных ош�
     expect(delays).toEqual([]);
   });
 
-  it('транзитная ошибка, затем успех — ровно один повтор', async () => {
+  it('transient error then success — exactly one retry', async () => {
     const { sleep, delays } = recordingSleep();
     const boom = ydbErr(Code.ABORTED);
     let calls = 0;
@@ -233,11 +233,11 @@ describe('runWithRetry(): повторы только транзитных ош�
       runWithRetry(fn, { sleep, jitterRatio: 0, rng: seqRng([0]) }),
     ).resolves.toBe('recovered');
     expect(fn).toHaveBeenCalledTimes(2);
-    // Дефолтная база 100 мс, jitter выключен явно:
+    // Default base is 100 ms, jitter explicitly disabled:
     expect(delays).toEqual([DEFAULT_YDB_RETRY_POLICY_OPTIONS.baseDelayMs]);
   });
 
-  it('детерминированная/прикладная ошибка пробрасывается немедленно', async () => {
+  it('deterministic/application error is propagated immediately', async () => {
     const { sleep, delays } = recordingSleep();
 
     for (const error of [
@@ -252,9 +252,10 @@ describe('runWithRetry(): повторы только транзитных ош�
     expect(delays).toEqual([]);
   });
 
-  it('исчерпание попыток пробрасывает ПОСЛЕДНЮЮ ошибку как есть', async () => {
+  it('exhausted attempts propagates the LAST error as-is', async () => {
     const { sleep } = recordingSleep();
-    // Все три ошибки транзитные — иначе политика остановится раньше на фатальной.
+    // All three errors are transient — otherwise the policy would stop
+    // earlier on a fatal one.
     const errors = [
       ydbErr(Code.OVERLOADED),
       ydbErr(Code.UNAVAILABLE),
@@ -269,7 +270,7 @@ describe('runWithRetry(): повторы только транзитных ош�
     expect(fn).toHaveBeenCalledTimes(3);
   });
 
-  it('maxAttempts: 1 — одна попытка без задержек даже для транзитной ошибки', async () => {
+  it('maxAttempts: 1 — one attempt without delays even for transient error', async () => {
     const { sleep, delays } = recordingSleep();
     const boom = ydbErr(Code.UNAVAILABLE);
     const fn = jest.fn(() => Promise.reject(boom));
@@ -282,8 +283,8 @@ describe('runWithRetry(): повторы только транзитных ош�
   });
 });
 
-describe('runWithRetry(): детерминированный backoff и хуки', () => {
-  it('последовательность задержек: экспонента с учётом cap и jitter', async () => {
+describe('runWithRetry(): deterministic backoff and hooks', () => {
+  it('delay sequence: exponential with cap and jitter', async () => {
     const { sleep, delays } = recordingSleep();
     const boom = ydbErr(Code.ABORTED);
     const fn = jest.fn(() => Promise.reject(boom));
@@ -299,12 +300,12 @@ describe('runWithRetry(): детерминированный backoff и хуки
       }),
     ).rejects.toBe(boom);
 
-    // Попытки 1..4, повторы после 1..3: 100 -> 200 -> 250(cap)
+    // Attempts 1..4, retries after 1..3: 100 -> 200 -> 250(cap)
     expect(fn).toHaveBeenCalledTimes(4);
     expect(delays).toEqual([100, 200, 250]);
   });
 
-  it('onRetry вызывается перед каждым повтором с контекстом попытки', async () => {
+  it('onRetry called before each retry with attempt context', async () => {
     const { sleep } = recordingSleep();
     const boom = ydbErr(Code.ABORTED);
     let calls = 0;
@@ -339,7 +340,7 @@ describe('runWithRetry(): детерминированный backoff и хуки
     });
   });
 
-  it('onRetry не вызывается при фатальной ошибке и при исчерпании', async () => {
+  it('onRetry not called on fatal error or exhaustion', async () => {
     const { sleep } = recordingSleep();
     const fatal = new Error('deterministic');
     const onRetry = jest.fn<() => void>(() => {});
@@ -359,7 +360,7 @@ describe('runWithRetry(): детерминированный backoff и хуки
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('кастомный shouldRetry замещает классификацию по умолчанию', async () => {
+  it('custom shouldRetry overrides default classification', async () => {
     const { sleep, delays } = recordingSleep();
     const appError = new Error('flaky infra wrapped as app error');
     let calls = 0;
@@ -377,7 +378,7 @@ describe('runWithRetry(): детерминированный backoff и хуки
     expect(fn).toHaveBeenCalledTimes(2);
     expect(delays.length).toBe(1);
 
-    // И наоборот: shouldRetry: () => false отключает повторы вовсе.
+    // And conversely: shouldRetry: () => false disables retries entirely.
     const boom = ydbErr(Code.ABORTED);
     const strictFn = jest.fn(() => Promise.reject(boom));
     await expect(
@@ -387,8 +388,8 @@ describe('runWithRetry(): детерминированный backoff и хуки
   });
 });
 
-describe('runWithRetry(): отмена через AbortSignal', () => {
-  it('уже отменённый сигнал — fn не вызывается, отклонение с причиной', async () => {
+describe('runWithRetry(): cancellation via AbortSignal', () => {
+  it('already aborted signal — fn not called, rejection with reason', async () => {
     const controller = new AbortController();
     const cancelReason = new Error('cancelled-before-start');
     controller.abort(cancelReason);
@@ -400,7 +401,7 @@ describe('runWithRetry(): отмена через AbortSignal', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('не-Error причина отмены заворачивается в Error c исходником в cause', async () => {
+  it('non-Error cancellation reason wrapped in Error with original in cause', async () => {
     const controller = new AbortController();
     controller.abort('cancelled-with-string');
     const fn = jest.fn(() => Promise.resolve('never'));
@@ -414,7 +415,7 @@ describe('runWithRetry(): отмена через AbortSignal', () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
-  it('отмена во время ожидания задержки прерывает pending retry', async () => {
+  it('cancellation during backoff wait interrupts pending retry', async () => {
     const controller = new AbortController();
     const cancelReason = new Error('cancelled-mid-backoff');
     let sleepCalls = 0;
@@ -436,7 +437,7 @@ describe('runWithRetry(): отмена через AbortSignal', () => {
     expect(onRetry).not.toHaveBeenCalled();
   });
 
-  it('отмена между попытками запрещает старт следующей', async () => {
+  it('cancellation between attempts prevents next attempt start', async () => {
     const controller = new AbortController();
     const cancelReason = new Error('stopped-after-first-failure');
     const { sleep } = recordingSleep();
@@ -458,12 +459,12 @@ describe('runWithRetry(): отмена через AbortSignal', () => {
   });
 });
 
-describe('интеграция с транзакциями: без умножения попыток (#98 + #27)', () => {
+describe('transaction integration: no attempt multiplication (#98 + #27)', () => {
   interface FakeTxCall {
     options: Record<string, unknown>;
   }
 
-  /** Минимальный фейковый executor БД с управляемым поведением execute(). */
+  /** Minimal fake DB executor with controllable execute() behavior. */
   function makeFakeDb(
     executeImpl: (
       fn: any,
@@ -529,7 +530,7 @@ describe('интеграция с транзакциями: без умноже�
     return new mod.YdbTransactionManager(dbExecutor);
   }
 
-  it('runInTransaction НЕ имеет скрытого ORM-ретрая: транзитная ошибка выходит сразу', async () => {
+  it('runInTransaction has NO hidden ORM retry: transient error surfaces immediately', async () => {
     const boom = ydbErr(Code.ABORTED);
     let bodyCalls = 0;
     const db = makeFakeDb((_fn, _opts, _trx, _signal) => {
@@ -542,19 +543,19 @@ describe('интеграция с транзакциями: без умноже�
     await expect(
       manager.runInTransaction(() => Promise.resolve('x')),
     ).rejects.toBe(boom);
-    // Ровно одна попытка: ретраить тело транзакции — работа SDK (idempotent),
-    // а не скрытая политика ORM.
+    // Exactly one attempt: retrying a transaction body is the SDK's job
+    // (idempotent), not a hidden ORM policy.
     expect(bodyCalls).toBe(1);
     expect(db.transactions).toHaveLength(1);
   });
 
-  it('явная композиция: runWithRetry ПОВЕРХ idempotent-транзакции дополняет SDK-ретрай', async () => {
+  it('explicit composition: runWithRetry ON TOP of idempotent transaction complements SDK retry', async () => {
     const boom = ydbErr(Code.UNAVAILABLE);
     let sdkAttempts = 0;
 
-    // Имитация @ydbjs/query: ПЕРВАЯ попытка тела транзакции падает транзитной
-    // ошибкой, SDK-idempotent-повтор (вторая попытка ВНУТРИ execute)
-    // успешен — наружу транзитная ошибка не выходит.
+    // Imitate @ydbjs/query: the FIRST transaction body attempt fails with a
+    // transient error, the SDK-idempotent retry (second attempt INSIDE
+    // execute) succeeds — no transient error escapes to the surface.
     const db = makeFakeDb(
       async (fn: any, opts: any, trx: any, signal: AbortSignal) => {
         for (;;) {
@@ -563,7 +564,7 @@ describe('интеграция с транзакциями: без умноже�
             if (sdkAttempts === 1 && opts.idempotent) throw boom;
             return await fn(trx, signal);
           } catch (error) {
-            if (error === boom && sdkAttempts < 2) continue; // SDK ретраит сам
+            if (error === boom && sdkAttempts < 2) continue; // SDK retries itself
             throw error;
           }
         }
@@ -578,8 +579,8 @@ describe('интеграция с транзакциями: без умноже�
       }),
     );
 
-    // Внешний ретрай срабатывает нулевой раз: транзитная ошибка поглощена
-    // SDK-idempotent-повтором ВНУТРИ, политика наружу её не видит.
+    // The outer retry fires zero times: the transient error is absorbed by
+    // the SDK-idempotent retry INSIDE, so the policy never sees it.
     await expect(runWithRetry(outerFn, { maxAttempts: 3 })).resolves.toBe(
       'inner',
     );
@@ -588,7 +589,7 @@ describe('интеграция с транзакциями: без умноже�
     expect(db.transactions[0].options).toMatchObject({ idempotent: true });
   });
 
-  it('фатальная ошибка транзакции внешним ретраем не повторяется', async () => {
+  it('fatal transaction error not retried by outer retry', async () => {
     const fatal = ydbErr(Code.BAD_REQUEST);
     const db = makeFakeDb(() => Promise.reject(fatal));
     const manager = await makeManager(db.executor);

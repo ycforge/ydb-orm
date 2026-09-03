@@ -24,7 +24,7 @@ interface ScriptedIo {
   text: () => string;
 }
 
-/** Пайп со скриптованными ответами: строки подаются по \n, затем EOF. */
+/** Pipe with scripted answers: lines fed by \n, then EOF. */
 function scripted(answers: string[]): ScriptedIo {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -56,7 +56,7 @@ const expectWizardSuccess = async (
 
 describe('runEntityCreateWizard (#24)', () => {
   it('creates a minimal entity: uuid PK accepted by defaults only', async () => {
-    // таблица='' (дефолт), uuid, pk=Y, type=Uuid, another=n, write=Y
+    // table='' (default), uuid, pk=Y, type=Uuid, another=n, write=Y
     const content = await expectWizardSuccess(['', 'uuid', '', '', 'n', '']);
     expect(content).toContain(`@YdbEntity('test_thing')`);
     expect(content).toContain(`@YdbPrimaryColumn('Uuid')`);
@@ -65,7 +65,7 @@ describe('runEntityCreateWizard (#24)', () => {
   });
 
   it('creates an entity with a custom PK name and type', async () => {
-    // id, pk=Y(default n → y), type=Int64, another=n, write
+    // id, pk=Y(default n -> y), type=Int64, another=n, write
     const content = await expectWizardSuccess([
       'accounts',
       'id',
@@ -81,9 +81,9 @@ describe('runEntityCreateWizard (#24)', () => {
 
   it('adds create/update timestamp columns when selected', async () => {
     // uuid pk | created_at Timestamp createDate=Y | updated_at Datetime updateDate=Y
-    // (enum-вопрос задаётся только для Utf8/Int32 — у Timestamp его нет)
+    // (enum question only asked for Utf8/Int32 — Timestamp has none)
     const content = await expectWizardSuccess([
-      '', // таблица по умолчанию
+      '', // default table
       'uuid',
       '', // pk? Y
       '', // type Uuid
@@ -102,7 +102,7 @@ describe('runEntityCreateWizard (#24)', () => {
       'n', // createDate
       'y', // updateDate
       'n', // add another? no
-      '', // TTL? пропустить (есть date-like колонки)
+      '', // TTL? skip (has date-like columns)
       '', // write
     ]);
     expect(content).toContain(`@YdbCreateDateColumn()`);
@@ -138,29 +138,29 @@ describe('runEntityCreateWizard (#24)', () => {
   });
 
   it('re-prompts on invalid column names, duplicates and unknown types', async () => {
-    // bad-name → ошибка → дубликат uuid → ошибка → валидное имя; неизвестный тип → Utf8
+    // bad-name -> error -> duplicate uuid -> error -> valid name; unknown type -> Utf8
     const content = await expectWizardSuccess([
       '',
-      'uuid', // первая колонка (PK по умолчанию)
+      'uuid', // first column (PK by default)
       '', // pk Y
       '', // type Uuid
       '', // add another? yes
-      'bad-name', // невалидно
-      'uuid', // дубликат
+      'bad-name', // invalid
+      'uuid', // duplicate
       'title',
       'n', // pk
-      'NotAType', // неизвестный тип
+      'NotAType', // unknown type
       '', // Utf8
       'n', // encrypted
       'y', // enum?
-      'draft,published', // значения
+      'draft,published', // values
       '', // storage Utf8
       'n', // add another? no
       '', // write
     ]);
     expect(content).toContain(`@YdbEntity('test_thing')`);
     expect(content).toContain(`@YdbPrimaryColumn('Uuid')`);
-    // enum-ветка тоже отработала: колонка получила @YdbEnum поверх Utf8
+    // enum branch also worked: the column got @YdbEnum on top of Utf8
     expect(content).toContain(`@YdbColumn('Utf8')`);
     expect(content).toContain(`title: TitleEnum;`);
     expect(content).toContain("DRAFT = 'draft',");
@@ -190,7 +190,7 @@ describe('runEntityCreateWizard (#24)', () => {
 
 describe('cancellation/EOF (#24)', () => {
   it('aborts cleanly on EOF in the middle of the flow — no file written', async () => {
-    const io = scripted(['']); // только имя таблицы, дальше ввод кончился
+    const io = scripted(['']); // only table name, then input ended
     await expect(
       runEntityCreateCommand('aborted', { dir, interactive: true, ...io }),
     ).rejects.toBeInstanceOf(PromptCancelledError);
@@ -214,7 +214,7 @@ describe('cancellation/EOF (#24)', () => {
     const first = reader.ask('one: ');
     const err = new PromptCancelledError('SIGINT (Ctrl+C)');
     reader.cancel(err);
-    reader.cancel(new Error('second')); // идемпотентность
+    reader.cancel(new Error('second')); // idempotent
     await expect(first).rejects.toBe(err);
     await expect(reader.ask('two: ')).rejects.toBe(err);
     input.end();
@@ -223,9 +223,9 @@ describe('cancellation/EOF (#24)', () => {
 
 describe('non-TTY behavior (#24)', () => {
   it('does not read stdin outside TTY: deterministic default template', async () => {
-    // Входной поток никогда не заканчивается: если команда попытается
-    // читать stdin, тест зависнет и упадёт по таймауту jest.
-    const input = new PassThrough(); // ни данных, ни end()
+    // Input stream never ends: if command tries to read stdin, test would
+    // hang and fail by jest timeout.
+    const input = new PassThrough(); // no data, no end()
     const output = new PassThrough();
     let out = '';
     output.on('data', (d) => {
@@ -262,12 +262,12 @@ describe('collision handling (#24)', () => {
     const existing = path.join(dir, 'taken.entity.ts');
     fs.writeFileSync(existing, '// precious\n', 'utf-8');
 
-    // interactive:false — коллизия проверяется ещё раньше мастера.
+    // interactive:false — collision checked even before wizard.
     await expect(
       runEntityCreateCommand('taken', { dir, interactive: false }),
     ).rejects.toThrow(/already exists.*never overwrites/s);
 
-    // Ввод не потреблён и файл не изменён.
+    // Input not consumed and file not modified.
     expect(fs.readFileSync(existing, 'utf-8')).toBe('// precious\n');
   });
 

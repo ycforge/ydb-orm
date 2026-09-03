@@ -19,10 +19,10 @@ import {
   runWithTransactionContext,
 } from '../transaction/transaction-context.js';
 
-// ---- Тестовая модель (#17): все типы связей + формы для ошибок ----
-// Классы-цели объявляются ДО классов-владельцев singular-связей:
-// emitDecoratorMetadata порождает design:type со ссылкой на класс,
-// и прямая ссылка «вперёд» упала бы по TDZ.
+// ---- Test model (#17): all relation types + error shapes ----
+// Target classes are declared BEFORE the owner classes of singular relations:
+// emitDecoratorMetadata produces a design:type referencing the class, and a
+// direct "forward" reference would fail on the TDZ.
 
 @YdbEntity('rf_profiles')
 class RfProfile extends YdbBaseEntity {
@@ -38,8 +38,8 @@ class RfRole extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
   uuid: string;
 
-  // FK на владельца; составной PK дочерней сущности не мешает o2m-фильтру:
-  // соединение идёт по колонке user_uuid, а не по PK цели.
+  // FK to the owner; the child's composite PK does not impede the o2m filter:
+  // the join goes through the user_uuid column, not the target's PK.
   @YdbPrimaryColumn('Uuid')
   user_uuid: string;
 
@@ -98,7 +98,7 @@ class RfUser extends YdbBaseEntity {
   tags?: RfTag[];
 }
 
-// Составной PK корня: one-to-many по первому PK смоделирован быть не может.
+// Composite root PK: a one-to-many joining on the first PK cannot be modeled.
 @YdbEntity('rf_composites')
 class RfComposite extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -110,15 +110,15 @@ class RfComposite extends YdbBaseEntity {
   @OneToMany(() => RfRole, (role) => role.user_uuid)
   roles?: RfRole[];
 
-  // m2o на составной PK цели — неподдерживаемая форма.
+  // m2o onto a composite target PK — an unsupported form.
   @YdbColumn('Uuid')
   big_ref: string;
 
   @ManyToOne(() => RfBig, (self) => self.big_ref)
   big?: RfBig;
 
-  // m2o с одиночным PK цели — для проверки запрета шифрованных колонок
-  // и вложенных related-путей.
+  // m2o with a single target PK — to check the encrypted-column ban and
+  // nested related paths.
   @YdbColumn('Uuid')
   user_link: string;
 
@@ -126,7 +126,7 @@ class RfComposite extends YdbBaseEntity {
   linkedUser?: RfUser;
 }
 
-// Несовпадение типов join-колонок: Int32 (корень) vs Uuid (FK цели).
+// Join-column type mismatch: Int32 (root) vs Uuid (target FK).
 @YdbEntity('rf_mismatch_users')
 class RfMismatchUser extends YdbBaseEntity {
   @YdbPrimaryColumn('Int32')
@@ -136,7 +136,7 @@ class RfMismatchUser extends YdbBaseEntity {
   roles?: RfRole[];
 }
 
-// Join-колонка не объявлена на целевой сущности.
+// The join column is not declared on the target entity.
 @YdbEntity('rf_ghosts')
 class RfGhost extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -146,7 +146,7 @@ class RfGhost extends YdbBaseEntity {
   profiles?: RfProfile[];
 }
 
-// many-to-many без @JoinTable.
+// many-to-many without @JoinTable.
 @YdbEntity('rf_orphans')
 class RfOrphan extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -156,7 +156,7 @@ class RfOrphan extends YdbBaseEntity {
   tags?: RfTag[];
 }
 
-// Цель связи — класс без @YdbEntity.
+// The relation target is a class without @YdbEntity.
 @YdbEntity('rf_to_bare')
 class RfToBare extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -179,11 +179,11 @@ function mockRuntime(rows: any[][] = [[]], sequential = false) {
 
 describe('Related-entity filters (#17): findAll({ relation: { column } })', () => {
   afterEach(() => {
-    // Глобальные настройки транзакций не должны протекать между тестами.
+    // Global transaction settings must not leak between tests.
     configureTransactionContext(undefined);
   });
 
-  it('1. one-to-many: фильтр по одной колонке связанной сущности', async () => {
+  it('1. one-to-many: filter on a single column of the related entity', async () => {
     const mock = mockRuntime([
       [{ uuid: UUID, status: 'active', profile_uuid: UUID }],
     ]);
@@ -198,13 +198,13 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     expect(sql).toContain(
       '`uuid` IN (SELECT `user_uuid` FROM `rf_roles` WHERE `role` = $',
     );
-    // Полуслияние, а не JOIN: дубликаты корневых строк невозможны.
+    // Semi-join rather than a JOIN: duplicate root rows are impossible.
     expect(sql.toUpperCase()).not.toContain('JOIN');
     expect(sql).not.toContain("'admin'");
     expect(sql).toMatch(/LIMIT 100 OFFSET 0$/);
   });
 
-  it('2. несколько related-предикатов AND с обычными условиями корня', async () => {
+  it('2. several related-predicates AND-combined with root conditions', async () => {
     const mock = mockRuntime([]);
 
     await RfUser.findAll({
@@ -214,7 +214,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     });
 
     const sql = mock.queries[0].sql;
-    // Корневое равенство + два независимых IN-подзапроса через AND.
+    // Root equality + two independent IN subqueries combined with AND.
     expect(sql).toContain('`status` = $status');
     expect(sql).toContain(
       '`profile_uuid` IN (SELECT `uuid` FROM `rf_profiles` WHERE `bio` = $',
@@ -226,7 +226,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     expect((mock.queries[0].params.status as any).value).toBe('active');
   });
 
-  it('3. вложенные логические условия: $or/$and смешивают корень и связи', async () => {
+  it('3. nested logical conditions: $or/$and mix root and relations', async () => {
     const mock = mockRuntime([]);
 
     await RfUser.findAll({
@@ -237,7 +237,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
       '(`status` = $status_0_eq OR `uuid` IN (SELECT `user_uuid` FROM `rf_roles` WHERE `role` = $',
     );
 
-    // $or ВНУТРИ предиката связи.
+    // $or INSIDE a relation predicate.
     await RfUser.findAll({
       roles: { $or: [{ role: 'admin' }, { is_admin: true }] },
     });
@@ -247,7 +247,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     );
     expect(innerOrSql).toContain('OR `is_admin` = $');
 
-    // Та же связь дважды через $and: два отдельных подзапроса (семантика EXISTS).
+    // The same relation twice via $and: two separate subqueries (EXISTS semantics).
     await RfUser.findAll({
       $and: [{ roles: { role: 'admin' } }, { roles: { is_admin: true } }],
     });
@@ -255,7 +255,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     expect(andSql.match(/`uuid` IN \(SELECT `user_uuid`/g)?.length).toBe(2);
     expect(andSql).toContain(') AND `uuid` IN (SELECT');
 
-    // Вложенный related-путь: связь связи.
+    // Nested related path: a relation of a relation.
     getEntityRuntime(RfComposite).executor = mock.executor;
     await RfComposite.findAll({ linkedUser: { roles: { role: 'admin' } } });
     const nestedSql = mock.queries[3].sql;
@@ -274,7 +274,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
       roles: { role: 'admin' },
     });
 
-    // Один запрос, одна строка: полуслияние IN не размножает корневые строки.
+    // One query, one row: the IN semi-join does not multiply root rows.
     expect(mock.queries).toHaveLength(1);
     expect(users).toHaveLength(1);
     expect(mock.queries[0].sql.toUpperCase()).not.toContain('JOIN ');
@@ -283,17 +283,17 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
   it('5. unknown relation/column fails BEFORE executing SQL', async () => {
     const mock = mockRuntime();
 
-    // Неизвестное свойство вообще (не колонка и не связь).
+    // An entirely unknown property (neither a column nor a relation).
     await expect(RfUser.findAll({ bogus_relation: { x: 1 } })).rejects.toThrow(
       /Unknown field in WHERE: "bogus_relation"/,
     );
 
-    // Связь существует, колонка на цели — нет.
+    // The relation exists, but the target column does not.
     await expect(RfUser.findAll({ roles: { nope: 1 } })).rejects.toThrow(
       /Unknown field in WHERE: "nope" on entity RfRole/,
     );
 
-    // Невалидная форма предиката.
+    // An invalid predicate shape.
     await expect(RfUser.findAll({ roles: null as any })).rejects.toThrow(
       /Invalid filter on relation "roles".*got null/,
     );
@@ -305,12 +305,12 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
   });
 
   it('6. encrypted related column is rejected clearly (incl. blind index)', async () => {
-    // RfComposite нужен собственный executor: проверка executor'а происходит
-    // до построения WHERE, а валидация шифрованных колонок — до выполнения SQL.
+    // RfComposite needs its own executor: executor checks happen before the
+    // WHERE is built, while encrypted-column validation is before SQL execution.
     const mock = createMockExecutor([[[]]]);
     getEntityRuntime(RfComposite).executor = mock.executor;
 
-    // Даже blind index запрещён внутри related-фильтров (#17).
+    // Even the blind index is forbidden inside related filters (#17).
     await expect(
       RfComposite.findAll({ linkedUser: { email_encrypted: 'a@b.c' } }),
     ).rejects.toThrow(
@@ -327,7 +327,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
   });
 
   it('7. empty predicate and no-match related rows return correct results', async () => {
-    // Пустой предикат {} = «есть хотя бы одна связанная строка».
+    // An empty {} predicate = "there is at least one related row".
     const emptyMock = mockRuntime([]);
     const none = await RfUser.findAll({ roles: {} });
     expect(none).toEqual([]);
@@ -335,7 +335,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
       '`uuid` IN (SELECT `user_uuid` FROM `rf_roles`) LIMIT',
     );
 
-    // Связанные строки есть, но предикат не совпал — пустой результат корней.
+    // Related rows exist, but the predicate does not match — empty root result.
     const noMatchMock = mockRuntime([[]]);
     const noMatch = await RfUser.findAll({ roles: { role: 'admin' } });
     expect(noMatch).toEqual([]);
@@ -347,7 +347,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     const trx = createMockExecutor([[[]]]);
     getEntityRuntime(RfUser).executor = base.executor;
 
-    // Явная транзакция.
+    // An explicit transaction.
     await RfUser.findAll({ roles: { role: 'admin' } }, { trx: trx.executor });
     expect(trx.queries).toHaveLength(1);
     expect(base.queries).toHaveLength(0);
@@ -378,7 +378,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
       .limit(10)
       .toYql();
 
-    // Ни одного литерала значения в SQL — только плейсхолдеры $param.
+    // No value literals in the SQL — only $param placeholders.
     expect(sql).not.toContain('admin');
     expect(sql).not.toContain("'active'");
     expect(sql).toContain('LIMIT 10');

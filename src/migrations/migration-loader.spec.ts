@@ -66,8 +66,8 @@ describe('loadMigrationsFromDir', () => {
   });
 
   it('fails clearly for missing directory (#103)', async () => {
-    // Раньше возвращался [] — опечатка в --dir выглядела как
-    // «No pending migrations».
+    // Previously [] was returned — a typo in --dir looked just like
+    // "No pending migrations".
     await expect(
       loadMigrationsFromDir(path.join(dir, 'not-exists')),
     ).rejects.toThrow(/Migration directory does not exist/);
@@ -83,7 +83,7 @@ describe('loadMigrationsFromDir', () => {
 
   describe('#100 regression: deterministic discovery', () => {
     it('ignores *.spec.* and *.test.* files even when they export no migration', async () => {
-      // Раньше такой файл жёстко ронял migration:run/show/check
+      // Previously such a file hard-crashed migration:run/show/check
       writeMigration(
         '1000-Ok.mjs',
         `export default class Ok {
@@ -117,7 +117,7 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('throws a clear error when a file exports several migration classes', async () => {
-      // Раньше молча брался только первый подошедший класс
+      // Previously only the first matching class was taken silently
       writeMigration(
         '1000-Multi.mjs',
         `${upDownClass('CreateUsers')}
@@ -142,7 +142,7 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('throws when a helper class with up/down sits next to a real migration', async () => {
-      // Раньше эвристика могла взять helper вместо миграции или наоборот
+      // Previously the heuristic could pick a helper instead of a migration or vice versa
       writeMigration(
         '1000-Mixed.mjs',
         `${upDownClass('SomeHelper')}
@@ -155,7 +155,7 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('throws on duplicate names from a .ts source and its compiled .js copy', async () => {
-      // Раньше второй файл с тем же именем молча skip-ался в раннере
+      // Previously the second file with the same name was silently skipped in the runner
       fs.writeFileSync(
         path.join(dir, 'package.json'),
         JSON.stringify({ type: 'module' }),
@@ -212,7 +212,7 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('keeps the hash stable across file renames', async () => {
-      // Переименование файла не должно менять идентичность миграции
+      // Renaming the file must not change the migration identity
       const body = `export default class Stable {
         async up() {}
         async down() {}
@@ -231,8 +231,8 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('throws when two files have identical content', async () => {
-      // Обе «миграции» применились бы, но вторая упала бы на уже
-      // выполненном DDL — раньше это всплывало только в рантайме БД
+      // Both "migrations" would have applied, but the second would have failed
+      // on already-executed DDL — previously this only surfaced at DB runtime
       const body = `export default class Dup2 {
         async up() {}
         async down() {}
@@ -292,11 +292,11 @@ describe('loadMigrationsFromDir', () => {
     });
 
     it('rejects a declared hash diverging from the file content (tamper/legacy path)', async () => {
-      // #189 upgrade path: у настоящего файла объявленный hash входит в его же
-      // содержимое, поэтому не может совпасть с contentHash — любое объявление
-      // означает подделку либо устаревший шаблон с «записанным» hash. Отказ —
-      // намеренный breaking change: идентичность всегда контентная, середина
-      // «записанный hash = файл» недостижима.
+      // #189 upgrade path: in a real file the declared hash is part of its own
+      // content, so it cannot match the contentHash — any declaration means a
+      // forgery or an outdated template with a hardcoded hash. The rejection is
+      // an intentional breaking change: identity is always content-based, the
+      // middle ground of "declared hash = file" is unreachable.
       const declared = 'b'.repeat(64);
       const body = `export default class EqualHash {
         hash = '${declared}';
@@ -318,8 +318,8 @@ describe('loadMigrationsFromDir', () => {
       writeMigration('1000-Mutable.mjs', body);
       const before = await loadMigrationsFromDir(dir);
 
-      // Повторная загрузка уже выдала бы файл из кеша Node import;
-      // переименование + изменение содержимого имитируют модификацию.
+      // A reload would already return the file from the Node import cache;
+      // renaming + changing the content mimics a modification.
       fs.writeFileSync(
         path.join(dir, '2000-Mutable.mjs'),
         body.concat('\n// touched\n'),
@@ -334,8 +334,9 @@ describe('loadMigrationsFromDir', () => {
 
   describe('missing directory (#103)', () => {
     it('fails clearly instead of returning []', async () => {
-      // Раньше несуществующая директория выглядела как «No pending
-      // migrations» — опечатка в --dir была неотличима от пустой директории.
+      // Previously a nonexistent directory looked like "No pending
+      // migrations" — a typo in --dir was indistinguishable from an empty
+      // directory.
       const missing = path.join(dir, 'no-such-dir');
 
       await expect(loadMigrationsFromDir(missing)).rejects.toThrow(

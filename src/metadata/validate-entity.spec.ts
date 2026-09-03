@@ -90,7 +90,7 @@ class EncryptedPk extends YdbBaseEntity {
   uuid: string;
 }
 
-/** AAD-поле Json: объектное значение не имеет детерминированного AAD (#165). */
+/** AAD field of Json type: object value has no deterministic AAD (#165). */
 @YdbEntity('v_aad_json')
 class AadJsonPk extends YdbBaseEntity {
   @YdbSecurityAAD()
@@ -98,7 +98,7 @@ class AadJsonPk extends YdbBaseEntity {
   attributes: unknown;
 }
 
-/** AAD-поле Bytes: допустимый скаляр (base64-нормализация в AAD, #165). */
+/** AAD field of Bytes: valid scalar (base64 normalization in AAD, #165). */
 @YdbEntity('v_aad_bytes')
 class AadBytesPk extends YdbBaseEntity {
   @YdbSecurityAAD()

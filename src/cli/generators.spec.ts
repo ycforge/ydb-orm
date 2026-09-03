@@ -85,9 +85,9 @@ describe('createEntityFile', () => {
   });
 
   it('#170: pins exclusive mode (openSync "wx"), not check-then-write', () => {
-    // Регресс-пин: атомарность живёт в одном системном вызове open(2) с
-    // O_CREAT|O_EXCL. Если реализацию вернут к existsSync()+writeFileSync,
-    // этот тест падает детерминированно.
+    // Regression-pin: atomicity lives in a single open(2) syscall with
+    // O_CREAT|O_EXCL. If the implementation reverted to existsSync()+writeFileSync,
+    // this test fails deterministically.
     const openSpy = jest.spyOn(fs, 'openSync');
     try {
       createEntityFile(dir, 'pinned');
@@ -99,12 +99,12 @@ describe('createEntityFile', () => {
   });
 
   it('#170: simultaneous writers from separate processes — exactly one wins', async () => {
-    // Настоящий race на уровне процессов: каждый child повторяет точную
-    // syscall-последовательность production-кода (openSync 'wx' → write →
-    // close) против одного и того же пути. Атомарность O_EXCL гарантирует
-    // ровно одного победителя независимо от таймингов процессов. Разные
-    // большие payload'ы позволяют поймать частичное/перекрёстное усечение
-    // (характерно для existsSync+truncate TOCTOU).
+    // A real race at the process level: each child repeats the exact
+    // syscall sequence of the production code (openSync 'wx' → write →
+    // close) against the same path. The atomicity of O_EXCL guarantees
+    // exactly one winner regardless of process timing. Different large
+    // payloads make it possible to catch partial/cross-wise truncation
+    // (typical of the existsSync+truncate TOCTOU).
     const target = path.join(dir, 'race.entity.ts');
     const count = 8;
     const filler = 'x'.repeat(64 * 1024);
@@ -146,17 +146,17 @@ describe('createEntityFile', () => {
     expect(losers).toBe(count - 1);
     expect(codes).not.toContain(2);
 
-    // Файл содержит ровно один целый payload — никакого смешивания/обрезки.
+    // The file contains exactly one complete payload — no mixing/truncation.
     const content = fs.readFileSync(target, 'utf-8');
     expect(payloads).toContain(content);
 
-    // Публичный API видит файл как существующий и не перезаписывает.
+    // The public API sees the file as existing and does not overwrite.
     expect(() => createEntityFile(dir, 'race')).toThrow(/already exists/);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Генерация по спецификации (#24, entity:create)
+// Generation from spec (#24, entity:create)
 // ---------------------------------------------------------------------------
 
 describe('validateEntitySpec (#24)', () => {
@@ -275,7 +275,7 @@ describe('validateEntitySpec (#24)', () => {
   });
 
   it('rejects enum values colliding after member-name normalization (#153)', () => {
-    // Пунктуация нормализуется в '_': "a-b" и "a_b" → один член A_B.
+    // Punctuation is normalized to '_': "a-b" and "a_b" → one member A_B.
     const punct: YdbEntitySpec = validSpec();
     punct.columns.push({
       name: 'status',
@@ -290,7 +290,7 @@ describe('validateEntitySpec (#24)', () => {
       punctIssues.some((i) => i.includes('"a-b"') && i.includes('"a_b"')),
     ).toBe(true);
 
-    // Пунктуация + регистр: "foo.bar" и "FOO-BAR" → FOO_BAR.
+    // Punctuation + case: "foo.bar" and "FOO-BAR" → FOO_BAR.
     const mixed: YdbEntitySpec = validSpec();
     mixed.columns.push({
       name: 'status',
@@ -303,7 +303,7 @@ describe('validateEntitySpec (#24)', () => {
       ),
     ).toBe(true);
 
-    // Префикс цифры не спасает: "1" и "v_1" → V_1.
+    // A digit prefix doesn't help: "1" and "v_1" → V_1.
     const digit: YdbEntitySpec = validSpec();
     digit.columns.push({
       name: 'status',
@@ -417,7 +417,7 @@ describe('renderEntityFile (#24)', () => {
     );
     expect(rendered).toContain(`@YdbPrimaryColumn('Uuid')`);
     expect(rendered).toContain(`@YdbColumn('Utf8')`);
-    // Импорты сортируются и содержат только используемые декораторы.
+    // Imports are sorted and contain only the decorators actually used.
     expect(rendered.match(/^import \{$/m)).toBeTruthy();
     expect(rendered).not.toContain('YdbEncrypted');
     expect(rendered).not.toContain('YdbTtl');
@@ -516,7 +516,7 @@ describe('createEntityFileFromSpec (#24)', () => {
     ).toThrow(/Invalid entity spec/);
     expect(fs.readdirSync(dir)).toHaveLength(0);
 
-    // Коллизия нормализованных членов enum — тоже до записи файла (#153).
+    // Collision of normalized enum members — also before the file is written (#153).
     expect(() =>
       createEntityFileFromSpec(dir, {
         className: 'BadEnum',
@@ -581,8 +581,8 @@ describe('createMigrationFile', () => {
   });
 
   it('does not collide when called repeatedly at the same millisecond (#102)', () => {
-    // Фиксируем Date.now() в будущем (после любых реальных вызовов
-    // в других тестах): все три генерации попадают в одну миллисекунду.
+    // Pin Date.now() in the future (after any real calls in other tests):
+    // all three generations land in the same millisecond.
     const fixed = Date.now() + 60_000;
     const spy = jest.spyOn(Date, 'now').mockReturnValue(fixed);
     try {
@@ -598,15 +598,15 @@ describe('createMigrationFile', () => {
         expect(fs.existsSync(created.filePath)).toBe(true);
       }
 
-      // Лексикографическая сортировка загрузчика сохраняет хронологию:
-      // порядок имён после сортировки совпадает с порядком генерации.
+      // Lexicographic loader sorting preserves chronology:
+      // the name order after sorting matches the generation order.
       expect([first.name, second.name, third.name].sort()).toEqual([
         first.name,
         second.name,
         third.name,
       ]);
 
-      // Имена классов уникальны и являются валидными идентификаторами.
+      // Class names are unique and are valid identifiers.
       const classNames = [first, second, third].map(
         (created) =>
           fs
@@ -630,7 +630,7 @@ describe('createMigrationFile', () => {
     for (const created of [fromDigits, fromSymbols, fromMixed]) {
       const content = fs.readFileSync(created.filePath, 'utf-8');
       const className = content.match(/export class (\w+) implements/)?.[1];
-      // Класс не может начинаться с цифры — иначе файл не скомпилируется.
+      // A class cannot start with a digit — otherwise the file won't compile.
       expect(className).toMatch(/^[A-Za-z_$][A-Za-z0-9_$]*$/);
       expect(content).toContain(`readonly name = "${created.name}";`);
       expect(path.basename(created.filePath)).toBe(`${created.name}.ts`);

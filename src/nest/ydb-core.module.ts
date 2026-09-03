@@ -58,20 +58,22 @@ import {
 } from './core-module-registry.js';
 
 /**
- * Внутренний lifecycle-провайдер ядра (#93).
+ * Internal core lifecycle provider (#93).
  *
- * - onApplicationBootstrap: schema sync (если `sync: true`). Хук выполняется
- *   после того, как все модули скомпилированы и все `forFeature`-сущности
- *   получили executor — порядок инициализации детерминирован, результат
- *   больше не зависит от порядка импортов сущностей. Ошибка DDL пробрасывается
- *   из app.init() как исходная ошибка схемы, а не как невнятный сбой DI-фабрики.
- *   Гонки DDL между репликами не решаются на этом уровне — безопасность
- *   обеспечивает сам schema sync (DescribeTable перед каждым DDL).
+ * - onApplicationBootstrap: schema sync (if `sync: true`). The hook runs
+ *   after all modules are compiled and every `forFeature` entity received
+ *   its executor — the initialization order is deterministic, the result
+ *   no longer depends on the import order of entities. A DDL error
+ *   propagates from app.init() as the original schema error, not as an
+ *   obscure DI-factory failure. DDL races between replicas are not solved
+ *   at this level — safety is ensured by schema sync itself (DescribeTable
+ *   before each DDL).
  *
- * - onApplicationShutdown: снимает экземпляр с учёта (см. core-module-registry)
- *   и закрывает драйвер, созданный самим модулем. Драйвер, переданный снаружи
- *   (overrideProvider/useValue), не закрывается — им владеет вызывающий.
- *   Повторный shutdown безопасен (идемпотентен).
+ * - onApplicationShutdown: unregisters the instance (see
+ *   core-module-registry) and closes the driver created by the module
+ *   itself. A driver passed from outside (overrideProvider/useValue) is
+ *   not closed — the caller owns it. Repeated shutdown is safe
+ *   (idempotent).
  */
 class YdbCoreModuleLifecycle
   implements OnApplicationBootstrap, OnApplicationShutdown
@@ -86,16 +88,17 @@ class YdbCoreModuleLifecycle
   async onApplicationBootstrap(): Promise<void> {
     if (!this.state.options?.sync) return;
     try {
-      // Sync видит только сущности СВОЕГО приложения (#142): привязанные
-      // провайдерами forFeature этого контейнера через YDB_CORE_SCOPE.
+      // Sync only sees the entities of THIS application (#142): those bound
+      // by this container's forFeature providers through YDB_CORE_SCOPE.
       await this.schemaSyncer.sync(
         getRegisteredYdbEntities(this.state.entityScope),
       );
     } catch (error) {
-      // После неудачного бутстрапа приложение не стартовало: снимаем
-      // экземпляр с учёта и закрываем драйвер сразу — NestJS вызывает
-      // shutdown-хуки только при успешном init(), иначе слот инициализации
-      // остался бы занят навсегда. Наверх идёт исходная ошибка схемы.
+      // After a failed bootstrap the application never started: unregister the
+      // instance and close the driver right away — NestJS only calls the
+      // shutdown hooks on a successful init(), otherwise the initialization
+      // slot would stay occupied forever. The original schema error
+      // propagates up.
       await this.dispose({ ignoreCloseErrors: true });
       throw error;
     }
@@ -105,31 +108,31 @@ class YdbCoreModuleLifecycle
     await this.dispose();
   }
 
-  /** Идемпотентно: снятие с учёта + освобождение скоупа сущностей (#199)
-   * + закрытие созданного модулем драйвера. */
+  /** Idempotent: unregister + release the entity scope (#199)
+   * + close the module-created driver. */
   private async dispose(
     opts: { ignoreCloseErrors?: boolean } = {},
   ): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     releaseCoreModuleInit(this.state);
-    // Сущности конфигурации освобождаются: после shutdown их можно
-    // привязать к другой конфигурации (#199).
+    // The configuration's entities are released: after shutdown they can be
+    // claimed by another configuration (#199).
     releaseOrmScope(this.state.ormScope);
 
     const driver = this.state.ownedDriver;
     if (!driver) return;
     try {
-      // close() у драйвера синхронный (void), но кастомная driverFactory
-      // может вернуть драйвер с асинхронным закрытием — дожидаемся его.
+      // Driver close() is synchronous (void), but a custom driverFactory may
+      // return a driver with async closing — wait for it.
       const closing = driver.close() as unknown;
       if (closing instanceof Promise) {
         await closing;
       }
     } catch (error) {
       if (!opts.ignoreCloseErrors) throw error;
-      // При падении бутстрапа наверх должна идти исходная ошибка схемы,
-      // поэтому ошибку закрытия драйвера только логируем.
+      // On a failed bootstrap the original schema error must propagate up,
+      // so the driver close error is only logged.
       console.error(
         'Failed to close YDB driver after failed bootstrap:',
         (error as Error)?.message ?? error,
@@ -141,14 +144,26 @@ class YdbCoreModuleLifecycle
 @Global()
 @Module({})
 export class YdbCoreModule {
+  /**
+   * Registers one named YDB configuration (#199): creates the driver, the
+   * YdbExecutor (via query(driver)) and the credentials provider — from
+   * `auth` (AuthManager from @ycforge/auth) or an explicit
+   * credentialsProvider / driverOptions.credentialsProvider (conflicting
+   * sources → error). Optional encryption/blind-index/validation providers
+   * are lifted from the options; schema sync runs at bootstrap when
+   * `sync: true`.
+   *
+   * @param options - async module options (useFactory/useClass/useExisting)
+   */
   static forRootAsync(options: YdbModuleAsyncOptions): DynamicModule {
-    // Состояние конкретного экземпляра модуля: живёт в замыкании провайдеров,
-    // по нему выполняется claim/release и учитывается владение драйвером.
-    // Скоуп сущностей создаётся здесь же — один на экземпляр DynamicModule:
-    // провайдеры forFeature привязывают сущности к нему через DI-токен
-    // YDB_CORE_SCOPE и не зависят от порядка резолва (#142).
-    // Имя конфигурации (#199): конфигурации с разными именами сосуществуют
-    // в одном процессе, их DI-токены разнесены через getScopedToken.
+    // The module instance state: lives in the providers' closure; the
+    // claim/release and driver-ownership accounting operate on it. The
+    // entity scope is created here too — one per DynamicModule instance:
+    // forFeature providers bind entities to it via the YDB_CORE_SCOPE DI
+    // token and don't depend on provider resolution order (#142).
+    // Configuration name (#199): configurations with different names
+    // coexist in one process, their DI tokens are separated via
+    // getScopedToken.
     const name = options.name ?? DEFAULT_CONNECTION_NAME;
     if (!name) {
       throw new Error(
@@ -172,11 +187,11 @@ export class YdbCoreModule {
     const state: CoreModuleState = {
       entityScope: createEntityScope(),
       name,
-      // Дефолтная конфигурация использует процессный синглтон-скоуп:
-      // повторный бутстрап (тесты, hot-restart) с теми же сущностями —
-      // идемпотентный claim, как раньше. Одновременно живых экземпляров
-      // с именем 'default' быть не может (claimCoreModuleInit), поэтому
-      // общий скоуп безопасен. Именованные конфигурации — изолированы.
+      // The default configuration uses a process-singleton scope: a repeated
+      // bootstrap (tests, hot-restart) with the same entities is an
+      // idempotent claim, as before. Two live instances named 'default'
+      // cannot exist at once (claimCoreModuleInit), so sharing the scope is
+      // safe. Named configurations are isolated.
       ormScope:
         name === DEFAULT_CONNECTION_NAME
           ? getDefaultOrmScope()
@@ -195,9 +210,10 @@ export class YdbCoreModule {
         ...asyncProviders,
 
         {
-          // Имя конфигурации (#199): useValue-строка делает module token
-          // этого DynamicModule уникальным для каждого имени — иначе NestJS
-          // дедуплицирует два forRootAsync одного класса в один модуль.
+          // Configuration name (#199): the useValue string makes this
+          // DynamicModule's module token unique per name — otherwise NestJS
+          // deduplicates two forRootAsync calls of the same class into one
+          // module.
           provide: YDB_CONNECTION_NAME,
           useValue: name,
         },
@@ -213,16 +229,16 @@ export class YdbCoreModule {
         },
 
         {
-          // Провайдер учётных данных (#96): явный opts.credentialsProvider
-          // используется как есть; иначе auth (AuthManager из @ycforge/auth);
-          // иначе driverOptions.credentialsProvider.
+          // Credentials provider (#96): an explicit opts.credentialsProvider
+          // is used as-is; otherwise auth (AuthManager from @ycforge/auth);
+          // otherwise driverOptions.credentialsProvider.
           provide: tokens.credentials,
           useFactory: (opts: YdbModuleOptions) => {
             try {
               return resolveCredentialsProvider(opts);
             } catch (error) {
-              // Компиляция упала после claim — освобождаем слот,
-              // чтобы следующий бутстрап в этом процессе был возможен.
+              // Compilation failed after the claim — release the slot so a
+              // later bootstrap in this process is possible.
               releaseCoreModuleInit(state);
               throw error;
             }
@@ -237,9 +253,9 @@ export class YdbCoreModule {
             credentialsProvider: CredentialsProvider,
           ) => {
             try {
-              // driverFactory — кастомное создание (тесты/нестандартные
-              // транспорты); такой драйвер тоже считается созданным модулем
-              // и закрывается при shutdown.
+              // driverFactory is a custom creation path (tests / non-standard
+              // transports); such a driver is also considered created by the
+              // module and is closed on shutdown.
               const driver =
                 opts.driverFactory !== undefined
                   ? await opts.driverFactory()
@@ -286,10 +302,10 @@ export class YdbCoreModule {
         },
 
         /**
-         * Синхронизатор схемы БД. Только создаётся здесь; сам sync
-         * выполняется в onApplicationBootstrap (см. YdbCoreModuleLifecycle):
-         * к этому моменту зарегистрированы все сущности всех модулей.
-         * Провайдер экспортируется: syncer.verify() можно вызвать вручную.
+         * DB schema synchronizer. Only created here; the actual sync runs in
+         * onApplicationBootstrap (see YdbCoreModuleLifecycle): by then all
+         * entities of all modules are registered. The provider is exported:
+         * syncer.verify() can be called manually.
          */
         {
           provide: tokens.schemaSync,
@@ -308,8 +324,8 @@ export class YdbCoreModule {
         },
 
         {
-          // Менеджер транзакций конфигурации (#199): настройки — из её
-          // скоупа, а не процессно-глобальные.
+          // The configuration's transaction manager (#199): its settings come
+          // from its scope, not from process-global ones.
           provide: tokens.transactionManager,
           useFactory: (db: YdbExecutor) =>
             new YdbTransactionManager(db, state.ormScope.transactions),
@@ -337,10 +353,11 @@ export class YdbCoreModule {
     state: CoreModuleState,
     optionsToken: symbol,
   ): Provider[] {
-    // Настройки транзакций (#98/#199): для дефолтной конфигурации — как
-    // раньше, процессно-глобально (даже если YDB_QUERY переопределён извне,
-    // конфигурация ambient/warn не теряется); для любой конфигурации — в её
-    // скоуп, откуда их заберут AR-провайдеры forFeature и менеджер транзакций.
+    // Transaction settings (#98/#199): for the default configuration — as
+    // before, process-global (even if YDB_QUERY is overridden externally,
+    // the ambient/warn configuration isn't lost); for any configuration —
+    // into its scope, where the forFeature AR providers and the transaction
+    // manager will take them from.
     const applyTransactions = (opts: YdbModuleOptions): void => {
       if (state.name === DEFAULT_CONNECTION_NAME) {
         configureTransactionContext(opts.transactions);

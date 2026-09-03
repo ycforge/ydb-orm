@@ -6,9 +6,13 @@ import {
 } from '../metadata/entity-metadata.js';
 
 /**
- * Декоратор свойства. Задаёт YDB-тип колонки.
- * Метаданные клонируются перед изменением (copy-on-write), чтобы
- * наследники не портили метаданные родительского класса.
+ * Property decorator. Sets the YDB type of the column.
+ *
+ * Metadata is cloned before being modified (copy-on-write), so that
+ * subclasses do not corrupt the parent class's metadata.
+ *
+ * @param type - YDB primitive type for the column.
+ * @returns Property decorator function.
  */
 export function YdbColumn(type: YdbPrimitive): PropertyDecorator {
   return (target, propertyKey) => {
@@ -23,8 +27,11 @@ export function YdbColumn(type: YdbPrimitive): PropertyDecorator {
 }
 
 /**
- * Декоратор первичного ключа (опционально, для будущих миграций/индексов).
- * По сути — тот же YdbColumn, но с дополнительной мета-меткой.
+ * Primary key column decorator.
+ * Sets the YDB type of the column and marks it as part of the entity's primary key.
+ *
+ * @param type - YDB primitive type for the primary key column.
+ * @returns Property decorator function.
  */
 export function YdbPrimaryColumn(type: YdbPrimitive): PropertyDecorator {
   return (target, propertyKey) => {

@@ -13,8 +13,8 @@ import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
 import { withRetryPolicy } from './retry-executor.js';
 
 /**
- * Fail-fast валидация опций модуля: без endpoint драйвер упал бы позже
- * с непонятной ошибкой в недрах SDK.
+ * Fail-fast validation of module options: without an endpoint the driver
+ * would fail later with a confusing error deep inside the SDK.
  */
 export function validateYdbModuleOptions(
   opts: YdbModuleOptions,
@@ -34,8 +34,8 @@ export function validateYdbModuleOptions(
 }
 
 /**
- * Валидация опции автоматического определения формата AAD (#165): либо не
- * задана (переходный безопасный режим включён), либо строгий boolean.
+ * Validation of the automatic AAD format detection option (#165): either
+ * unset (the safe transitional mode is enabled) or a strict boolean.
  */
 function assertAadReadFallback(opts: YdbModuleOptions): void {
   const fallback = opts.aadReadFallback;
@@ -47,9 +47,9 @@ function assertAadReadFallback(opts: YdbModuleOptions): void {
 }
 
 /**
- * Валидация формата Security AAD (#165): допускаются только 'legacy' и 'v2'
- * (по умолчанию). Неизвестное значение — ошибка конфигурации, а не
- * молчаливый переход на дефолт.
+ * Validation of the Security AAD format (#165): only 'legacy' and 'v2'
+ * (default) are allowed. An unknown value is a configuration error, not a
+ * silent fallback to the default.
  */
 function assertAadFormat(opts: YdbModuleOptions): void {
   const format = opts.aadFormat;
@@ -77,10 +77,10 @@ function assertAuthPresent(
 }
 
 /**
- * Конфликт источников CredentialsProvider (#96): если задан низкоуровневый
- * driverOptions.credentialsProvider вместе с верхнеуровневым источником
- * (явный credentialsProvider или auth/AuthManager), приоритет не выбирается
- * молча — это ошибка конфигурации.
+ * CredentialsProvider source conflict (#96): if the low-level
+ * driverOptions.credentialsProvider is set together with a top-level source
+ * (an explicit credentialsProvider or auth/AuthManager), the priority is not
+ * chosen silently — it is a configuration error.
  */
 function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
   const lowLevel = opts.driverOptions?.credentialsProvider !== undefined;
@@ -101,17 +101,17 @@ function assertNoCredentialsProviderConflict(opts: YdbModuleOptions): void {
 }
 
 /**
- * Разрешает итоговый CredentialsProvider по детерминированному приоритету (#96):
+ * Resolves the final CredentialsProvider by the deterministic priority (#96):
  *
- *   1. opts.credentialsProvider — явный провайдер из опций модуля;
- *   2. opts.auth — AuthManager из @ycforge/auth (адаптер
- *      createYdbCredentialsProvider из '@ycforge/auth/ydb');
- *   3. injected — провайдер, пришедший из DI (YDB_CREDENTIALS_PROVIDER) или
- *      переданный аргументом в createDriver();
- *   4. opts.driverOptions.credentialsProvider — низкоуровневая опция драйвера.
+ *   1. opts.credentialsProvider — explicit provider from the module options;
+ *   2. opts.auth — AuthManager from @ycforge/auth (the adapter
+ *      createYdbCredentialsProvider from '@ycforge/auth/ydb');
+ *   3. injected — a provider arriving from DI (YDB_CREDENTIALS_PROVIDER) or
+ *      passed as an argument to createDriver();
+ *   4. opts.driverOptions.credentialsProvider — the low-level driver option.
  *
- * Комбинация (1)/(2) + (4) запрещена — ошибка конфигурации, а не молчаливый
- * выбор. Используется NestJS-модулем, createDriver() и CLI.
+ * The combination (1)/(2) + (4) is forbidden — a configuration error, not a
+ * silent choice. Used by the NestJS module, createDriver() and the CLI.
  */
 export function resolveCredentialsProvider(
   opts: YdbModuleOptions,
@@ -123,7 +123,7 @@ export function resolveCredentialsProvider(
     (opts.auth !== undefined
       ? createYdbCredentialsProvider(opts.auth, YDB_AUTH_USAGE, {
           endpoint: opts.endpoint,
-          // grpc:// — локальный insecure-эндпоинт; grpcs:// — TLS (дефолт).
+          // grpc:// — local insecure endpoint; grpcs:// — TLS (default).
           secure: !opts.endpoint.startsWith('grpc://'),
         })
       : undefined) ??
@@ -139,15 +139,15 @@ export function resolveCredentialsProvider(
   return provider;
 }
 
-/** Создаёт подключённый Driver по опциям модуля. */
+/** Creates a connected Driver from the module options. */
 export async function createDriver(
   opts: YdbModuleOptions,
   credentialsProvider?: CredentialsProvider,
 ): Promise<Driver> {
   validateYdbModuleOptions(opts, credentialsProvider);
-  // Провайдер разрешается по единому правилу приоритета (#96) и передаётся
-  // ПОСЛЕ spread driverOptions: driverOptions.credentialsProvider не может
-  // молча перезатереть уже разрешённый провайдер.
+  // The provider is resolved by the single priority rule (#96) and is passed
+  // AFTER spreading driverOptions: driverOptions.credentialsProvider cannot
+  // silently overwrite the already-resolved provider.
   const resolvedProvider = resolveCredentialsProvider(
     opts,
     credentialsProvider,
@@ -162,7 +162,7 @@ export async function createDriver(
   return driver;
 }
 
-/** Создаёт executor (query client) поверх драйвера. */
+/** Creates an executor (query client) over the driver. */
 export function createExecutor(
   driver: Driver,
   opts: YdbModuleOptions,
@@ -175,14 +175,14 @@ export function createExecutor(
       : undefined,
   });
 
-  // Адаптация клиента @ydbjs/query к интерфейсу YdbExecutor (#98):
-  // client.transaction(options, fn) — функция, возвращающая промис, а
-  // интерфейс ORM ожидает transaction(options?) => { execute(fn) }.
-  // Раньше адаптация существовала только в wrapExecutorWithLogging, из-за
-  // чего runInTransaction на «живом» SDK падал. Опции (isolation/signal/
-  // idempotent) пробрасываются в SDK как есть; timeout реализуется менеджером
-  // транзакций per-attempt (свежее AbortSignal.timeout на каждую попытку)
-  // и до SDK не доходит.
+  // Adapts the @ydbjs/query client to the YdbExecutor interface (#98):
+  // client.transaction(options, fn) is a function returning a promise, while
+  // the ORM interface expects transaction(options?) => { execute(fn) }.
+  // Previously the adaptation existed only in wrapExecutorWithLogging, which
+  // made runInTransaction crash on the "live" SDK. Options (isolation/signal/
+  // idempotent) pass through to the SDK as is; timeout is implemented by the
+  // transaction manager per attempt (a fresh AbortSignal.timeout for each
+  // attempt) and never reaches the SDK.
   const adapted = ((strings: TemplateStringsArray, ...args: any[]) =>
     client(strings, ...args)) as unknown as YdbExecutor;
 
@@ -201,9 +201,9 @@ export function createExecutor(
 
   let executor = adapted;
 
-  // Retry-политика (#27): опциональна, по умолчанию выключена (ретраит
-  // только SDK). Обёртка ставится ПОД логирование, чтобы каждая попытка
-  // политики попадала в лог отдельно.
+  // Retry policy (#27): optional, disabled by default (only the SDK retries).
+  // The wrapper is placed UNDER logging so each policy attempt is logged
+  // separately.
   if (opts.retry !== undefined && opts.retry !== false) {
     executor = withRetryPolicy(executor, opts.retry);
   }

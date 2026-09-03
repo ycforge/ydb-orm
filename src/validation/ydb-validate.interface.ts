@@ -1,30 +1,30 @@
 /**
- * Структурированная ошибка валидации одного свойства сущности.
- * Сохраняет property/constraint для машинной обработки (например,
- * маппинга в HTTP 400) — в отличие от плоского списка строк (#95).
+ * Structured validation error for a single entity property.
+ * Preserves property/constraint for machine processing (e.g.,
+ * mapping to HTTP 400) — unlike a flat string list (#95).
  */
 export interface YdbValidationErrorItem {
-  /** Имя свойства сущности, не прошедшего валидацию (пусто — если провайдер не сообщает). */
+  /** Name of the entity property that failed validation (empty if the provider does not report it). */
   property: string;
-  /** Тип нарушения: ключ constraint (например, 'isNotEmpty', 'minLength'). */
+  /** Violation type: the constraint key (e.g. 'isNotEmpty', 'minLength'). */
   constraint: string;
-  /** Человекочитаемое сообщение об ошибке. */
+  /** Human-readable error message. */
   message: string;
-  /** Значение свойства на момент валидации (контекст; не попадает в message). */
+  /** Value of the property at validation time (context; not included in message). */
   value?: unknown;
 }
 
 /**
- * Элемент результата провайдера валидации.
- * Строка — legacy-формат (обратная совместимость с провайдерами до #95),
- * объект — структурированный формат.
+ * Validation provider result item.
+ * String — legacy format (backward compatibility with providers before #95),
+ * object — structured format.
  */
 export type YdbValidationIssue = string | YdbValidationErrorItem;
 
 export interface YdbValidationProvider {
   /**
-   * Валидирует сущность и возвращает список нарушений.
-   * Пустой массив — сущность валидна.
+   * Validates an entity and returns a list of violations.
+   * Empty array — entity is valid.
    */
   validate(entity: any): Promise<YdbValidationIssue[]>;
 }
@@ -32,12 +32,12 @@ export interface YdbValidationProvider {
 export interface YdbValidationOptions {
   groups?: string[];
   /**
-   * Пропускать проверку отсутствующих (undefined/null) свойств.
+   * Skip validation of missing (undefined/null) properties.
    *
-   * По умолчанию `false` — безопасный явный дефолт (#95): при save()
-   * нового объекта @IsNotEmpty/@IsDefined на незаполненных полях
-   * не проходят валидацию. `true` восстанавливает поведение до #95
-   * (раньше это значение было жёстко зашито).
+   * Defaults to `false` — safe explicit default (#95): on save()
+   * of a new object, @IsNotEmpty/@IsDefined on unfilled fields
+   * will fail validation. `true` restores pre-#95 behavior
+   * (this value was previously hardcoded).
    */
   skipMissingProperties?: boolean;
 }

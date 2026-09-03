@@ -10,13 +10,13 @@ import type { YdbEntityRelations } from '../relations/entity-relations.js';
 export type { YdbEntityConstructor };
 
 /**
- * Репозиторий для работы с конкретной сущностью YDB.
+ * Repository for working with a specific YDB entity.
  *
- * Содержит `YdbEntityPersistence` (CRUD, шифрование, lifecycle hooks)
- * и `YdbEntityRelations` (eager/lazy relations). Является публичным DI-API:
- * `YdbOrmModule.forFeature([...])` регистрирует инжектируемый `YdbRepository<Entity>`.
+ * Contains `YdbEntityPersistence` (CRUD, encryption, lifecycle hooks)
+ * and `YdbEntityRelations` (eager/lazy relations). Serves as the public DI API:
+ * `YdbOrmModule.forFeature([...])` registers an injectable `YdbRepository<Entity>`.
  *
- * Использование в NestJS:
+ * Usage in NestJS:
  * ```ts
  * @Injectable()
  * class UserService {

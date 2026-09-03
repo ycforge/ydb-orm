@@ -39,7 +39,7 @@ import {
   YdbTtlUnit,
 } from '../decorators/ttl.decorator.js';
 
-/** Ожидаемый вторичный индекс таблицы. */
+/** Expected secondary index of the table. */
 export interface ExpectedIndex {
   name: string;
   columns: string[];
@@ -47,30 +47,30 @@ export interface ExpectedIndex {
 }
 
 /**
- * Нормализованные TTL-настройки существующей таблицы
- * (TtlSettings из DescribeTable, см. issue #81/#88).
+ * Normalized TTL settings of an existing table
+ * (TtlSettings from DescribeTable, see issue #81/#88).
  */
 export interface YdbTableTtl {
   column: string;
-  /** Задержка до истечения в секундах (expire_after_seconds из proto). */
+  /** Delay until expiration in seconds (expire_after_seconds from proto). */
   expireAfterSeconds: number;
-  /** Единица числовой колонки; отсутствует для Date/Datetime/Timestamp. */
+  /** Unit of the numeric column; absent for Date/Datetime/Timestamp. */
   unit?: YdbTtlUnit;
 }
 
 /**
- * Вероятное переименование колонки (#23): `from` — лишняя колонка в БД,
- * `to` — новая колонка сущности. Только предположение по структурным
- * признакам схемы; никогда не применяется автоматически.
+ * Likely column rename (#23): `from` — an extra column in the DB,
+ * `to` — a new entity column. Only a guess based on structural schema
+ * signals; never applied automatically.
  */
 export interface LikelyRename {
-  /** Лишняя колонка в БД (старое имя). */
+  /** Extra column in the DB (old name). */
   from: string;
-  /** Отсутствующая в БД колонка сущности (новое имя). */
+  /** Entity column missing in the DB (new name). */
   to: string;
 }
 
-/** Ожидаемая схема таблицы, построенная по метаданным сущности. */
+/** Expected table schema built from the entity metadata. */
 export interface ExpectedTableSchema {
   tableName: string;
   columns: Record<string, YdbPrimitive>;
@@ -79,83 +79,83 @@ export interface ExpectedTableSchema {
   ttl?: YdbTtlMetadata;
 }
 
-/** Нормализованное описание существующей таблицы из DescribeTable. */
+/** Normalized description of an existing table from DescribeTable. */
 export interface YdbTableDescription {
-  /** Колонка → примитивный typeId (Optional обёртка снята). */
+  /** Column → primitive typeId (Optional wrapper stripped). */
   columns: Map<string, Type_PrimitiveTypeId>;
   primaryKey: string[];
-  /** Индексы, описанные в БД. */
+  /** Indexes described in the DB. */
   indexes?: Array<{ name: string; columns: string[]; unique: boolean }>;
   /**
-   * TTL-настройки таблицы из DescribeTable (undefined — TTL не задан).
-   * Сравнивается с метаданными @YdbTtl при verify/миграциях (#88).
+   * Table TTL settings from DescribeTable (undefined — no TTL set).
+   * Compared against @YdbTtl metadata during verify/migrations (#88).
    */
   ttl?: YdbTableTtl;
   /**
-   * Колонки БД с не-примитивными типами (Decimal/List/Pg и т.п.), которые
-   * нельзя выразить typeId (#91): имя → человекочитаемое описание типа.
-   * Такие колонки всегда считаются расхождением типов — но с честным
-   * описанием фактического типа вместо бессмысленного «typeId=0».
+   * DB columns with non-primitive types (Decimal/List/Pg, etc.) that
+   * cannot be expressed as a typeId (#91): name → human-readable type
+   * description. Such columns always count as a type mismatch — but with
+   * an honest description of the actual type instead of a meaningless
+   * "typeId=0".
    */
   unsupportedColumns?: Map<string, string>;
 }
 
-/** Результат проверки существующей таблицы против ожидаемой схемы. */
+/** Result of checking an existing table against the expected schema. */
 export interface SchemaCheckResult {
   tableName: string;
-  /** Колонки, которых нет в БД (можно добавить через ALTER TABLE). */
+  /** Columns missing in the DB (can be added via ALTER TABLE). */
   missingColumns: [string, YdbPrimitive][];
-  /** Колонки с несовпадающим типом (YDB не умеет менять тип — только ручная миграция). */
+  /** Columns with a mismatching type (YDB cannot alter a type — manual migration only). */
   typeMismatches: { column: string; expected: YdbPrimitive; actual: string }[];
-  /** Лишние колонки в БД (не удаляются автоматически — потеря данных). */
+  /** Extra columns in the DB (not removed automatically — data loss risk). */
   extraColumns: string[];
   /**
-   * Вероятные переименования колонок (#23): ровно одна лишняя колонка БД
-   * и ровно одна новая колонка сущности с совпадающим типом, не затронутые
-   * PK/индексами/TTL/blind-index. Диагностическая подсказка — не команда
-   * к действию; ADD/DROP и ручная миграция остаются явными.
+   * Likely column renames (#23): exactly one extra DB column and exactly
+   * one new entity column with a matching type, not touched by
+   * PK/indexes/TTL/blind-index. A diagnostic hint, not a command to act;
+   * ADD/DROP and manual migration stay explicit.
    */
   likelyRenames: LikelyRename[];
   primaryKeyMatches: boolean;
   /**
-   * Ожидаемый PK из метаданных сущности — копия входа, нужна для
-   * диагностики перестановок порядка (#89).
+   * Expected PK from the entity metadata — a copy of the input, needed to
+   * diagnose order permutations (#89).
    */
   expectedPrimaryKey: string[];
-  /** Фактический PK из DescribeTable (для диагностики порядка, #89). */
+  /** Actual PK from DescribeTable (for order diagnostics, #89). */
   actualPrimaryKey: string[];
-  /** Ожидаемые PK-колонки, которых нет в PK БД (#89). */
+  /** Expected PK columns that are absent from the DB PK (#89). */
   missingPrimaryKeyColumns: string[];
-  /** PK-колонки БД, не объявленные как PK в сущности (#89). */
+  /** DB PK columns not declared as PK in the entity (#89). */
   extraPrimaryKeyColumns: string[];
   /**
-   * Чистая перестановка: наборы PK-колонок совпадают, но порядок
-   * различается (#89). В YDB порядок колонок PK определяет
-   * партиционирование и сортировку диапазонов, поэтому [tenant, id] и
-   * [id, tenant] — принципиально разные таблицы.
+   * Pure permutation: the PK column sets match, but the order differs (#89).
+   * In YDB the PK column order defines partitioning and range sorting, so
+   * [tenant, id] and [id, tenant] are fundamentally different tables.
    */
   primaryKeyOrderMismatch: boolean;
-  /** Индексы, которые есть в метаданных, но нет в БД. */
+  /** Indexes present in metadata but absent in the DB. */
   missingIndexes: ExpectedIndex[];
-  /** Индексы, которые есть в БД, но нет в метаданных. */
+  /** Indexes present in the DB but absent in metadata. */
   extraIndexes: Array<{ name: string; columns: string[]; unique: boolean }>;
-  /** Индексы с несовпадающим флагом unique. */
+  /** Indexes with a mismatching unique flag. */
   uniqueMismatches: { name: string; expected: boolean; actual: boolean }[];
-  /** Индексы с тем же именем, но другим списком/порядком колонок. */
+  /** Indexes with the same name but a different column list/order. */
   indexColumnsMismatches: {
     name: string;
     expected: string[];
     actual: string[];
   }[];
-  /** TTL объявлен сущностью, но в БД не задан. */
+  /** TTL declared by the entity but not set in the DB. */
   missingTtl: { expected: YdbTtlMetadata }[];
-  /** TTL задан и в БД, и в метаданных, но колонка/unit/интервал различаются. */
+  /** TTL set both in the DB and metadata, but column/unit/interval differ. */
   ttlMismatches: { expected: YdbTtlMetadata; actual: YdbTableTtl }[];
-  /** В БД задан TTL, которого нет в метаданных (не сбрасывается автоматически). */
+  /** A TTL set in the DB but absent from metadata (not reset automatically). */
   extraTtl: { actual: YdbTableTtl }[];
 }
 
-/** Проблема схемы, найденная при verify. */
+/** A schema problem found during verify. */
 export interface YdbSchemaIssue {
   tableName: string;
   kind:
@@ -175,7 +175,7 @@ export interface YdbSchemaIssue {
   message: string;
 }
 
-/** YdbPrimitive → PrimitiveTypeId (для сравнения с DescribeTable). */
+/** YdbPrimitive → PrimitiveTypeId (for comparison with DescribeTable). */
 const PRIMITIVE_TO_TYPE_ID: Record<YdbPrimitive, Type_PrimitiveTypeId> = {
   Uuid: Type_PrimitiveTypeId.UUID,
   Utf8: Type_PrimitiveTypeId.UTF8,
@@ -197,10 +197,11 @@ const TYPE_ID_TO_PRIMITIVE = new Map<Type_PrimitiveTypeId, YdbPrimitive>(
 );
 
 /**
- * Числовые типы TTL-колонок: YDB допускает TTL по Uint32/Uint64/DyNumber
- * с unit, но эти типы не входят в YdbPrimitive (маппинг значений запросов
- * их не поддерживает). Здесь они нужны только для схемного сравнения,
- * чтобы sync/verify не считали такую колонку расхождением типов (#88).
+ * Numeric TTL column types: YDB allows TTL on Uint32/Uint64/DyNumber
+ * with a unit, but these types are not part of YdbPrimitive (the query
+ * value mapping does not support them). Here they are needed only for
+ * schema comparison so that sync/verify does not treat such a column as
+ * a type mismatch (#88).
  */
 const TTL_NUMERIC_TYPE_IDS: Record<string, Type_PrimitiveTypeId> = {
   Uint32: Type_PrimitiveTypeId.UINT32,
@@ -215,14 +216,14 @@ for (const [name, typeId] of Object.entries(TTL_NUMERIC_TYPE_IDS)) {
 }
 
 /**
- * Текст issues, однозначно говорящий, что путь/таблица не существует (#91).
- * Только такой SCHEME_ERROR трактуется как «таблицы нет»; остальные
- * (права доступа, битый путь и т.п.) пробрасываются наружу. Реальные
- * сообщения YDB: «path '/db/tbl' does not exist», «Path ... not found».
+ * Issue text unambiguously stating that the path/table does not exist (#91).
+ * Only such a SCHEME_ERROR is treated as "no table"; others (access
+ * permissions, broken path, etc.) are propagated. Real YDB messages:
+ * "path '/db/tbl' does not exist", "Path ... not found".
  */
 const NOT_FOUND_ISSUE_RE = /does not exist|not found/i;
 
-/** Enum Unit из TtlSettings → YdbTtlUnit (см. @YdbTtl). */
+/** TtlSettings Unit enum → YdbTtlUnit (see @YdbTtl). */
 const TTL_UNIT_BY_PROTO: Record<
   ValueSinceUnixEpochModeSettings_Unit,
   YdbTtlUnit | undefined
@@ -235,16 +236,16 @@ const TTL_UNIT_BY_PROTO: Record<
 };
 
 /**
- * Строит ожидаемую схему таблицы по метаданным сущности:
- * колонки + synthetic {field}_bi колонки blind index.
- * Требует явно объявленного первичного ключа через @YdbPrimaryColumn.
+ * Builds the expected table schema from the entity metadata:
+ * columns plus synthetic {field}_bi blind-index columns.
+ * Requires an explicitly declared primary key via @YdbPrimaryColumn.
  *
- * Бросает ошибку (fail-fast, по той же политике, что и для PK) при
- * невалидных метаданных TTL: неизвестная колонка, несовместимый тип
- * (YDB допускает Date/Datetime/Timestamp либо Uint32/Uint64/DyNumber
- * с unit), unit у даты или его отсутствие у числа. Так schema sync,
- * миграции и CLI не сгенерируют заведомо невалидный DDL; при инициализации
- * модуля те же проблемы раньше собирает validateEntityMetadata.
+ * Throws (fail-fast, same policy as for the PK) on invalid TTL metadata:
+ * unknown column, incompatible type (YDB allows Date/Datetime/Timestamp
+ * or Uint32/Uint64/DyNumber with a unit), unit on a date, or its absence
+ * on a number. This way schema sync, migrations and the CLI never generate
+ * invalid DDL; at module init the same problems are collected earlier by
+ * validateEntityMetadata.
  */
 export function buildExpectedTableSchema(
   meta: YdbEntityMetadata,
@@ -305,14 +306,14 @@ export function buildExpectedTableSchema(
 }
 
 /**
- * Ожидаемая схема join-таблицы many-to-many.
+ * Expected schema of a many-to-many join table.
  *
- * Имена и типы колонок берутся ровно из того определения, которое построил
- * resolveRelationJoinTableDefinition (#90/#87): типы выводятся из
- * фактических PK-метаданных обеих сущностей, а невыводимый тип — ошибка
- * конфигурации в самом резолве. Отдельного пути вывода типов здесь нет:
- * сгенерированная схема по построению совпадает с тем, что читает
- * relations-код (см. ResolvedJoinTable в entity-relations.ts).
+ * Column names and types are taken exactly from the definition built by
+ * resolveRelationJoinTableDefinition (#90/#87): types are derived from the
+ * actual PK metadata of both entities, and an underivable type is a
+ * configuration error in the resolver itself. There is no separate type
+ * inference path here: the generated schema by construction matches what
+ * the relations code reads (see ResolvedJoinTable in entity-relations.ts).
  */
 export function buildExpectedJoinTableSchema(
   joinTable: ManyToManyJoinTable,
@@ -329,16 +330,18 @@ export function buildExpectedJoinTableSchema(
 }
 
 /**
- * Собирает ожидаемые схемы всех таблиц сущностей и их many-to-many join-таблиц.
+ * Collects expected schemas of all entity tables and their many-to-many
+ * join tables.
  *
- * Гарантия «одна таблица — одна ожидаемая схема» (#92):
- *  - повтор класса в списке дедуплицируется;
- *  - класс без собственного @YdbEntity пропускается (не сущность — см.
- *    getYdbEntityMetadata), поэтому подкласс не порождает вторую схему
- *    для таблицы родителя;
- *  - две разные сущности с одним tableName — ошибка: иначе sync патчил бы
- *    одну таблицу двумя разными схемами, а verify выдавал противоречивые
- *    issues. Коллизия обнаруживается здесь — до любого обращения к БД.
+ * The "one table — one expected schema" guarantee (#92):
+ *  - a class repeated in the list is deduplicated;
+ *  - a class without its own @YdbEntity is skipped (not an entity — see
+ *    getYdbEntityMetadata), so a subclass does not produce a second schema
+ *    for the parent's table;
+ *  - two different entities with the same tableName is an error: otherwise
+ *    sync would patch one table with two different schemas and verify would
+ *    emit contradictory issues. The collision is detected here — before any
+ *    DB access.
  */
 export function buildExpectedSchemas(
   entities: (new (...args: any[]) => any)[],
@@ -376,15 +379,15 @@ export function buildExpectedSchemas(
 }
 
 /**
- * Генерирует TTL-секцию WITH (...) для CREATE TABLE.
- * По синтаксису YQL TTL задаётся только в WITH, а не внутри тела таблицы:
+ * Generates the WITH (...) TTL clause for CREATE TABLE.
+ * In YQL syntax the TTL is specified only in WITH, not inside the table body:
  *   WITH (TTL = Interval("PT2H") ON `col` [AS SECONDS])
  */
 export function generateTtlWithClause(ttl: YdbTtlMetadata): string {
   return `WITH (\n  ${ttlExpression(ttl)}\n)`;
 }
 
-/** Генерирует DDL создания таблицы. */
+/** Generates the CREATE TABLE DDL. */
 export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   const columnDefs = Object.entries(expected.columns).map(
     ([name, type]) => `${quoteIdentifier(name)} ${type}`,
@@ -405,7 +408,7 @@ export function generateCreateTableYql(expected: ExpectedTableSchema): string {
   return yql;
 }
 
-/** Генерирует DDL добавления недостающих колонок (один ALTER на таблицу). */
+/** Generates DDL to add missing columns (one ALTER per table). */
 export function generateAddColumnsYql(
   tableName: string,
   columns: [string, YdbPrimitive][],
@@ -416,7 +419,7 @@ export function generateAddColumnsYql(
   return `ALTER TABLE ${quoteIdentifier(tableName)} ${clauses.join(', ')}`;
 }
 
-/** Генерирует DDL добавления индекса через ALTER TABLE. */
+/** Generates DDL to add an index via ALTER TABLE. */
 export function generateAddIndexYql(
   tableName: string,
   index: ExpectedIndex,
@@ -429,7 +432,7 @@ export function generateAddIndexYql(
   );
 }
 
-/** Генерирует DDL удаления индекса через ALTER TABLE. */
+/** Generates DDL to drop an index via ALTER TABLE. */
 export function generateDropIndexYql(
   tableName: string,
   indexName: string,
@@ -441,8 +444,8 @@ export function generateDropIndexYql(
 }
 
 /**
- * Генерирует DDL установки/замены TTL через ALTER TABLE.
- * Выражение TTL совпадает с WITH-секцией CREATE TABLE (#81):
+ * Generates DDL to set/replace TTL via ALTER TABLE.
+ * The TTL expression matches the WITH clause of CREATE TABLE (#81):
  *   ALTER TABLE `t` SET (TTL = Interval("PT2H") ON `col` [AS SECONDS])
  */
 export function generateSetTtlYql(
@@ -452,24 +455,24 @@ export function generateSetTtlYql(
   return `ALTER TABLE ${quoteIdentifier(tableName)} SET (${ttlExpression(ttl)})`;
 }
 
-/** Генерирует DDL сброса TTL: ALTER TABLE `t` RESET (TTL). */
+/** Generates DDL to reset TTL: ALTER TABLE `t` RESET (TTL). */
 export function generateResetTtlYql(tableName: string): string {
   return `ALTER TABLE ${quoteIdentifier(tableName)} RESET (TTL)`;
 }
 
-/** TTL-выражение `TTL = Interval(...) ON col [AS unit]`, общее для CREATE/ALTER. */
+/** The `TTL = Interval(...) ON col [AS unit]` expression, shared by CREATE/ALTER. */
 function ttlExpression(ttl: YdbTtlMetadata): string {
   const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
   return `TTL = Interval("${ttl.interval}") ON ${quoteIdentifier(ttl.column)}${unitPart}`;
 }
 
-/** Человекочитаемое представление ожидаемого TTL (для issues/warnings). */
+/** Human-readable representation of the expected TTL (for issues/warnings). */
 function formatTtlMeta(ttl: YdbTtlMetadata): string {
   const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
   return `${ttl.interval} on column "${ttl.column}"${unitPart}`;
 }
 
-/** Человекочитаемое представление фактического TTL из БД. */
+/** Human-readable representation of the actual TTL from the DB. */
 function formatTableTtl(ttl: YdbTableTtl): string {
   const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
   return (
@@ -479,14 +482,14 @@ function formatTableTtl(ttl: YdbTableTtl): string {
 }
 
 /**
- * Сравнивает ожидаемый TTL с фактическим из DescribeTable:
- * колонка, unit и интервал. Интервал сравнивается семантически в целых
- * микросекундах (внутренней точности YDB Interval): "PT1H" и "PT60M"
- * равны, "PT0.5S" — это ровно 500000µs, без потерь на float.
- * Интервалы, непредставимые в YDB Interval точно, — календарные части
- * и дробь точнее микросекунд — считаются расхождением, чтобы миграция
- * или синхронизация выставили значение из метаданных вместо ложного
- * «совпадения» после усечения.
+ * Compares the expected TTL with the actual one from DescribeTable:
+ * column, unit and interval. The interval is compared semantically in whole
+ * microseconds (YDB Interval's internal precision): "PT1H" and "PT60M"
+ * are equal, "PT0.5S" is exactly 500000µs, without float loss.
+ * Intervals that cannot be represented exactly in a YDB Interval — calendar
+ * parts and fractions finer than microseconds — count as a mismatch so that
+ * migration or sync sets the value from metadata instead of a false "match"
+ * after truncation.
  */
 function ttlSettingsMatch(
   expected: YdbTtlMetadata,
@@ -502,23 +505,24 @@ function ttlSettingsMatch(
 }
 
 /**
- * Детекция вероятного переименования колонки (#23).
+ * Detects a likely column rename (#23).
  *
- * Консервативная эвристика на структурных признаках схемы, без сравнения
- * похожести имён. Подсказка выдаётся, только когда выполнено ВСЁ:
- *  - в БД ровно одна лишняя колонка (`from`) и в сущности ровно одна новая
- *    (`to`) — однозначное соответствие без кандидатов на выбор;
- *  - примитивный тип `to` совпадает с фактическим типом `from` в БД
- *    (колонки неявно неподдерживаемых типов #91 сразу отсекаются);
- *  - ни `from`, ни `to` не участвуют в PK;
- *  - ни `from`, ни `to` не упоминаются в колонках индексов (фактических
- *    и ожидаемых) — иначе это изменение индекса, а не переименование;
- *  - ни `from`, ни `to` не являются TTL-колонкой (фактической или ожидаемой);
- *  - расхождение не затрагивает blind index: обе колонки не synthetic `_bi`
- *    (BLIND_INDEX_SUFFIX) и у каждой нет `_bi`-парта в своей схеме.
+ * A conservative heuristic based on structural schema signals, without
+ * comparing name similarity. A hint is emitted only when ALL conditions hold:
+ *  - the DB has exactly one extra column (`from`) and the entity exactly one
+ *    new one (`to`) — an unambiguous match with no candidates to choose from;
+ *  - the primitive type of `to` equals the actual type of `from` in the DB
+ *    (implicitly unsupported type columns, #91, are filtered immediately);
+ *  - neither `from` nor `to` participates in the PK;
+ *  - neither `from` nor `to` appears in index columns (actual and expected) —
+ *    otherwise it is an index change, not a rename;
+ *  - neither `from` nor `to` is a TTL column (actual or expected);
+ *  - the mismatch does not involve a blind index: both columns are not
+ *    synthetic `_bi` (BLIND_INDEX_SUFFIX) and each has no `_bi` partner in
+ *    its own schema.
  *
- * При любом несоответствии возвращается пустой список — остаются прежние
- * ADD/DROP и предупреждения о ручной миграции.
+ * Any mismatch returns an empty list — the regular ADD/DROP and manual
+ * migration warnings remain.
  */
 function detectLikelyRenames(
   expected: ExpectedTableSchema,
@@ -531,7 +535,7 @@ function detectLikelyRenames(
   const from = extraColumns[0];
   const [to, toType] = missingColumns[0];
 
-  // Совпадение типа: необходимое условие «это та же колонка».
+  // Type match: the necessary condition for "it is the same column".
   const actualTypeId = existing.columns.get(from);
   if (
     actualTypeId === undefined ||
@@ -540,13 +544,13 @@ function detectLikelyRenames(
     return [];
   }
 
-  // PK: переименование ключевой колонки в YDB невозможно — только ручная миграция.
+  // PK: renaming a key column in YDB is impossible — manual migration only.
   if (existing.primaryKey.includes(from) || expected.primaryKey.includes(to)) {
     return [];
   }
 
-  // Индексы: расхождение индексов вокруг пары — это изменение индекса,
-  // а не простое переименование.
+  // Indexes: an index mismatch around the pair is an index change,
+  // not a plain rename.
   const referencedByIndex = (columnsList: string[][], name: string) =>
     columnsList.some((cols) => cols.includes(name));
   if (
@@ -562,11 +566,11 @@ function detectLikelyRenames(
     return [];
   }
 
-  // TTL: перенос TTL-колонки — изменение настроек TTL, не простое переименование.
+  // TTL: moving a TTL column is a TTL settings change, not a plain rename.
   if (existing.ttl?.column === from || expected.ttl?.column === to) return [];
 
-  // Blind index/шифрование: synthetic-колонка либо появление/исчезновение
-  // `_bi`-парта — изменение метаданных шифрования.
+  // Blind index/encryption: a synthetic column or the appearance/disappearance
+  // of its `_bi` partner means an encryption metadata change.
   if (from.endsWith(BLIND_INDEX_SUFFIX) || to.endsWith(BLIND_INDEX_SUFFIX)) {
     return [];
   }
@@ -581,8 +585,8 @@ function detectLikelyRenames(
 }
 
 /**
- * Чистая проверка: сравнивает ожидаемую схему с описанием таблицы из БД.
- * Не ходит в сеть и ничего не меняет.
+ * Pure check: compares the expected schema with the DB table description.
+ * Makes no network calls and changes nothing.
  */
 export function checkTableSchema(
   expected: ExpectedTableSchema,
@@ -593,9 +597,9 @@ export function checkTableSchema(
   const unsupportedColumns = existing.unsupportedColumns;
 
   for (const [name, type] of Object.entries(expected.columns)) {
-    // Не-примитивный тип в БД (#91): по typeId сравнивать нельзя —
-    // сообщаем расхождение с фактическим типом (decimal(22,9), list<...>),
-    // а не с бессмысленным typeId=0.
+    // Non-primitive type in the DB (#91): typeId comparison is impossible —
+    // report the mismatch with the actual type (decimal(22,9), list<...>)
+    // instead of a meaningless typeId=0.
     const actualUnsupported = unsupportedColumns?.get(name);
     if (actualUnsupported !== undefined) {
       typeMismatches.push({
@@ -610,8 +614,8 @@ export function checkTableSchema(
       missingColumns.push([name, type]);
       continue;
     }
-    // Числовые TTL-типы (Uint32/Uint64/DyNumber) не входят в YdbPrimitive,
-    // но валидны для схемного сравнения — см. TTL_NUMERIC_TYPE_IDS.
+    // Numeric TTL types (Uint32/Uint64/DyNumber) are not part of YdbPrimitive
+    // but are valid for schema comparison — see TTL_NUMERIC_TYPE_IDS.
     const expectedTypeId =
       PRIMITIVE_TO_TYPE_ID[type] ?? TTL_NUMERIC_TYPE_IDS[type];
     if (actualTypeId !== expectedTypeId) {
@@ -625,17 +629,17 @@ export function checkTableSchema(
   }
 
   const expectedColumns = new Set(Object.keys(expected.columns));
-  // Колонка БД живёт либо в columns, либо в unsupportedColumns — но
-  // описания могут прийти и из внешнего кода, поэтому дедуплицируем.
+  // A DB column lives either in columns or in unsupportedColumns — but
+  // descriptions may come from external code, so we deduplicate.
   const extraColumns = [
     ...existing.columns.keys(),
     ...(unsupportedColumns?.keys() ?? []),
   ].filter((name) => !expectedColumns.has(name));
   const uniqueExtraColumns = [...new Set(extraColumns)];
 
-  // Порядок колонок PK значим (#89): в YDB он определяет партиционирование
-  // и сортировку диапазонов, поэтому [tenant, id] и [id, tenant] — разные
-  // таблицы. Сравниваем поэлементно и никогда — как множество.
+  // PK column order matters (#89): in YDB it defines partitioning and range
+  // sorting, so [tenant, id] and [id, tenant] are different tables.
+  // Compare element-wise, never as a set.
   const primaryKeyMatches =
     expected.primaryKey.length === existing.primaryKey.length &&
     expected.primaryKey.every((pk, i) => existing.primaryKey[i] === pk);
@@ -645,8 +649,8 @@ export function checkTableSchema(
   const extraPrimaryKeyColumns = existing.primaryKey.filter(
     (pk) => !expected.primaryKey.includes(pk),
   );
-  // Чистая перестановка: наборы равны, порядок различается. Если есть
-  // отсутствующие или лишние PK-колонки, случай уже покрыт их списками.
+  // Pure permutation: the sets are equal, the order differs. If there are
+  // missing or extra PK columns, that case is already covered by their lists.
   const primaryKeyOrderMismatch =
     !primaryKeyMatches &&
     missingPrimaryKeyColumns.length === 0 &&
@@ -682,9 +686,9 @@ export function checkTableSchema(
         actual: existingIdx.unique,
       });
     }
-    // Колонки сравниваются с учётом порядка: в YDB порядок колонок
-    // индекса значим (префиксный поиск), а поменять его нельзя —
-    // только пересоздать индекс.
+    // Columns are compared in order: in YDB the index column order is
+    // significant (prefix search) and cannot be changed — only the index
+    // can be recreated.
     if (
       existingIdx.columns.length !== idx.columns.length ||
       existingIdx.columns.some((col, i) => col !== idx.columns[i])
@@ -697,8 +701,8 @@ export function checkTableSchema(
     }
   }
 
-  // TTL (#88): отсутствующий, изменённый и лишний — в БД TTL либо задан
-  // согласно @YdbTtl, либо его нет вовсе.
+  // TTL (#88): missing, changed and extra — a DB TTL either matches @YdbTtl
+  // or is not present at all.
   const missingTtl: SchemaCheckResult['missingTtl'] = [];
   const ttlMismatches: SchemaCheckResult['ttlMismatches'] = [];
   const extraTtl: SchemaCheckResult['extraTtl'] = [];
@@ -743,10 +747,10 @@ export function checkTableSchema(
 }
 
 /**
- * Человекочитаемое описание расхождения первичного ключа (#89):
- * различает чистую перестановку PK-колонок (порядок значим в YDB) и
- * отсутствующие/лишние PK-колонки. Используется в issues verify/diffSchemas
- * и в предупреждениях плана миграций.
+ * Human-readable description of a primary key mismatch (#89):
+ * distinguishes a pure PK column permutation (order matters in YDB) from
+ * missing/extra PK columns. Used in verify/diffSchemas issues and in
+ * migration plan warnings.
  */
 export function describePrimaryKeyMismatch(check: SchemaCheckResult): string {
   if (check.primaryKeyOrderMismatch) {
@@ -769,8 +773,8 @@ export function describePrimaryKeyMismatch(check: SchemaCheckResult): string {
 }
 
 /**
- * Превращает результат проверки таблицы в плоский список issues.
- * Используется и `YdbSchemaSyncer.verify`, и CLI (красивый diff).
+ * Turns a table check result into a flat list of issues.
+ * Used by both `YdbSchemaSyncer.verify` and the CLI (pretty diff).
  */
 export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
   const issues: YdbSchemaIssue[] = [];
@@ -805,9 +809,9 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
       message: `Table "${check.tableName}" has extra column "${column}"`,
     });
   }
-  // #23: подсказка о вероятном переименовании — информационная, схему
-  // самой по себе не исправляет (колонка по-прежнему отсутствует в БД),
-  // поэтому расхождение остаётся и в verify, и в diffSchemas.
+  // #23: the likely-rename hint is informational — it does not fix the
+  // schema by itself (the column is still missing in the DB), so the
+  // mismatch remains in both verify and diffSchemas.
   for (const rename of check.likelyRenames) {
     issues.push({
       tableName: check.tableName,
@@ -881,9 +885,9 @@ export function checkToIssues(check: SchemaCheckResult): YdbSchemaIssue[] {
 }
 
 /**
- * Чистый diff ожидаемых схем против текущего состояния БД
- * (null — таблицы нет). Не ходит в сеть. Используется CLI для
- * человекочитаемого вывода расхождений.
+ * Pure diff of the expected schemas against the current DB state
+ * (null — table does not exist). Makes no network calls. Used by the CLI
+ * for human-readable mismatch output.
  */
 export function diffSchemas(
   expected: ExpectedTableSchema[],
@@ -907,9 +911,9 @@ export function diffSchemas(
 }
 
 /**
- * Синхронизатор схемы БД: создаёт недостающие таблицы и колонки
- * по метаданным сущностей. Изменение типа колонки и первичного ключа
- * в YDB невозможно — такие расхождения приводят к ошибке.
+ * DB schema synchronizer: creates missing tables and columns from the
+ * entity metadata. Changing a column type or primary key is impossible in
+ * YDB — such mismatches result in an error.
  */
 export class YdbSchemaSyncer {
   private readonly logger = new YdbDevLogger(YdbSchemaSyncer.name);
@@ -920,8 +924,8 @@ export class YdbSchemaSyncer {
   ) {}
 
   /**
-   * Проверяет схему БД против метаданных сущностей, ничего не меняя.
-   * Возвращает список найденных расхождений.
+   * Checks the DB schema against the entity metadata without changing anything.
+   * Returns the list of mismatches found.
    */
   async verify(
     entities: (new (...args: any[]) => any)[],
@@ -946,16 +950,16 @@ export class YdbSchemaSyncer {
   }
 
   /**
-   * Подстраивает БД под схему сущностей:
-   *  - нет таблицы — CREATE TABLE;
-   *  - нет колонок — ALTER TABLE ADD COLUMN;
-   *  - нет индексов — ALTER TABLE ADD INDEX;
-   *  - нет TTL или TTL отличается от метаданных — ALTER TABLE SET (TTL = ...)
-   *    (SET перезаписывает существующие настройки);
-   *  - лишние колонки/индексы/TTL — только предупреждение в лог
-   *    (не удаляем данные и настройки);
-   *  - расхождение типа/PK/колонок индекса — ошибка (в YDB не меняется,
-   *    нужна миграция).
+   * Aligns the DB with the entity schema:
+   *  - no table — CREATE TABLE;
+   *  - missing columns — ALTER TABLE ADD COLUMN;
+   *  - missing indexes — ALTER TABLE ADD INDEX;
+   *  - no TTL or TTL differing from metadata — ALTER TABLE SET (TTL = ...)
+   *    (SET overwrites existing settings);
+   *  - extra columns/indexes/TTL — only a warning to the log
+   *    (we do not delete data or settings);
+   *  - type/PK/index-column mismatch — error (immutable in YDB,
+   *    a migration is required).
    */
   async sync(entities: (new (...args: any[]) => any)[]): Promise<void> {
     for (const expected of buildExpectedSchemas(entities)) {
@@ -1012,8 +1016,8 @@ export class YdbSchemaSyncer {
         );
       }
 
-      // #23: переименование никогда не применяется автоматически — sync
-      // по-прежнему добавляет новую колонку, старую не трогает.
+      // #23: a rename is never applied automatically — sync still adds the
+      // new column and leaves the old one untouched.
       for (const rename of check.likelyRenames) {
         this.logger.warn(
           `Table "${expected.tableName}" column "${rename.from}" may have been ` +
@@ -1056,9 +1060,9 @@ export class YdbSchemaSyncer {
         );
       }
 
-      // TTL: отсутствующий ставим, изменённый заменяем — SET (TTL = ...)
-      // перезаписывает существующие настройки. Лишний TTL не сбрасываем
-      // автоматически: та же политика, что и в planMigration (#88).
+      // TTL: missing is set, changed is replaced — SET (TTL = ...)
+      // overwrites existing settings. An extra TTL is not reset
+      // automatically: same policy as in planMigration (#88).
       if (check.missingTtl.length && check.missingTtl[0].expected) {
         this.logger.log(
           `Setting TTL on "${expected.tableName}" ` +
@@ -1097,16 +1101,16 @@ export class YdbSchemaSyncer {
   }
 
   /**
-   * DescribeTable через Table service (query service не отдаёт метаданные
-   * колонок). Сессия создаётся на один вызов и сразу закрывается.
+   * DescribeTable via the Table service (the query service does not return
+   * column metadata). A session is created per call and closed immediately.
    *
-   * Возвращает null только если таблицы действительно нет (#91): отдельный
-   * статус NOT_FOUND либо SCHEME_ERROR, в issues которого явно сказано, что
-   * путь/таблица не существует. Любой другой SCHEME_ERROR (нет прав,
-   * битый путь и т.п.) пробрасывается наружу с контекстом — раньше он
-   * тоже превращался в null, из-за чего sync делал CREATE TABLE уже
-   * существующей таблицы, а verify докладывал ложный missing-table.
-   * Публичный: используется также генератором миграций (migration:generate).
+   * Returns null only when the table genuinely does not exist (#91): a
+   * distinct NOT_FOUND status or a SCHEME_ERROR whose issues explicitly state
+   * that the path/table does not exist. Any other SCHEME_ERROR (no
+   * permissions, broken path, etc.) is propagated with context — previously
+   * it also became null, causing sync to CREATE TABLE an existing table and
+   * verify to report a false missing-table.
+   * Public: also used by the migration generator (migration:generate).
    */
   async describeTable(tableName: string): Promise<YdbTableDescription | null> {
     const client = this.driver.createClient(TableServiceDefinition);
@@ -1150,9 +1154,9 @@ export class YdbSchemaSyncer {
         throw new Error(`DescribeTable returned no result for "${path}"`);
       }
 
-      // Колонки с не-примитивными типами (Decimal/List/Pg и т.п.) нельзя
-      // выразить typeId — они уходят в unsupportedColumns с честным
-      // описанием типа, а не с бессмысленным typeId=0 (#91).
+      // Columns with non-primitive types (Decimal/List/Pg, etc.) cannot be
+      // expressed as a typeId — they go into unsupportedColumns with an
+      // honest type description instead of a meaningless typeId=0 (#91).
       const columns = new Map<string, Type_PrimitiveTypeId>();
       const unsupportedColumns = new Map<string, string>();
       for (const column of result.columns) {
@@ -1187,10 +1191,10 @@ export class YdbSchemaSyncer {
   }
 
   /**
-   * Снимает Optional-обёртки и возвращает примитивный typeId.
-   * null — тип не-примитивный (Decimal/List/Pg/…): сравнивать его по typeId
-   * нельзя, фактическое описание кладётся в unsupportedColumns (#91),
-   * а не подставляется бессмысленный PRIMITIVE_TYPE_ID_UNSPECIFIED (=0).
+   * Strips Optional wrappers and returns the primitive typeId.
+   * null — the type is non-primitive (Decimal/List/Pg/...): it cannot be
+   * compared by typeId, the actual description goes to unsupportedColumns (#91)
+   * instead of a meaningless PRIMITIVE_TYPE_ID_UNSPECIFIED (=0).
    */
   private extractPrimitiveTypeId(type?: Type): Type_PrimitiveTypeId | null {
     let current = type;
@@ -1204,9 +1208,9 @@ export class YdbSchemaSyncer {
   }
 
   /**
-   * Компактное человекочитаемое описание типа из DescribeTable (#91):
-   * decimal(22,9), list<utf8>, pg<int4> и т.п. Используется в сообщениях
-   * о расхождении типов вместо бессмысленного «typeId=0».
+   * Compact human-readable type description from DescribeTable (#91):
+   * decimal(22,9), list<utf8>, pg<int4>, etc. Used in type mismatch
+   * messages instead of a meaningless "typeId=0".
    */
   private formatYdbType(type?: Type): string {
     let current = type;
@@ -1248,16 +1252,17 @@ export class YdbSchemaSyncer {
           ? `pg<${t.value.typeName}>`
           : `pg(oid=${t.value.oid})`;
       default:
-        // variantType/taggedType/voidType/… — имя proto-case уже содержит
-        // фактическую информацию о типе.
+        // variantType/taggedType/voidType/... — the proto-case name already
+        // carries the actual type information.
         return t?.case ?? 'unknown';
     }
   }
 
   /**
-   * Нормализует TtlSettings из DescribeTable в YdbTableTtl.
-   * Date-режим (dateTypeColumn) не имеет unit; числовой (valueSinceUnixEpoch)
-   * маппит enum Unit в YdbTtlUnit, UNSPECIFIED трактуется как отсутствие unit.
+   * Normalizes TtlSettings from DescribeTable into YdbTableTtl.
+   * The date mode (dateTypeColumn) has no unit; the numeric mode
+   * (valueSinceUnixEpoch) maps the Unit enum to YdbTtlUnit, and UNSPECIFIED
+   * is treated as no unit.
    */
   private extractTtl(settings?: TtlSettings): YdbTableTtl | undefined {
     const mode = settings?.mode;

@@ -61,7 +61,7 @@ describe('evaluateMigrationCheck (#152)', () => {
       status({ name: 'a', applied: true, interrupted: true }),
     ]);
 
-    // Прерванная миграция НЕ считается успешно применённой.
+    // An interrupted migration is NOT considered successfully applied.
     expect(verdict.pending).toEqual([]);
     expect(verdict.interrupted).toEqual(['a']);
     expect(verdict.appliedCount).toBe(0);
@@ -71,7 +71,7 @@ describe('evaluateMigrationCheck (#152)', () => {
   });
 
   it('modified after apply (#101) is its own state', () => {
-    // #212: producer даёт applied=false для изменённой миграции.
+    // #212: the producer gives applied=false for a changed migration.
     const verdict = evaluateMigrationCheck([
       status({ name: 'a', contentChanged: true }),
     ]);
@@ -86,8 +86,9 @@ describe('evaluateMigrationCheck (#152)', () => {
   });
 
   it('#212: a content-changed migration can never satisfy the healthy-applied condition', () => {
-    // Обе формы входа (новая from producer и legacy/ручная с applied=true)
-    // дают один вердикт: не готово, state=modified, appliedCount=0.
+    // Both input forms (new, from the producer, and legacy/manual with
+    // applied=true) yield the same verdict: not ready, state=modified,
+    // appliedCount=0.
     const inputs: YdbMigrationStatus[][] = [
       [status({ name: 'm', contentChanged: true })],
       [status({ name: 'm', applied: true, contentChanged: true })],

@@ -7,21 +7,21 @@ import {
 import type { YdbPrimitive } from '../core/types.js';
 
 /**
- * Метаданные join-таблицы many-to-many, ориентированные относительно
- * запрашиваемой сущности (owner).
+ * Many-to-many join-table metadata, oriented relative to the requesting
+ * entity (the owner).
  *
- * Вынесено из entity-relations в отдельный модуль (#17): related-фильтры
- * в entity-persistence используют тот же резолв, что и eager/lazy-загрузка,
- * а прямой импорт entity-relations из persistence породил бы цикл.
+ * Extracted from entity-relations into a separate module (#17): related filters
+ * in entity-persistence use the same resolution as eager/lazy loading, and a
+ * direct import of entity-relations from persistence would create a cycle.
  */
 export interface ResolvedJoinTable {
   tableName: string;
   ownerColumn: string;
   inverseColumn: string;
   /**
-   * YDB-тип owner-колонки join-таблицы (#90): тип PK owner-сущности.
-   * Схема join-таблицы (schema sync) выводит те же имена и типы, поэтому
-   * чтение всегда совместимо со сгенерированной таблицей.
+   * YDB type of the join table's owner column (#90): the owner entity's PK type.
+   * The join-table schema (schema sync) derives the same names and types, so
+   * reads are always compatible with the generated table.
    */
   ownerColumnType: YdbPrimitive;
   ownerEntity: typeof YdbBaseEntity;
@@ -29,12 +29,12 @@ export interface ResolvedJoinTable {
 }
 
 /**
- * Находит метаданные join-таблицы для many-to-many.
+ * Resolves the join-table metadata for a many-to-many relation.
  *
- * Валидация и разрешение конфликтов выполняются тем же кодом, что и при
- * генерации схемы: getManyToManyJoinTables для пары сущностей. Поэтому
- * рантайм не может молча выбрать одно из расходящихся объявлений таблицы —
- * он упадёт с той же ошибкой конфликта, что и schema sync/migrations (#139).
+ * Validation and conflict resolution run through the same code used for schema
+ * generation: getManyToManyJoinTables for the entity pair. The runtime
+ * therefore cannot silently pick one of diverging table declarations — it
+ * throws the same conflict error as schema sync/migrations (#139).
  */
 export function resolveManyToManyJoinTable(
   owner: typeof YdbBaseEntity,
@@ -45,11 +45,11 @@ export function resolveManyToManyJoinTable(
   const inverseMeta = getYdbEntityMetadata(inverseEntity);
   if (!ownerMeta || !inverseMeta) return undefined;
 
-  // Все объявления join-таблиц, видимые для пары (владелец, inverse):
-  // здесь же проверяются PK и конфликты объявлений одного имени (#90/#139).
+  // All join-table declarations visible for the (owner, inverse) pair: PKs and
+  // conflicts of same-name declarations are checked here as well (#90/#139).
   const definitions = getManyToManyJoinTables([owner, inverseEntity]);
 
-  // Декларация на самом владельце для этой связи.
+  // A declaration on the owner itself for this relation.
   const own = definitions.find(
     (d) => d.ownerEntity === owner && d.ownerProperty === relation.propertyKey,
   );
@@ -59,17 +59,18 @@ export function resolveManyToManyJoinTable(
       tableName: own.tableName,
       ownerColumn: own.joinColumn,
       inverseColumn: own.inverseJoinColumn,
-      // Имя, тип и сущности берутся из того же определения, по которому
-      // строится схема join-таблицы (#87): расхождений между рантаймом
-      // и schema sync быть не может.
+      // The name, type and entities come from the same definition used to
+      // build the join-table schema (#87): no divergence between the runtime
+      // and schema sync is possible.
       ownerColumnType: own.joinColumnType,
       ownerEntity: owner,
       inverseEntity,
     };
   }
 
-  // Зеркальная декларация на обратной стороне: колонки разворачиваются —
-  // joinColumn объявления принадлежит inverse-сущности, inverseJoinColumn — владельцу.
+  // A mirrored declaration on the inverse side: the columns are flipped — the
+  // declaration's joinColumn belongs to the inverse entity, and its
+  // inverseJoinColumn to the owner.
   const inverseOwned = definitions.find(
     (d) => d.ownerEntity === inverseEntity && d.inverseEntity === owner,
   );
@@ -79,7 +80,7 @@ export function resolveManyToManyJoinTable(
       tableName: inverseOwned.tableName,
       ownerColumn: inverseOwned.inverseJoinColumn,
       inverseColumn: inverseOwned.joinColumn,
-      // Тип owner-колонки = тип PK владельца = тип её колонки в объявлении.
+      // Owner-column type = owner PK type = its column type in the declaration.
       ownerColumnType: inverseOwned.inverseJoinColumnType,
       ownerEntity: owner,
       inverseEntity,

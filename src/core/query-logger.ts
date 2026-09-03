@@ -5,29 +5,29 @@ import {
 } from '../transaction/transaction-context.js';
 
 /**
- * Информация о запросе для логирования.
+ * Query information for logging.
  */
 export interface QueryLogEntry {
-  /** SQL-запрос (шаблонная строка). */
+  /** SQL query (template string). */
   sql: string;
-  /** Имена параметров (без значений). */
+  /** Parameter names (without values). */
   paramNames: string[];
-  /** Замаскированные значения параметров: raw скрыт, только тип+класс размера. */
+  /** Masked parameter values: raw is hidden, only type + size class. */
   maskedParams: Record<string, unknown>;
-  /** Длительность выполнения в миллисекундах. */
+  /** Execution duration in milliseconds. */
   durationMs: number;
-  /** Ошибка (если запрос упал). */
+  /** Error (if the query failed). */
   error?: Error;
 }
 
 /**
- * Интерфейс логгера запросов.
- * Пользователь может передать свой логгер (e.g. pino, winston, OpenTelemetry span).
+ * Query logger interface.
+ * The user may supply their own logger (e.g. pino, winston, OpenTelemetry span).
  *
- * `warn` — опциональный хук для предупреждений ORM (#206): маршрутизируются
- * через логгер, сконфигурированный через `logQueries`, например предупреждение
- * `warnOutsideTransaction`. Метод опционален для обратной совместимости —
- * логгер, не реализующий `warn`, просто не получает предупреждения.
+ * `warn` — optional hook for ORM warnings (#206): routed through the logger
+ * configured via `logQueries`, e.g. the `warnOutsideTransaction` warning. The
+ * method is optional for backward compatibility — a logger without `warn`
+ * simply does not receive warnings.
  */
 export interface QueryLogger {
   log(entry: QueryLogEntry): void;
@@ -35,42 +35,43 @@ export interface QueryLogger {
 }
 
 /**
- * Опции обёртки логирования (#168): управление раскрытием raw-значений
- * параметров. По умолчанию значения не логируются вовсе.
+ * Logging wrapper options (#168): control disclosure of raw parameter values.
+ * By default values are not logged at all.
  */
 export interface YdbLoggingOptions {
+  /** Raw-value disclosure policy for parameter names. */
   values?: YdbLogParamValues;
 }
 
-/** Максимальная длина raw-значения параметра в логах (opt-in раскрытие). */
+/** Maximum length of a raw parameter value in logs (opt-in disclosure). */
 const MAX_PARAM_LENGTH = 64;
 
 /**
- * Разрешение на раскрытие raw-значений параметров в логах (#168).
+ * Raw parameter value disclosure permission for logs (#168).
  *
- * По умолчанию (undefined/false) логгер выводит для каждого параметра только
- * безопасную метаинформацию — тип и укрупнённый класс размера
- * (`<string:1-31>`, `<json:512-2047>`), никогда не раскрывая сами значения;
- * бинарные данные (в т.ч. ciphertext колонок) маскируются всегда. Точная
- * длина не раскрывается: exact-length канал позволил бы различать значения
- * по размеру (fingerprinting). Историческая денylist-маскировка по токенам
- * имени непокрыто утекала чувствительные значения с произвольными именами
- * (`salary`, `medical_record` и т.п.), поэтому убрана (#168).
+ * By default (undefined/false) the logger prints for each parameter only safe
+ * metadata — the type and a coarse size class (`<string:1-31>`,
+ * `<json:512-2047>`), never the values themselves; binary data (including
+ * column ciphertext) is always masked. Exact length is not disclosed: an
+ * exact-length channel would let values be distinguished by size
+ * (fingerprinting). The historical denylist masking by name tokens leaked
+ * sensitive values with arbitrary names (`salary`, `medical_record`, etc.),
+ * so it was removed (#168).
  *
- * Раскрытие raw-значений — явный opt-in приложения:
- * - `true` — раскрывать все значения (кроме бинарных; заведомо unsafe-логгер);
- * - `string[]` — раскрывать только перечисленные имена параметров;
- * - `RegExp` — раскрывать по маске имени параметра;
- * - `(name: string) => boolean` — произвольный предикат приложения.
+ * Raw value disclosure is an explicit application opt-in:
+ * - `true` — disclose all values (except binary; a knowingly unsafe logger);
+ * - `string[]` — disclose only the listed parameter names;
+ * - `RegExp` — disclose by parameter-name pattern;
+ * - `(name: string) => boolean` — arbitrary application predicate.
  *
- * Blind-index хеши (`{field}_bi`) — обычные строковые параметры: по умолчанию
- * маскируются, при явном opt-in раскрываются приложением осознанно (единский
- * hard-boundary — бинарные значения).
+ * Blind-index hashes (`{field}_bi`) are ordinary string parameters: masked by
+ * default, and on explicit opt-in disclosed by the application deliberately
+ * (the only hard boundary is binary values).
  */
 export type YdbLogParamValues =
   boolean | string[] | RegExp | ((name: string) => boolean);
 
-/** Допущенное приложением имя — выбор источника raw-значений (#168). */
+/** An application-approved name — the raw-value source selector (#168). */
 function allowRawValue(
   values: YdbLogParamValues | undefined,
   name: string,
@@ -84,12 +85,12 @@ function allowRawValue(
 }
 
 /**
- * Безопасная метаинформация о значении параметра (#168): raw не логируется,
- * только тип и укрупнённый класс размера. Точная длина значения НЕ
- * раскрывается — точные `<string:N>`/`<json:N>` позволяли бы различать
- * low-cardinality значения по длине (fingerprinting). Классы размера оставляют
- * диагностическую ценность («пустой?», «массивный BLOB?») без однозначного
- * канала различения значений.
+ * Safe metadata about a parameter value (#168): the raw value is not logged,
+ * only the type and a coarse size class. The exact value length is NOT
+ * disclosed — exact `<string:N>`/`<json:N>` would allow distinguishing
+ * low-cardinality values by length (fingerprinting). Size classes retain
+ * diagnostic value ("empty?", "huge BLOB?") without an unambiguous channel to
+ * distinguish values.
  */
 function safeMetaValue(value: unknown): unknown {
   if (value instanceof Uint8Array) {
@@ -111,8 +112,8 @@ function safeMetaValue(value: unknown): unknown {
       try {
         len = JSON.stringify(value).length;
       } catch {
-        // Циклическая/несериализуемая структура: маскируем без размера,
-        // логирование не должно падать и ронять запрос (см. #190).
+        // Cyclic/non-serializable structure: mask without size;
+        // logging must not crash and take the query down (see #190).
         return '<json>';
       }
       return `<json:${lengthBucket(len)}>`;
@@ -123,8 +124,8 @@ function safeMetaValue(value: unknown): unknown {
 }
 
 /**
- * Укрупнённый класс длины для метаинформации (#190): точная длина не
- * раскрывается, чтобы по журналам нельзя было различать значения.
+ * Coarse length class for metadata (#190): the exact length is not disclosed
+ * so values cannot be distinguished from logs.
  */
 function lengthBucket(length: number): string {
   const buckets = [
@@ -139,9 +140,9 @@ function lengthBucket(length: number): string {
 }
 
 /**
- * Маскирование скалярного значения. Байты никогда не раскрываются (только
- * класс размера). Raw-значение допустимо только для имён из явного allowlist'а
- * приложения (#168); длинные строки в таком случае обрезаются.
+ * Masking of a scalar value. Bytes are never disclosed (only the size class).
+ * Raw values are allowed only for names in the application's explicit
+ * allowlist (#168); long strings are then truncated.
  */
 function maskScalarValue(
   name: string,
@@ -149,8 +150,8 @@ function maskScalarValue(
   allowRaw: boolean,
 ): unknown {
   if (value instanceof Uint8Array) {
-    // Жёсткая граница: бинарные данные никогда не раскрываются, только
-    // класс размера (точная длина скрыта, #190).
+    // Hard boundary: binary data is never disclosed, only the size class
+    // (exact length is hidden, #190).
     return `<bytes:${lengthBucket(value.length)}>`;
   }
   if (allowRaw) {
@@ -162,7 +163,7 @@ function maskScalarValue(
   return safeMetaValue(value);
 }
 
-/** Маскирование значения параметра по имени параметра. */
+/** Masks a parameter value by parameter name. */
 function maskValue(
   name: string,
   value: unknown,
@@ -182,7 +183,7 @@ function maskValue(
   return maskScalarValue(name, value, allowRawValue(values, name));
 }
 
-/** Сериализация значения параметра для консольного вывода (#190). */
+/** Serializes a parameter value for console output (#190). */
 function formatParamValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (typeof value === 'bigint') return `${value}n`;
@@ -192,8 +193,8 @@ function formatParamValue(value: unknown): string {
       const json = JSON.stringify(value);
       if (json !== undefined) return json;
     } catch {
-      // Циклическая структура (raw opt-in раскрытие): плейсхолдер вместо
-      // падения логгера.
+      // Cyclic structure (raw opt-in disclosure): a placeholder instead of
+      // crashing the logger.
     }
     return '<circular>';
   }
@@ -202,8 +203,8 @@ function formatParamValue(value: unknown): string {
 }
 
 /**
- * Консольный логгер запросов по умолчанию.
- * Формат: [YDB] QUERY <durationMs>ms — sql с параметрами
+ * Default console query logger.
+ * Format: [YDB] QUERY <durationMs>ms — sql with parameters
  */
 export class ConsoleQueryLogger implements QueryLogger {
   log(entry: QueryLogEntry): void {
@@ -225,8 +226,8 @@ export class ConsoleQueryLogger implements QueryLogger {
   }
 
   /**
-   * Предупреждение ORM (#206): выдаётся как есть (текст содержит собственный
-   * префикс `[ydb-orm]`), чтобы контент предупреждения не искажался.
+   * ORM warning (#206): printed as is (the text carries its own `[ydb-orm]`
+   * prefix), so the warning content is not distorted.
    */
   warn(message: string): void {
     console.warn(message);
@@ -234,15 +235,15 @@ export class ConsoleQueryLogger implements QueryLogger {
 }
 
 /**
- * Приватный реестр логгеров executor'ов (#206), по образцу identity-подхода
- * #217: связь «executor → логгер» — модульно-локальная метаданные, она не
- * должна лежать в изменяемом свойстве, которое потребитель может перезаписать.
- * WeakMap не даёт внешнему коду (в т.ч. hold'ящему обёртку) подменить логгер
- * конфигурации и не ломает frozen/sealed executor'ы.
+ * Private per-executor logger registry (#206), modeled after the identity
+ * approach of #217: the "executor → logger" link is module-local metadata and
+ * must not live in a mutable property a consumer could overwrite. The WeakMap
+ * prevents external code (including a wrapper holder) from swapping the
+ * configuration logger and does not break frozen/sealed executors.
  */
 const executorLoggers = new WeakMap<YdbExecutor, QueryLogger>();
 
-/** Возвращает логгер, привязанный к executor'у в wrapExecutorWithLogging. */
+/** Returns the logger bound to an executor in wrapExecutorWithLogging. */
 export function getExecutorLogger(
   executor: YdbExecutor | undefined,
 ): QueryLogger | undefined {
@@ -253,11 +254,11 @@ export function getExecutorLogger(
 }
 
 /**
- * Резолвит логгер для операций сущности (#206): логгер, привязанный к
- * executor'у конфигурации, или единый консольный фолбэк, если логирование
- * не сконфигурировано. Фолбэк — устоявшийся `ConsoleQueryLogger`, поэтому
- * поведение без кастомного логгера сохраняется (предупреждения идут в консоль),
- * а отдельная конфигурация не может подсветить чужой кастомный логгер.
+ * Resolves the logger for entity operations (#206): the logger bound to the
+ * configuration executor, or a shared console fallback if logging is not
+ * configured. The fallback is the standalone `ConsoleQueryLogger`, so the
+ * behavior without a custom logger is preserved (warnings go to the console),
+ * and a separate configuration cannot pick up a foreign custom logger.
  */
 const fallbackQueryLogger = new ConsoleQueryLogger();
 
@@ -268,12 +269,12 @@ export function resolveExecutorLogger(
 }
 
 /**
- * Оборачивает executor логированием: замеряет длительность,
- * маскирует параметры, логирует SQL + ошибки.
+ * Wraps an executor with logging: measures duration, masks parameters, logs
+ * SQL and errors.
  *
- * @param options Настройки раскрытия raw-значений параметров (#168):
- *   по умолчанию в лог попадают только имена и метаинформация (тип + класс
- *   размера, без точной длины).
+ * @param options Raw parameter value disclosure settings (#168):
+ *   by default only names and metadata (type + size class, without exact
+ *   length) go into the log.
  */
 export function wrapExecutorWithLogging(
   executor: YdbExecutor,
@@ -295,8 +296,8 @@ export function wrapExecutorWithLogging(
         paramNames.push(name);
         maskedParams[name] = maskValue(name, value, values);
         originalParameter(name, value);
-        // Возвращаем прокси, иначе цепочка parameter().parameter() сбегает
-        // из прокси и последующие вызовы теряют логирование
+        // Return the proxy, otherwise a parameter().parameter() chain escapes
+        // the proxy and subsequent calls lose logging
         return proxied;
       },
       timeout(ms: number) {
@@ -307,9 +308,9 @@ export function wrapExecutorWithLogging(
         query.signal(signal);
         return proxied;
       },
-      // Без проброса idempotent() пометка #27 молча терялась бы на этом
-      // прокси (executeQuery вызывает query.idempotent?.(true)), и запрос
-      // выпадал бы из retry-политики при включённом logQueries.
+      // Without forwarding idempotent(), the #27 marker would be silently lost
+      // on this proxy (executeQuery calls query.idempotent?.(true)), and the
+      // query would drop out of the retry policy while logQueries is enabled.
       idempotent(flag?: boolean) {
         query.idempotent?.(flag);
         return proxied;
@@ -346,36 +347,36 @@ export function wrapExecutorWithLogging(
   wrapped.transaction = (
     txOptions?: Parameters<YdbExecutor['transaction']>[0],
   ) => {
-    // Опции транзакции (#98) пробрасываются как есть — логируется только
-    // executor, семантика исполнения не меняется.
+    // Transaction options (#98) pass through as is — only the executor is
+    // logged, execution semantics are unchanged.
     const tx = executor.transaction(txOptions);
     return {
       execute: (
         fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<unknown>,
       ) =>
         tx.execute((trx: YdbExecutor, signal?: AbortSignal) => {
-          // Транзакционный executor оборачивается тем же логгером: каждый
-          // запрос внутри runInTransaction (и вложенных транзакций) логируется
-          // с той же семантикой, что и обычные запросы.
+          // The transactional executor is wrapped with the same logger: every
+          // query inside runInTransaction (and nested transactions) is logged
+          // with the same semantics as ordinary queries.
           return fn(wrapExecutorWithLogging(trx, logger, options), signal);
         }),
     };
   };
 
-  // Identity (#207): обёртка и её исходник представляют один логический
-  // executor, поэтому обёртка наследует identity-токен исходника, а исходник
-  // при необходимости получает собственный токен. Разные обёртки одного
-  // логического executor'а разделяют токен — детекция вложенных транзакций
-  // сравнивает DB-контексты по значению, а не по ссылке на объект.
+  // Identity (#207): the wrapper and its source represent one logical
+  // executor, so the wrapper inherits the source's identity token, and the
+  // source gets its own token if needed. Different wrappers of one logical
+  // executor share the token — nested-transaction detection compares DB
+  // contexts BY VALUE, not by object reference.
   ensureExecutorIdentity(executor);
   inheritExecutorIdentity(executor, wrapped);
 
-  // Логгер путешествует вместе с executor'ом (#206): операции сущности могут
-  // достать его через getExecutorLogger/resolveExecutorLogger, поэтому
-  // предупреждения (warnOutsideTransaction) попадают в логгер СВОЕЙ
-  // конфигурации, а не в чужой или напрямую в консоль. Регистрация идёт
-  // в приватный реестр, а не в свойство обёртки — перезаписать логгер
-  // извне нельзя (см. executorLoggers).
+  // The logger travels with the executor (#206): entity operations can fetch
+  // it via getExecutorLogger/resolveExecutorLogger, so warnings
+  // (warnOutsideTransaction) reach THEIR configuration's logger, not a
+  // foreign one or the console directly. Registration goes into the private
+  // registry, not into a wrapper property — the logger cannot be overwritten
+  // externally (see executorLoggers).
   executorLoggers.set(wrapped as YdbExecutor, logger);
 
   return wrapped as YdbExecutor;

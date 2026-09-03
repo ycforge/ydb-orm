@@ -5,18 +5,18 @@ import { Driver } from '@ydbjs/core';
 import { YdbExecutor, YdbModuleOptions } from '../core/interfaces.js';
 import { createDriver, createExecutor } from '../core/driver.js';
 
-/** Конфиг CLI: опции подключения + пути для миграций. */
+/** CLI config: connection options + migration paths. */
 export interface YdbCliConfig extends YdbModuleOptions {
-  /** Директория с миграциями (по умолчанию ./migrations). */
+  /** Directory with migrations (defaults to ./migrations). */
   migrationsDir?: string;
-  /** Сущности для migration:generate. */
+  /** Entities for migration:generate. */
   entities?: (new (...args: any[]) => any)[];
 }
 
 /**
- * Проверяет, что в конфиге задан способ аутентификации.
- * CLI не создаёт AuthManager самостоятельно: пользователь должен передать
- * готовый `auth` (createAuth(...)) или CredentialsProvider.
+ * Checks that the config declares an authentication method.
+ * The CLI never builds an AuthManager itself: the user must pass a ready-made
+ * `auth` (createAuth(...)) or a CredentialsProvider.
  */
 function assertCliAuth(config: YdbCliConfig): void {
   if (
@@ -39,11 +39,10 @@ const DEFAULT_CONFIG_NAMES = [
 ];
 
 /**
- * Похож ли экспорт модуля на CLI-конфиг (#103).
- * Нужен, чтобы поддержать именованные экспорты конфига:
- * раньше понимался только default, и файл вида
- * `export const config = { endpoint: ... }` давал ложную ошибку
- * «endpoint is required».
+ * Whether a module export looks like a CLI config (#103).
+ * Needed to support named config exports: only the default export used to be
+ * understood, so a file like `export const config = { endpoint: ... }` raised
+ * a misleading "endpoint is required" error.
  */
 function looksLikeConfig(value: unknown): value is YdbCliConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -58,11 +57,11 @@ function looksLikeConfig(value: unknown): value is YdbCliConfig {
 }
 
 /**
- * Достаёт конфиг из импортированного модуля конфигурации.
- * Поддерживает default export и именованные экспорты; при нескольких
- * разных подходящих экспортах приоритет у `default`, иначе — неоднозначность
- * (ошибка со списком кандидатов), а не молчаливый выбор первого (#103).
- * Отсутствие endpoint — ошибка с указанием файла и имени экспорта.
+ * Extracts the config from an imported configuration module.
+ * Supports both a default export and named exports; when several different
+ * matching exports exist, `default` wins, otherwise it is an ambiguity
+ * (an error listing the candidates) rather than a silent pick of the first
+ * one (#103). A missing endpoint is an error naming the file and the export.
  */
 export function extractCliConfig(
   mod: Record<string, unknown>,
@@ -79,8 +78,8 @@ export function extractCliConfig(
     );
   }
 
-  // Дедупликация по значению: default и именованный экспорт одного
-  // и того же объекта — один кандидат.
+  // De-dup by value: a default and a named export of the same object form
+  // a single candidate.
   const byValue = new Map<YdbCliConfig, string[]>();
   for (const [name, value] of candidates) {
     const names = byValue.get(value) ?? [];
@@ -108,10 +107,10 @@ export function extractCliConfig(
 }
 
 /**
- * Ищет дефолтный конфиг в startDir и вверх по дереву каталогов до корня ФС
- * (#103). Раньше поиск шёл только в CWD — запуск из вложенной директории
- * монорепо не находил конфиг в корне проекта. В одной директории приоритет:
- * .ts → .mts → .mjs → .js.
+ * Looks for the default config in startDir and up the directory tree to the
+ * filesystem root (#103). Previously the search covered only the CWD, so
+ * running from a nested monorepo directory missed the config at the project
+ * root. Within one directory the priority is: .ts → .mts → .mjs → .js.
  */
 export function findDefaultConfig(startDir?: string): string | undefined {
   let current = path.resolve(startDir ?? process.cwd());
@@ -127,11 +126,11 @@ export function findDefaultConfig(startDir?: string): string | undefined {
 }
 
 /**
- * Загружает конфиг CLI:
- *  1. --config <path> или ydb-orm.config.{ts,mts,mjs|js}, найденный в CWD
- *     или выше; default и именованные экспорты эквивалентны;
- *  2. иначе — переменная окружения YDB_ENDPOINT / YDB_CONNECTION_STRING
- *     (требуется ydb-orm.config.ts для задания auth).
+ * Loads the CLI config:
+ *  1. --config <path> or ydb-orm.config.{ts,mts,mjs|js} found in the CWD
+ *     or above; default and named exports are equivalent;
+ *  2. otherwise — the YDB_ENDPOINT / YDB_CONNECTION_STRING environment
+ *     variables (still requires ydb-orm.config.ts to specify auth).
  */
 export async function loadCliConfig(
   configPath?: string,
@@ -166,7 +165,7 @@ export async function loadCliConfig(
   );
 }
 
-/** Подключение для команд CLI: driver + executor, закрывается через close(). */
+/** Connection for CLI commands: driver + executor, closed via close(). */
 export async function connectCli(config: YdbCliConfig): Promise<{
   driver: Driver;
   executor: YdbExecutor;

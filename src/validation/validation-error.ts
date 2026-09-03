@@ -4,9 +4,9 @@ import type {
 } from './ydb-validate.interface.js';
 
 /**
- * Приводит результат провайдера валидации к структурному виду.
- * Строки (legacy-провайдеры до #95) теряют property/constraint —
- * сохраняются только в message.
+ * Converts validation provider result to structured form.
+ * Strings (legacy providers before #95) lose property/constraint —
+ * only message is preserved.
  */
 export function normalizeValidationIssues(
   issues: YdbValidationIssue[],
@@ -25,9 +25,9 @@ function formatIssue(issue: YdbValidationErrorItem): string {
 }
 
 /**
- * Ошибка валидации сущности перед записью (#95).
- * Сохраняет структурированный список нарушений в `errors` —
- * исходное property/constraint/value не схлопываются в строку.
+ * Entity validation error before write (#95).
+ * Preserves structured list of violations in `errors` —
+ * original property/constraint/value are not collapsed into a string.
  */
 export class YdbEntityValidationError extends Error {
   readonly entityName: string;
