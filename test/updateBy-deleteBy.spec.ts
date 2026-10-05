@@ -112,9 +112,9 @@ describe('updateBy() / deleteBy()', () => {
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `user_roles`');
       expect(q.sql).toContain('SET');
-      expect(q.sql).toContain('`is_global` = $is_global');
-      expect(q.sql).toContain('WHERE `user_uuid` = $user_uuid');
-      expect(q.params.is_global).toEqual({
+      expect(q.sql).toContain('`is_global` = $s0');
+      expect(q.sql).toContain('WHERE `user_uuid` = $w0');
+      expect(q.params.s0).toEqual({
         type: expect.anything(),
         value: true,
       });
@@ -168,8 +168,8 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `timestamp_test`');
-      expect(q.sql).toContain('`updated_at` = $updated_at');
-      expect(q.params.updated_at).toBeDefined();
+      expect(q.sql).toContain('`updated_at` = $s1');
+      expect(q.params.s1).toBeDefined();
     });
 
     it('throws for unknown field in patch', async () => {
@@ -194,8 +194,8 @@ describe('updateBy() / deleteBy()', () => {
       );
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`role_uuid` = $role_uuid');
-      expect(q.sql).toContain('`is_global` = $is_global');
+      expect(q.sql).toContain('`role_uuid` = $s0');
+      expect(q.sql).toContain('`is_global` = $s1');
     });
 
     it('works with encryption provider', async () => {
@@ -212,8 +212,8 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `users`');
-      expect(q.sql).toContain('`email_encrypted` = $email_encrypted');
-      const emailParam = q.params.email_encrypted;
+      expect(q.sql).toContain('`email_encrypted` = $s0');
+      const emailParam = q.params.s0;
       expect((emailParam as any).value).toEqual(
         new TextEncoder().encode('secret@example.com'),
       );
@@ -232,17 +232,21 @@ describe('updateBy() / deleteBy()', () => {
       expect(q.sql).toContain('RETURNING `user_uuid`');
     });
 
-    it('throws when the same field is in where and patch', async () => {
+    it('allows the same field in where and patch with distinct param names (#238)', async () => {
       const mock = createMockExecutor([[]]);
       UserRoleEntity.setExecutor(mock.executor);
 
-      await expect(
-        UserRoleEntity.updateBy(
-          { user_uuid: userRow.uuid },
-          { user_uuid: userRow.uuid, is_global: true },
-        ),
-      ).rejects.toThrow(/present in both where and patch/);
-      expect(mock.queries).toHaveLength(0);
+      const affected = await UserRoleEntity.updateBy(
+        { is_global: true },
+        { is_global: false },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('SET `is_global` = $s0');
+      expect(q.sql).toContain('WHERE `is_global` = $w0');
+      expect((q.params.w0 as any).value).toBe(true);
+      expect((q.params.s0 as any).value).toBe(false);
+      expect(affected).toBe(0);
     });
 
     it('updates encrypted field when AAD field is fixed in where', async () => {
@@ -260,7 +264,7 @@ describe('updateBy() / deleteBy()', () => {
       expect(mock.queries).toHaveLength(1);
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `aad_test`');
-      expect(q.sql).toContain('`secret` = $secret');
+      expect(q.sql).toContain('`secret` = $s0');
 
       expect(provider.encryptContexts).toHaveLength(1);
       expect(provider.encryptContexts[0].aadFields).toEqual({
@@ -303,9 +307,9 @@ describe('updateBy() / deleteBy()', () => {
       );
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`secret` = $secret');
-      expect(Object.keys(q.params)).toContain('secret');
-      expect(Object.keys(q.params)).toContain('uuid');
+      expect(q.sql).toContain('`secret` = $s0');
+      expect(Object.keys(q.params)).toContain('s0');
+      expect(Object.keys(q.params)).toContain('w0');
       expect(provider.encryptContexts[0].aadFields).toEqual({
         uuid: userRow.uuid,
       });
@@ -397,9 +401,9 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('DELETE FROM `user_roles`');
-      expect(q.sql).toContain('WHERE `user_uuid` = $user_uuid');
+      expect(q.sql).toContain('WHERE `user_uuid` = $w0');
       expect(q.sql).toContain('RETURNING `user_uuid`');
-      expect(q.params.user_uuid).toBeDefined();
+      expect(q.params.w0).toBeDefined();
       expect(affected).toBe(0);
     });
 
@@ -440,8 +444,8 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('DELETE FROM `user_roles`');
-      expect(q.sql).toContain('`user_uuid` = $user_uuid');
-      expect(q.sql).toContain('`role_uuid` = $role_uuid');
+      expect(q.sql).toContain('`user_uuid` = $w0');
+      expect(q.sql).toContain('`role_uuid` = $w1');
       expect(q.sql).toContain('AND');
     });
   });

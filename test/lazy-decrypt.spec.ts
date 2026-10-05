@@ -201,9 +201,7 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
 
     const query = mock.queries[0];
     expect(query.sql).toContain('secret_lazy_bi');
-    expect((query.params['secret_lazy_bi'] as any).value).toBe(
-      biHash('lazy-secret-value'),
-    );
+    expect((query.params['w0'] as any).value).toBe(biHash('lazy-secret-value'));
     // Поиск по blind index не требует дешифровки значения
     expect(provider.decryptCalls).toEqual(['secret_eager']);
   });

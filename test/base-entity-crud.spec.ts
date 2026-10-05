@@ -41,9 +41,9 @@ describe('BaseEntity CRUD (mock executor)', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('SELECT `uuid`, `email_encrypted`, `full_name`');
-      expect(q.sql).toContain('WHERE `uuid` = $uuid');
+      expect(q.sql).toContain('WHERE `uuid` = $w0');
       expect(q.sql).toContain('LIMIT 1');
-      expect(q.params.uuid).toBeInstanceOf(Uuid);
+      expect(q.params.w0).toBeInstanceOf(Uuid);
     });
 
     it('returns null when no row matches', async () => {
@@ -79,8 +79,8 @@ describe('BaseEntity CRUD (mock executor)', () => {
       });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`user_uuid` = $user_uuid');
-      expect(q.sql).toContain('`role_uuid` = $role_uuid');
+      expect(q.sql).toContain('`user_uuid` = $w0');
+      expect(q.sql).toContain('`role_uuid` = $w1');
       expect(q.sql).toContain('AND');
     });
 
@@ -186,7 +186,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
       await UserEntity.findAll({ uuid: userRow.uuid });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('WHERE `uuid` = $uuid');
+      expect(q.sql).toContain('WHERE `uuid` = $w0');
     });
   });
 
@@ -218,7 +218,7 @@ describe('BaseEntity CRUD (mock executor)', () => {
       expect(count).toBe(5);
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('WHERE `uuid` = $uuid');
+      expect(q.sql).toContain('WHERE `uuid` = $w0');
     });
   });
 

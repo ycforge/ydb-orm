@@ -142,7 +142,17 @@ export interface WhereBuildContext {
   values: Record<string, any>;
   keys: string[];
   dbSchema: Record<string, YdbPrimitive>;
-  counter: number;
+  nextParam: () => string;
+}
+
+/**
+ * Monotonic allocator of opaque parameter names (#238): the prefix separates
+ * namespaces (WHERE vs SET), the counter guarantees uniqueness. Names carry no
+ * column-derived information, so no user column name can alias a parameter.
+ */
+function createParamAllocator(prefix: string): () => string {
+  let counter = 0;
+  return () => `${prefix}${counter++}`;
 }
 
 /**
@@ -389,6 +399,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return value;
   }
 
+  /**
+   * Field-keyed binding for write paths (insert/update): keys are column names,
+   * so enum/JSON conversion is derived from the key itself.
+   */
   private bindParams(
     query: any,
     data: Record<string, any>,
@@ -406,6 +420,26 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       value = this.convertEnumOut(value, enumMeta);
       value = this.convertJsonOut(k, value);
       query.parameter(k, mapToYdb(type, value, k));
+    }
+  }
+
+  /**
+   * Binds already-normalized parameters (WHERE/SET) by opaque name (#238):
+   * enum/JSON conversion happened at build time against the owning field, so
+   * only the stored YDB type is applied here. Re-deriving the conversion from
+   * the opaque key would let a column literally named `w0`/`s0` hijack the
+   * lookup (wrong enum/JSON handling or a silently wrong value).
+   */
+  private bindNormalizedParams(
+    query: any,
+    data: Record<string, any>,
+    keys: string[],
+    dbSchema: Record<string, YdbPrimitive>,
+  ): void {
+    for (const k of keys) {
+      const type = dbSchema[k];
+      if (!type) throw new Error(`No schema for parameter: ${k}`);
+      query.parameter(k, mapToYdb(type, data[k]));
     }
   }
 
@@ -697,7 +731,6 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     field: string,
     value: any,
     ctx: WhereBuildContext,
-    isRoot: boolean,
     env: WhereBuildEnv,
   ): Promise<string | undefined> {
     const meta = this.getMeta();
@@ -756,7 +789,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         );
       }
       const biField = blindIndexColumnName(field);
-      const paramName = isRoot ? biField : `${biField}_${ctx.counter++}`;
+      const paramName = ctx.nextParam();
       ctx.values[paramName] = await this.hashBlindIndexForWhere(
         field,
         String(operand),
@@ -779,7 +812,6 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           op,
           operand,
           ctx,
-          isRoot,
           env,
         );
         if (condition) subConditions.push(condition);
@@ -793,12 +825,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     // Plain equality
     if (value === null) return `${quotedField} IS NULL`;
     if (value === undefined) return undefined;
-    const paramName = isRoot ? field : `${field}_${ctx.counter++}_eq`;
-    // Root equality is left "raw": bindParams performs the enum/JSON conversion
-    // itself by field name (for compatibility).
-    ctx.values[paramName] = isRoot
-      ? value
-      : this.normalizeWhereValue(field, value);
+    const paramName = ctx.nextParam();
+    ctx.values[paramName] = this.normalizeWhereValue(field, value);
     ctx.keys.push(paramName);
     ctx.dbSchema[paramName] = fieldType;
     return `${quotedField} = $${paramName}`;
@@ -829,15 +857,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     op: string,
     operand: any,
     ctx: WhereBuildContext,
-    isRoot: boolean,
     env: WhereBuildEnv,
   ): Promise<string | undefined> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
     const fieldType = dbSchema[field];
     const quotedField = quoteIdentifier(field);
-    const paramName = (suffix: string) =>
-      isRoot && suffix === 'eq' ? field : `${field}_${ctx.counter++}_${suffix}`;
     const addParam = (name: string, value: any, type: YdbPrimitive) => {
       ctx.values[name] = value;
       ctx.keys.push(name);
@@ -855,13 +880,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const combiner = op === '$and' ? 'AND' : 'OR';
         const subs: string[] = [];
         for (const sub of operand) {
-          const subSql = await this.buildFieldCondition(
-            field,
-            sub,
-            ctx,
-            false,
-            env,
-          );
+          const subSql = await this.buildFieldCondition(field, sub, ctx, env);
           if (subSql) subs.push(subSql);
         }
         if (!subs.length) return undefined;
@@ -870,18 +889,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       case '$eq': {
         if (operand === null) return `${quotedField} IS NULL`;
         if (operand === undefined) return undefined;
-        const name = paramName('eq');
-        addParam(
-          name,
-          isRoot ? operand : this.normalizeWhereValue(field, operand),
-          fieldType,
-        );
+        const name = ctx.nextParam();
+        addParam(name, this.normalizeWhereValue(field, operand), fieldType);
         return `${quotedField} = $${name}`;
       }
       case '$ne': {
         if (operand === null) return `${quotedField} IS NOT NULL`;
         if (operand === undefined) return undefined;
-        const name = paramName('ne');
+        const name = ctx.nextParam();
         addParam(name, this.normalizeWhereValue(field, operand), fieldType);
         return `${quotedField} != $${name}`;
       }
@@ -896,7 +911,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         }
         const sqlOp =
           op === '$gt' ? '>' : op === '$gte' ? '>=' : op === '$lt' ? '<' : '<=';
-        const name = paramName(op.slice(1));
+        const name = ctx.nextParam();
         addParam(name, this.normalizeWhereValue(field, operand), fieldType);
         return `${quotedField} ${sqlOp} $${name}`;
       }
@@ -911,7 +926,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a string column (Utf8), got "${fieldType}".`,
           );
         }
-        const name = paramName('like');
+        const name = ctx.nextParam();
         addParam(name, operand, fieldType);
         return `${quotedField} LIKE $${name}`;
       }
@@ -921,15 +936,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a non-empty array.`,
           );
         }
-        const groupIdx = ctx.counter++;
         const placeholders: string[] = [];
-        operand.forEach((item, i) => {
+        operand.forEach((item) => {
           if (item === null || item === undefined) {
             throw new Error(
               `Operator "${op}" on field "${field}" does not support null/undefined values.`,
             );
           }
-          const name = `${field}_${groupIdx}_in_${i}`;
+          const name = ctx.nextParam();
           addParam(name, this.normalizeWhereValue(field, item), fieldType);
           placeholders.push(`$${name}`);
         });
@@ -948,9 +962,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires an array of two non-null values.`,
           );
         }
-        const groupIdx = ctx.counter++;
-        const loName = `${field}_${groupIdx}_between_lo`;
-        const hiName = `${field}_${groupIdx}_between_hi`;
+        const loName = ctx.nextParam();
+        const hiName = ctx.nextParam();
         addParam(
           loName,
           this.normalizeWhereValue(field, operand[0]),
@@ -974,7 +987,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
           );
         }
-        const name = `${field}_${ctx.counter++}_jsonexists`;
+        const name = ctx.nextParam();
         addParam(name, operand, 'Utf8');
         return `JSON_EXISTS(${quotedField}, $${name})`;
       }
@@ -995,9 +1008,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
           );
         }
-        const groupIdx = ctx.counter++;
-        const pathName = `${field}_${groupIdx}_jsonvalue_path`;
-        const valName = `${field}_${groupIdx}_jsonvalue_val`;
+        const pathName = ctx.nextParam();
+        const valName = ctx.nextParam();
         addParam(pathName, path, 'Utf8');
         addParam(
           valName,
@@ -1025,7 +1037,6 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   private async buildWhereNode(
     node: Record<string, any>,
     ctx: WhereBuildContext,
-    isRoot: boolean,
     env: WhereBuildEnv,
   ): Promise<string | undefined> {
     const parts: string[] = [];
@@ -1049,7 +1060,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
               `Logical operator "${key}" on entity ${this.entityClass.name} expects objects, got ${typeof sub}.`,
             );
           }
-          const subSql = await this.buildWhereNode(sub, ctx, false, env);
+          const subSql = await this.buildWhereNode(sub, ctx, env);
           if (subSql) subs.push(subSql);
         }
         if (subs.length) {
@@ -1062,13 +1073,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const sql = await this.buildRelatedCondition(key, value, ctx);
         parts.push(sql);
       } else {
-        const sql = await this.buildFieldCondition(
-          key,
-          value,
-          ctx,
-          isRoot,
-          env,
-        );
+        const sql = await this.buildFieldCondition(key, value, ctx, env);
         if (sql) parts.push(sql);
       }
     }
@@ -1093,10 +1098,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       values: {},
       keys: [],
       dbSchema: { ...getEntityDbSchema(meta) },
-      counter: 0,
+      nextParam: createParamAllocator('w'),
     };
 
-    const sql = await this.buildWhereNode(where, ctx, true, {
+    const sql = await this.buildWhereNode(where, ctx, {
       forbidEncrypted: false,
     });
 
@@ -1127,7 +1132,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     node: Record<string, any>,
     ctx: WhereBuildContext,
   ): Promise<string | undefined> {
-    return this.buildWhereNode(node, ctx, false, { forbidEncrypted: true });
+    return this.buildWhereNode(node, ctx, { forbidEncrypted: true });
   }
 
   /**
@@ -1480,7 +1485,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT 1`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1516,7 +1521,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1544,7 +1549,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const sql = `SELECT COUNT(*) AS cnt FROM ${quoteIdentifier(meta.tableName)} ${whereClause}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1584,7 +1589,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   ): Promise<T[]> {
     const exec = this.getExecutor(options?.trx);
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1604,7 +1609,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   ): Promise<number> {
     const exec = this.getExecutor(options?.trx);
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -1867,10 +1872,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
-   * Updates all rows matching `where` with the given patch (which must not
-   * overlap the WHERE fields). Refuses an empty WHERE/patch or a full-table
-   * update. Encrypted fields in the patch are re-encrypted with the AAD derived
-   * from the fixed WHERE predicate.
+   * Updates all rows matching `where` with the given patch (a field may appear
+   * in both: WHERE and SET use separate parameter namespaces, #238). Refuses an
+   * empty WHERE/patch or a full-table update. Encrypted fields in the patch are
+   * re-encrypted with the AAD derived from the fixed WHERE predicate.
    * @param where filter selecting the rows to update.
    * @param patch the fields and new values to set.
    * @param options query options.
@@ -1889,15 +1894,6 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     if (!Object.keys(patch).length) {
       throw new Error(
         `updateBy() on ${this.entityClass.name} requires at least one field in patch`,
-      );
-    }
-
-    const collision = Object.keys(patch).filter((k) =>
-      Object.prototype.hasOwnProperty.call(where, k),
-    );
-    if (collision.length) {
-      throw new Error(
-        `updateBy() on ${this.entityClass.name}: field(s) ${collision.map((k) => `"${k}"`).join(', ')} present in both where and patch`,
       );
     }
 
@@ -2005,10 +2001,6 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
-    const setClause = setKeys
-      .map((k) => `${quoteIdentifier(k)} = $${k}`)
-      .join(', ');
-
     const {
       whereClause,
       values: whereValues,
@@ -2022,17 +2014,24 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
+    const nextSetParam = createParamAllocator('s');
+    const setFragments: string[] = [];
     const allValues: Record<string, any> = { ...whereValues };
+    const allKeys = [...whereKeys];
+    const allDbSchema = { ...whereDbSchema };
     for (const k of setKeys) {
-      allValues[k] = data[k];
+      const paramName = nextSetParam();
+      setFragments.push(`${quoteIdentifier(k)} = $${paramName}`);
+      allValues[paramName] = this.normalizeWhereValue(k, data[k]);
+      allKeys.push(paramName);
+      allDbSchema[paramName] = dbSchema[k];
     }
-    const allKeys = [...whereKeys, ...setKeys];
-    const allDbSchema = { ...whereDbSchema, ...dbSchema };
+    const setClause = setFragments.join(', ');
 
     const pkColumns = this.getPkFields(meta).map(quoteIdentifier).join(', ');
     const sql = `UPDATE ${quoteIdentifier(tableName)} SET ${setClause} ${whereClause} RETURNING ${pkColumns}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, allValues, allKeys, allDbSchema);
+    this.bindNormalizedParams(query, allValues, allKeys, allDbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,
@@ -2134,7 +2133,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const pkColumns = this.getPkFields(meta).map(quoteIdentifier).join(', ');
     const sql = `DELETE FROM ${quoteIdentifier(meta.tableName)} ${whereClause} RETURNING ${pkColumns}`;
     const query = exec([sql] as unknown as TemplateStringsArray);
-    this.bindParams(query, values, keys, dbSchema);
+    this.bindNormalizedParams(query, values, keys, dbSchema);
 
     const rows = await this.executeQuery<Record<string, any>[][]>(
       query,

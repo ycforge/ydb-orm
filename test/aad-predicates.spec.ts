@@ -101,7 +101,7 @@ describe('#166: updateBy() требует однозначный AAD-преди�
 
     expect(mock.queries).toHaveLength(1);
     expect(mock.queries[0].sql).toContain(
-      'WHERE `tenant_id` = $tenant_id AND `org_id` = $org_id',
+      'WHERE `tenant_id` = $w0 AND `org_id` = $w1',
     );
     expect(provider.encrypts).toHaveLength(1);
     expect(provider.encrypts[0].context.aadFields).toEqual(FIXED_WHERE);
@@ -121,7 +121,7 @@ describe('#166: updateBy() требует однозначный AAD-преди�
 
     expect(mock.queries).toHaveLength(1);
     expect(mock.queries[0].sql).toContain(
-      'WHERE `tenant_id` = $tenant_id AND `org_id` = $org_id',
+      'WHERE `tenant_id` = $w0 AND `org_id` = $w1',
     );
     expect(provider.encrypts[0].context.aadFields).toEqual(FIXED_WHERE);
   });

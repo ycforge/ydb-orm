@@ -81,9 +81,9 @@ describe('NestJS integration: module wiring', () => {
     expect(findQuery.sql).toContain(
       'SELECT `uuid`, `email_encrypted`, `full_name` FROM `users`',
     );
-    expect(findQuery.sql).toContain('WHERE `uuid` = $uuid');
-    expect(findQuery.params.uuid).toBeInstanceOf(Uuid);
-    expect(String(findQuery.params.uuid)).toBe(userRow.uuid);
+    expect(findQuery.sql).toContain('WHERE `uuid` = $w0');
+    expect(findQuery.params.w0).toBeInstanceOf(Uuid);
+    expect(String(findQuery.params.w0)).toBe(userRow.uuid);
 
     // @EagerLoad(['userRoles']) — второй запрос: batch-загрузка ролей
     expect(mock.queries[1]?.sql).toContain('FROM `user_roles`');

@@ -87,8 +87,9 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `json_doc_test`');
-      expect(q.params.metadata).toBeInstanceOf(Utf8);
-      expect((q.params.metadata as any).value).toBe('{"updated":true}');
+      expect(q.sql).toContain('`metadata` = $s0');
+      expect(q.params.s0).toBeInstanceOf(Utf8);
+      expect((q.params.s0 as any).value).toBe('{"updated":true}');
     });
   });
 
@@ -122,9 +123,9 @@ describe('JSON columns', () => {
       await JsonDocEntity.find({ metadata });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('WHERE `metadata` = $metadata');
-      expect(q.params.metadata).toBeInstanceOf(Utf8);
-      expect((q.params.metadata as any).value).toBe(JSON.stringify(metadata));
+      expect(q.sql).toContain('WHERE `metadata` = $w0');
+      expect(q.params.w0).toBeInstanceOf(Utf8);
+      expect((q.params.w0 as any).value).toBe(JSON.stringify(metadata));
     });
   });
 
@@ -138,13 +139,9 @@ describe('JSON columns', () => {
         .getMany();
 
       const [q] = mock.queries;
-      expect(q.sql).toContain(
-        'JSON_EXISTS(`metadata`, $metadata_0_jsonexists)',
-      );
-      expect(q.params.metadata_0_jsonexists).toBeInstanceOf(Utf8);
-      expect((q.params.metadata_0_jsonexists as any).value).toBe(
-        '$.settings.theme',
-      );
+      expect(q.sql).toContain('JSON_EXISTS(`metadata`, $w0)');
+      expect(q.params.w0).toBeInstanceOf(Utf8);
+      expect((q.params.w0 as any).value).toBe('$.settings.theme');
     });
 
     it('generates JSON_VALUE condition', async () => {
@@ -156,11 +153,9 @@ describe('JSON columns', () => {
         .getMany();
 
       const [q] = mock.queries;
-      expect(q.sql).toContain(
-        'JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) = $metadata_0_jsonvalue_val',
-      );
-      expect((q.params.metadata_0_jsonvalue_path as any).value).toBe('$.role');
-      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
+      expect(q.sql).toContain('JSON_VALUE(`metadata`, $w0) = $w1');
+      expect((q.params.w0 as any).value).toBe('$.role');
+      expect((q.params.w1 as any).value).toBe('admin');
     });
 
     it('composes three JSON_EXISTS on the same column with AND (#201)', async () => {
@@ -175,17 +170,13 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
-          'AND JSON_EXISTS(`metadata`, $metadata_1_jsonexists) ' +
-          'AND JSON_EXISTS(`metadata`, $metadata_2_jsonexists))',
+        'WHERE (JSON_EXISTS(`metadata`, $w0) ' +
+          'AND JSON_EXISTS(`metadata`, $w1) ' +
+          'AND JSON_EXISTS(`metadata`, $w2))',
       );
-      expect((q.params.metadata_0_jsonexists as any).value).toBe(
-        '$.settings.theme',
-      );
-      expect((q.params.metadata_1_jsonexists as any).value).toBe(
-        '$.security.role',
-      );
-      expect((q.params.metadata_2_jsonexists as any).value).toBe('$.owner.id');
+      expect((q.params.w0 as any).value).toBe('$.settings.theme');
+      expect((q.params.w1 as any).value).toBe('$.security.role');
+      expect((q.params.w2 as any).value).toBe('$.owner.id');
     });
 
     it('composes mixed JSON_EXISTS + JSON_VALUE on the same column (#201)', async () => {
@@ -199,15 +190,13 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
-          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
-          '= $metadata_1_jsonvalue_val)',
+        'WHERE (JSON_EXISTS(`metadata`, $w0) ' +
+          'AND JSON_VALUE(`metadata`, $w1) ' +
+          '= $w2)',
       );
-      expect((q.params.metadata_0_jsonexists as any).value).toBe(
-        '$.settings.theme',
-      );
-      expect((q.params.metadata_1_jsonvalue_path as any).value).toBe('$.role');
-      expect((q.params.metadata_1_jsonvalue_val as any).value).toBe('admin');
+      expect((q.params.w0 as any).value).toBe('$.settings.theme');
+      expect((q.params.w1 as any).value).toBe('$.role');
+      expect((q.params.w2 as any).value).toBe('admin');
     });
 
     it('composes two JSON_VALUE on the same column with AND (#201)', async () => {
@@ -221,13 +210,13 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE (JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) ' +
-          '= $metadata_0_jsonvalue_val ' +
-          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
-          '= $metadata_1_jsonvalue_val)',
+        'WHERE (JSON_VALUE(`metadata`, $w0) ' +
+          '= $w1 ' +
+          'AND JSON_VALUE(`metadata`, $w2) ' +
+          '= $w3)',
       );
-      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
-      expect((q.params.metadata_1_jsonvalue_val as any).value).toBe('dark');
+      expect((q.params.w1 as any).value).toBe('admin');
+      expect((q.params.w3 as any).value).toBe('dark');
     });
 
     it('composes JSON predicates with ordinary where/andWhere criteria (#201)', async () => {
@@ -242,12 +231,12 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE `uuid` = $uuid AND (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
-          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
-          '= $metadata_1_jsonvalue_val)',
+        'WHERE `uuid` = $w0 AND (JSON_EXISTS(`metadata`, $w1) ' +
+          'AND JSON_VALUE(`metadata`, $w2) ' +
+          '= $w3)',
       );
-      expect(q.params.uuid).toBeInstanceOf(Uuid);
-      expect(String(q.params.uuid)).toBe(uuid);
+      expect(q.params.w0).toBeInstanceOf(Uuid);
+      expect(String(q.params.w0)).toBe(uuid);
     });
 
     it('keeps JSON predicates intact inside an $or group (#201)', async () => {
@@ -261,12 +250,11 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE (JSON_VALUE(`metadata`, $metadata_0_jsonvalue_path) ' +
-          '= $metadata_0_jsonvalue_val OR `uuid` = $uuid_1_eq)',
+        'WHERE (JSON_VALUE(`metadata`, $w0) ' + '= $w1 OR `uuid` = $w2)',
       );
-      expect((q.params.metadata_0_jsonvalue_val as any).value).toBe('admin');
-      expect(q.params.uuid_1_eq).toBeInstanceOf(Uuid);
-      expect(String(q.params.uuid_1_eq)).toBe(uuid);
+      expect((q.params.w1 as any).value).toBe('admin');
+      expect(q.params.w2).toBeInstanceOf(Uuid);
+      expect(String(q.params.w2)).toBe(uuid);
     });
 
     it('builds composed JSON predicates from a hand-written $and object (#201)', async () => {
@@ -284,9 +272,9 @@ describe('JSON columns', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain(
-        'WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists) ' +
-          'AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) ' +
-          '= $metadata_1_jsonvalue_val)',
+        'WHERE (JSON_EXISTS(`metadata`, $w0) ' +
+          'AND JSON_VALUE(`metadata`, $w1) ' +
+          '= $w2)',
       );
     });
   });
