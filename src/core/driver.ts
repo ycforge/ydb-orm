@@ -11,6 +11,7 @@ import {
 } from './interfaces.js';
 import { ConsoleQueryLogger, wrapExecutorWithLogging } from './query-logger.js';
 import { withRetryPolicy } from './retry-executor.js';
+import { resolveYdbRetryPolicy } from './retry.js';
 
 /**
  * Fail-fast validation of module options: without an endpoint the driver
@@ -31,6 +32,11 @@ export function validateYdbModuleOptions(
   assertAuthPresent(opts, injected);
   assertAadFormat(opts);
   assertAadReadFallback(opts);
+  // Executor-affecting options are validated here, up front (#232): an invalid
+  // retry policy must fail BEFORE the connection-name claim and the driver are
+  // allocated, otherwise the failure would surface later from createExecutor()
+  // and leak both resources.
+  resolveYdbRetryPolicy(opts.retry);
 }
 
 /**
