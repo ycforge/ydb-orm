@@ -10,12 +10,17 @@ import {
 
 let dir: string;
 
+// Cancellation tests intentionally trigger process.exitCode = 130; restore the
+// exact prior value (which may be undefined) so it never leaks into Jest.
+const originalExitCode = process.exitCode;
+
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ydb-orm-wizard-'));
 });
 
 afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
+  process.exitCode = originalExitCode;
 });
 
 interface ScriptedIo {
@@ -194,6 +199,7 @@ describe('cancellation/EOF (#24)', () => {
     await expect(
       runEntityCreateCommand('aborted', { dir, interactive: true, ...io }),
     ).rejects.toBeInstanceOf(PromptCancelledError);
+    expect(process.exitCode).toBe(130);
     expect(fs.readdirSync(dir)).toHaveLength(0);
   });
 
