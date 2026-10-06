@@ -162,6 +162,50 @@ function createParamAllocator(prefix: string): () => string {
 }
 
 /**
+ * Верхняя граница одновременных вызовов провайдера шифрования в предобработке
+ * insertMany (#234). Ограничивает нагрузку на асинхронный KMS/провайдер и
+ * удерживаемую память одним SQL-батчем.
+ */
+export const INSERT_MANY_ENCRYPTION_CONCURRENCY = 8;
+
+/**
+ * Применяет асинхронный mapper к элементам с ограничением числа одновременных
+ * вызовов (#234). Первая ошибка останавливает запуск новых элементов; уже
+ * начатые вызовы ожидаются, после чего ошибка пробрасывается наружу.
+ */
+async function mapWithConcurrency<IN, OUT>(
+  items: readonly IN[],
+  limit: number,
+  mapper: (item: IN, index: number) => Promise<OUT>,
+): Promise<OUT[]> {
+  const results = new Array<OUT>(items.length);
+  let next = 0;
+  let failed = false;
+  let failure: unknown;
+
+  const worker = async (): Promise<void> => {
+    while (!failed) {
+      const index = next++;
+      if (index >= items.length) return;
+      try {
+        results[index] = await mapper(items[index], index);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          failure = error;
+        }
+        return;
+      }
+    }
+  };
+
+  const workerCount = Math.min(limit, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (failed) throw failure;
+  return results;
+}
+
+/**
  * Environment of building a single WHERE node.
  *
  * `forbidEncrypted` is enabled inside related predicates (#17): filtering by
@@ -1775,7 +1819,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   /**
    * Inserts many entities in batches (grouped by identical column sets, up to
    * BATCH_SIZE rows per UPSERT). Auto-fills `uuid`/timestamp columns and runs
-   * beforeInsert/afterInsert lifecycle hooks for each entity.
+   * beforeInsert/afterInsert lifecycle hooks for each entity. Encryption
+   * preprocessing and the encrypted copies are bounded to the current SQL batch
+   * with an explicit concurrency ceiling (#234).
    * @param entities rows to insert.
    * @param options query options.
    * @returns the inserted entities (mutated by uuid/timestamp fill).
@@ -1827,23 +1873,25 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
-    const dataList = await Promise.all(
-      entities.map((e) =>
-        this.encryptEntity({ ...(e as Record<string, any>) }, e),
-      ),
-    );
-
     const BATCH_SIZE = 100;
     const enums = getYdbEnumMetadata(this.entityClass);
 
-    for (let start = 0; start < dataList.length; start += BATCH_SIZE) {
-      const batch = dataList.slice(start, start + BATCH_SIZE);
+    // Предобработка идёт по SQL-батчам (#234): шифруется и удерживается только
+    // текущий батч, а не весь вход. Ошибка в батче прерывает цикл, поэтому
+    // предобработка последующих батчей не запускается.
+    for (let start = 0; start < entities.length; start += BATCH_SIZE) {
+      const batchEntities = entities.slice(start, start + BATCH_SIZE);
+      const dataList = await mapWithConcurrency(
+        batchEntities,
+        INSERT_MANY_ENCRYPTION_CONCURRENCY,
+        (e) => this.encryptEntity({ ...(e as Record<string, any>) }, e),
+      );
       const groups = new Map<
         string,
         { keys: string[]; rows: Record<string, any>[] }
       >();
 
-      for (const data of batch) {
+      for (const data of dataList) {
         const keys = Object.keys(data)
           .filter((k) => data[k] !== undefined && dbSchema[k])
           .sort();
