@@ -2006,10 +2006,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       keys: whereKeys,
       dbSchema: whereDbSchema,
     } = await this.buildWhere(where);
-    if (!whereKeys.length) {
+    // Проверяем скомпилированный предикат, а не список параметров: предикаты
+    // без параметров (IS NULL / IS NOT NULL, вложенные логические группы) допустимы.
+    if (!whereClause) {
       throw new Error(
         `updateBy() on ${this.entityClass.name} has no effective WHERE condition ` +
-          `(all values are undefined) — refusing full-table update`,
+          `(empty predicate, all values are undefined) — refusing full-table update`,
       );
     }
 
@@ -2122,10 +2124,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
     const { whereClause, values, keys, dbSchema } =
       await this.buildWhere(where);
-    if (!keys.length) {
+    // Проверяем скомпилированный предикат, а не список параметров: предикаты
+    // без параметров (IS NULL / IS NOT NULL, вложенные логические группы) допустимы.
+    if (!whereClause) {
       throw new Error(
         `deleteBy() on ${this.entityClass.name} has no effective WHERE condition ` +
-          `(all values are undefined) — refusing full-table delete`,
+          `(empty predicate, all values are undefined) — refusing full-table delete`,
       );
     }
 
