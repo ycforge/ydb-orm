@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { TimestampEntity } from './fixtures/timestamp/timestamp.entity.js';
+import { WhereOperatorEntity } from './fixtures/where_operator/where-operator.entity.js';
+import { MembershipEntity } from './fixtures/membership/membership.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import {
@@ -97,6 +99,12 @@ describe('updateBy() / deleteBy()', () => {
     AadCompositeEntity.setExecutor(undefined as any);
     AadCompositeEntity.setEncryptionProvider(undefined);
     AadCompositeEntity.setBlindIndexProvider(undefined);
+    WhereOperatorEntity.setExecutor(undefined as any);
+    WhereOperatorEntity.setEncryptionProvider(undefined);
+    WhereOperatorEntity.setBlindIndexProvider(undefined);
+    MembershipEntity.setExecutor(undefined as any);
+    MembershipEntity.setEncryptionProvider(undefined);
+    MembershipEntity.setBlindIndexProvider(undefined);
   });
 
   describe('updateBy()', () => {
@@ -447,6 +455,156 @@ describe('updateBy() / deleteBy()', () => {
       expect(q.sql).toContain('`user_uuid` = $w0');
       expect(q.sql).toContain('`role_uuid` = $w1');
       expect(q.sql).toContain('AND');
+    });
+  });
+
+  describe('parameterless predicates (#237)', () => {
+    it('updateBy() accepts { field: null } and emits IS NULL', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.updateBy({ name: null }, { status: 'active' });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('UPDATE `where_operator_test`');
+      expect(q.sql).toContain('WHERE `name` IS NULL');
+      expect(q.sql).toContain('SET `status` = $s0');
+      expect((q.params.s0 as any).value).toBe('active');
+      expect(q.params.w0).toBeUndefined();
+    });
+
+    it('deleteBy() accepts { field: { $ne: null } } and emits IS NOT NULL', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.deleteBy({ name: { $ne: null } });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('DELETE FROM `where_operator_test`');
+      expect(q.sql).toContain('WHERE `name` IS NOT NULL');
+      expect(Object.keys(q.params)).toHaveLength(0);
+    });
+
+    it('accepts nested parameterless logical predicates', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.updateBy(
+        { $or: [{ name: null }, { status: null }] },
+        { rating: 1 },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('WHERE (`name` IS NULL OR `status` IS NULL)');
+      expect((q.params.s0 as any).value).toBe(1);
+    });
+
+    it('deleteBy() rejects a predicate of only undefined before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.deleteBy({ name: undefined }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects an empty object before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.updateBy({}, { rating: 1 }),
+      ).rejects.toThrow(/requires at least one WHERE condition/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects a nested predicate resolving to nothing', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.updateBy(
+          { $or: [{ name: undefined }] },
+          { rating: 1 },
+        ),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table update/);
+      expect(mock.queries).toHaveLength(0);
+    });
+  });
+
+  describe('empty relation filters are not effective (#237)', () => {
+    it('deleteBy() rejects many-to-one { parent: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(MembershipEntity.deleteBy({ user: {} })).rejects.toThrow(
+        /no effective WHERE condition.*full-table delete/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects many-to-one { parent: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.updateBy({ user: {} }, { role: 'admin' }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table update/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects { parent: { uuid: undefined } } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.deleteBy({ user: { uuid: undefined } }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects { $or: [{ parent: {} }] } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.deleteBy({ $or: [{ user: {} }] }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects one-to-many { children: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      UserEntity.setExecutor(mock.executor);
+
+      await expect(UserEntity.deleteBy({ userRoles: {} })).rejects.toThrow(
+        /no effective WHERE condition.*full-table delete/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('still accepts a related filter with an effective inner predicate', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await MembershipEntity.deleteBy({ user: { uuid: userRow.uuid } });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('DELETE FROM `memberships`');
+      expect(q.sql).toContain('`user_uuid` IN (SELECT `uuid` FROM `users`');
+      expect(q.sql).toContain('WHERE `uuid` = $w0');
+    });
+
+    it('keeps the read path findAll({ relation: {} }) working', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await MembershipEntity.findAll({ user: {} });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('FROM `memberships`');
+      expect(q.sql).toContain('`user_uuid` IN (SELECT `uuid` FROM `users`)');
     });
   });
 });

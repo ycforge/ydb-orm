@@ -143,6 +143,11 @@ export interface WhereBuildContext {
   keys: string[];
   dbSchema: Record<string, YdbPrimitive>;
   nextParam: () => string;
+  // Число реально значимых листовых предикатов (#237). Параметры не являются
+  // мерой: `IS NULL` / `IS NOT NULL` их не порождают, а пустой related-фильтр
+  // порождает SQL без единого условия. Инкрементируется только при выпуске
+  // листового условия (в т.ч. связанного фильтра с непустым inner-предикатом).
+  effectiveConditions: number;
 }
 
 /**
@@ -1068,12 +1073,18 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       } else if (!dbSchema[key] && this.findRelation(key)) {
         // Related filter (#17): the key is a relation property and the value is
         // a predicate over the related entity's columns. Columns are checked
-        // first, so existing behavior for fields is unchanged.
+        // first, so existing behavior for fields is unchanged. Эффективность
+        // такого фильтра считается по его внутренним листовым условиям: пустой
+        // inner (или состоящий только из пустых related-фильтров) не даёт
+        // ни одного инкремента, хотя SQL-обёртка непустая (#237).
         const sql = await this.buildRelatedCondition(key, value, ctx);
         parts.push(sql);
       } else {
         const sql = await this.buildFieldCondition(key, value, ctx, env);
-        if (sql) parts.push(sql);
+        if (sql) {
+          parts.push(sql);
+          ctx.effectiveConditions++;
+        }
       }
     }
 
@@ -1091,6 +1102,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     values: Record<string, any>;
     keys: string[];
     dbSchema: Record<string, YdbPrimitive>;
+    effectiveConditions: number;
   }> {
     const meta = this.getMeta();
     const ctx: WhereBuildContext = {
@@ -1098,6 +1110,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       keys: [],
       dbSchema: { ...getEntityDbSchema(meta) },
       nextParam: createParamAllocator('w'),
+      effectiveConditions: 0,
     };
 
     const sql = await this.buildWhereNode(where, ctx, {
@@ -1109,6 +1122,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       values: ctx.values,
       keys: ctx.keys,
       dbSchema: ctx.dbSchema,
+      effectiveConditions: ctx.effectiveConditions,
     };
   }
 
@@ -2005,11 +2019,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       values: whereValues,
       keys: whereKeys,
       dbSchema: whereDbSchema,
+      effectiveConditions,
     } = await this.buildWhere(where);
-    if (!whereKeys.length) {
+    // Проверяем наличие хотя бы одного значимого листового предиката (#237):
+    // пустой related-фильтр даёт непустой SQL без параметров и без условий.
+    if (!effectiveConditions) {
       throw new Error(
         `updateBy() on ${this.entityClass.name} has no effective WHERE condition ` +
-          `(all values are undefined) — refusing full-table update`,
+          `— refusing full-table update`,
       );
     }
 
@@ -2120,12 +2137,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
 
-    const { whereClause, values, keys, dbSchema } =
+    const { whereClause, values, keys, dbSchema, effectiveConditions } =
       await this.buildWhere(where);
-    if (!keys.length) {
+    // Проверяем наличие хотя бы одного значимого листового предиката (#237):
+    // пустой related-фильтр даёт непустой SQL без параметров и без условий.
+    if (!effectiveConditions) {
       throw new Error(
         `deleteBy() on ${this.entityClass.name} has no effective WHERE condition ` +
-          `(all values are undefined) — refusing full-table delete`,
+          `— refusing full-table delete`,
       );
     }
 
