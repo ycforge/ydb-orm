@@ -96,6 +96,12 @@ function coreImports(
   sync = false,
   overrides: {
     driverFactory?: () => Driver | Promise<Driver>;
+    poolOptions?: {
+      minSize?: number;
+      maxSize?: number;
+      sessionTimeout?: number;
+    };
+    retry?: { maxAttempts?: number };
   } = {},
 ) {
   return [
@@ -332,6 +338,75 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       .compile();
     openModules.push(retry);
     await retry.init();
+  });
+
+  it('невалидная retry-конфигурация валидируется до создания ресурсов (#232)', async () => {
+    const closeSpy = jest.fn(() => undefined);
+    const driverFactory = jest.fn(
+      () => ({ close: closeSpy }) as unknown as Driver,
+    );
+
+    await expect(
+      Test.createTestingModule({
+        imports: coreImports(false, {
+          driverFactory,
+          retry: { maxAttempts: 0 },
+        }),
+      }).compile(),
+    ).rejects.toThrow(/"maxAttempts" must be an integer >= 1/);
+
+    // Провалидировано ДО claim и создания драйвера: фабрика не вызвана.
+    expect(driverFactory).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // Слот имени свободен: повторный бутстрап с тем же именем проходит.
+    const retry = await Test.createTestingModule({
+      imports: coreImports(),
+    })
+      .overrideProvider(YDB_DRIVER)
+      .useValue({})
+      .overrideProvider(YDB_QUERY)
+      .useValue(createMockExecutor().executor)
+      .compile();
+    openModules.push(retry);
+    await retry.init();
+  });
+
+  it('ошибка создания executor после драйвера закрывает его и освобождает слот (#232)', async () => {
+    let closeCount = 0;
+    const fakeDriver = {
+      close: () => {
+        closeCount++;
+      },
+    };
+
+    // minSize > maxSize: SessionPool бросает RangeError уже ПОСЛЕ того, как
+    // драйвер успешно создан провайдером YDB_DRIVER.
+    await expect(
+      Test.createTestingModule({
+        imports: coreImports(false, {
+          driverFactory: () => fakeDriver as unknown as Driver,
+          poolOptions: { minSize: 5, maxSize: 1 },
+        }),
+      }).compile(),
+    ).rejects.toThrow(/minSize \(5\) cannot exceed maxSize \(1\)/);
+
+    // Исходная ошибка конфигурации проброшена; драйвер закрыт ровно один раз.
+    expect(closeCount).toBe(1);
+
+    // Слот имени освобождён: повторный бутстрап с тем же именем проходит,
+    // драйвер больше не закрывается.
+    const retry = await Test.createTestingModule({
+      imports: coreImports(),
+    })
+      .overrideProvider(YDB_DRIVER)
+      .useValue({})
+      .overrideProvider(YDB_QUERY)
+      .useValue(createMockExecutor().executor)
+      .compile();
+    openModules.push(retry);
+    await retry.init();
+    expect(closeCount).toBe(1);
   });
 
   it('YdbOrmModule.forRoot наследует защиту от дублей', async () => {
