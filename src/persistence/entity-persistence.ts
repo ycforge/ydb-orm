@@ -1011,13 +1011,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const pathName = ctx.nextParam();
         const valName = ctx.nextParam();
         addParam(pathName, path, 'Utf8');
-        addParam(
-          valName,
-          this.normalizeWhereValue(field, equals),
-          fieldType === 'Json' || fieldType === 'JsonDocument'
-            ? fieldType
-            : 'Utf8',
-        );
+        addParam(valName, this.normalizeWhereValue(field, equals), 'Utf8');
         return `JSON_VALUE(${quotedField}, $${pathName}) = $${valName}`;
       }
       default:
