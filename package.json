@@ -116,17 +116,19 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "mts"
     ],
     "testRegex": ".*\\.spec\\.ts$",
     "extensionsToTreatAsEsm": [
-      ".ts"
+      ".ts",
+      ".mts"
     ],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
-      "^.+\\.(t|j)s$": [
+      "^.+\\.(m?ts|js)$": [
         "ts-jest",
         {
           "useESM": true

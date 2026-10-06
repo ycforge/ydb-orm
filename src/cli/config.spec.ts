@@ -133,6 +133,22 @@ describe('loadCliConfig (#103)', () => {
     expect(config.migrationsDir).toBe('./migrations');
   });
 
+  it('loads an .mts config with a default export', async () => {
+    fs.writeFileSync(
+      path.join(dir, 'ydb-orm.config.mts'),
+      `export default {
+        endpoint: 'grpc://mts:2136/local',
+        credentialsProvider: { getToken: async () => 'token' },
+      };`,
+      'utf-8',
+    );
+
+    const config = await loadCliConfig(undefined, dir);
+
+    expect(config.endpoint).toBe('grpc://mts:2136/local');
+    expect(config.credentialsProvider).toBeDefined();
+  });
+
   it('fails clearly when --config points to a missing file', async () => {
     await expect(loadCliConfig('./no-such.config.ts', dir)).rejects.toThrow(
       new RegExp(`Config file not found: .*no-such\\.config\\.ts`),
@@ -151,7 +167,7 @@ describe('loadCliConfig (#103)', () => {
 
   it('requires auth in the config file', async () => {
     fs.writeFileSync(
-      path.join(dir, 'ydb-orm.config.mts'),
+      path.join(dir, 'ydb-orm.config.mjs'),
       `export default {
         endpoint: 'grpc://cfg:2136/local',
       };`,
@@ -165,7 +181,7 @@ describe('loadCliConfig (#103)', () => {
 
   it('accepts a config file with an explicit CredentialsProvider', async () => {
     fs.writeFileSync(
-      path.join(dir, 'ydb-orm.config.mts'),
+      path.join(dir, 'ydb-orm.config.mjs'),
       `export default {\n` +
         `  endpoint: 'grpc://cfg:2136/local',\n` +
         `  credentialsProvider: { getToken: async () => 'token' },\n` +
