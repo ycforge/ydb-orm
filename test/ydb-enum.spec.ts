@@ -212,9 +212,9 @@ describe('@YdbEnum', () => {
       await EnumInt32Entity.find({ status: Status.PENDING });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`status` = $status');
+      expect(q.sql).toContain('`status` = $w0');
       // PENDING = index 2
-      expect(rawValue(q.params.status)).toBe(2);
+      expect(rawValue(q.params.w0)).toBe(2);
     });
   });
 

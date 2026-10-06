@@ -136,10 +136,10 @@ describe('#175: blind index очищается при null', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `bi_test`');
-      expect(q.sql).toContain('`secret` = $secret');
-      expect(q.sql).toContain('`secret_bi` = $secret_bi');
-      expect((q.params.secret as any).item).toBeNull();
-      expect((q.params.secret_bi as any).item).toBeNull();
+      expect(q.sql).toContain('`secret` = $s0');
+      expect(q.sql).toContain('`secret_bi` = $s1');
+      expect((q.params.s0 as any).item).toBeNull();
+      expect((q.params.s1 as any).item).toBeNull();
     });
 
     it('null для lazy-поля: SET включает ciphertext и blind index = null', async () => {
@@ -150,10 +150,10 @@ describe('#175: blind index очищается при null', () => {
       await BiEntity.updateBy({ uuid: UUID }, { token: null });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`token` = $token');
-      expect(q.sql).toContain('`token_bi` = $token_bi');
-      expect((q.params.token as any).item).toBeNull();
-      expect((q.params.token_bi as any).item).toBeNull();
+      expect(q.sql).toContain('`token` = $s0');
+      expect(q.sql).toContain('`token_bi` = $s1');
+      expect((q.params.s0 as any).item).toBeNull();
+      expect((q.params.s1 as any).item).toBeNull();
     });
 
     it('undefined — омиссия: поле исключается из patch, blind index не трогается', async () => {
@@ -167,7 +167,7 @@ describe('#175: blind index очищается при null', () => {
       );
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`name` = $name');
+      expect(q.sql).toContain('`name` = $s0');
       expect(q.sql).not.toContain('`secret` =');
       expect(q.sql).not.toContain('`secret_bi` =');
     });
@@ -180,9 +180,9 @@ describe('#175: blind index очищается при null', () => {
       await BiEntity.updateBy({ uuid: UUID }, { secret: 'new-secret' });
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`secret_bi` = $secret_bi');
-      expect(q.params.secret_bi).toBeDefined();
-      expect((q.params.secret_bi as any).value).toBe(HASH_OF('new-secret'));
+      expect(q.sql).toContain('`secret_bi` = $s1');
+      expect(q.params.s1).toBeDefined();
+      expect((q.params.s1 as any).value).toBe(HASH_OF('new-secret'));
     });
   });
 
@@ -200,17 +200,13 @@ describe('#175: blind index очищается при null', () => {
 
       // 2. Поиск прежнего plaintext: запрос по secret_bi, БД не отдаёт
       //    строку (blind index в ней null) → find() возвращает null.
-      db.expect(
-        /FROM `bi_test` WHERE `secret_bi` = \$secret_bi LIMIT 1/,
-      ).returns([]);
+      db.expect(/FROM `bi_test` WHERE `secret_bi` = \$w0 LIMIT 1/).returns([]);
       const hits = await BiEntity.find({ secret: 'old-secret' });
       expect(hits).toBeNull();
 
       const findCall = db.calls[db.calls.length - 1];
-      expect(findCall.params.secret_bi).toBeDefined();
-      expect((findCall.params.secret_bi as any).value).toBe(
-        HASH_OF('old-secret'),
-      );
+      expect(findCall.params.w0).toBeDefined();
+      expect((findCall.params.w0 as any).value).toBe(HASH_OF('old-secret'));
       db.assertComplete();
     });
   });

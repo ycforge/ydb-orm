@@ -45,8 +45,8 @@ describe('findBy / findOneBy', () => {
 
     await UserEntity.findBy({ uuid: uuid1 });
 
-    expect(mock.queries[0].sql).toContain('`uuid` = $uuid');
-    expect(mock.queries[0].params.uuid).toBeInstanceOf(Uuid);
+    expect(mock.queries[0].sql).toContain('`uuid` = $w0');
+    expect(mock.queries[0].params.w0).toBeInstanceOf(Uuid);
   });
 
   it('findBy() пробрасывает options (limit) в SQL', async () => {

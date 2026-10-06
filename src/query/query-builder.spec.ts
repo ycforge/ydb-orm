@@ -40,10 +40,10 @@ describe('YdbQueryBuilder', () => {
 
     expect(sql).toBe(
       'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos` ' +
-        'WHERE `is_public` = $is_public AND `title` = $title ' +
+        'WHERE `is_public` = $w0 AND `title` = $w1 ' +
         'ORDER BY `rating` DESC, `title` ASC LIMIT 20 OFFSET 10',
     );
-    expect(values).toEqual({ is_public: true, title: 'Sunset' });
+    expect(values).toEqual({ w0: true, w1: 'Sunset' });
   });
 
   it('builds SELECT without WHERE', async () => {
@@ -140,7 +140,7 @@ describe('YdbQueryBuilder', () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toBeInstanceOf(QbPhotoEntity);
     expect(result[0].title).toBe('Sunset');
-    expect(mock.queries[0].sql).toContain('WHERE `is_public` = $is_public');
+    expect(mock.queries[0].sql).toContain('WHERE `is_public` = $w0');
   });
 
   it('getOne limits to 1 and returns first entity or null', async () => {
@@ -281,7 +281,7 @@ describe('YdbQueryBuilder', () => {
 
     expect(count).toBe(7);
     expect(mock.queries[0].sql).toBe(
-      'SELECT COUNT(*) AS cnt FROM `qb_photos` WHERE `is_public` = $is_public',
+      'SELECT COUNT(*) AS cnt FROM `qb_photos` WHERE `is_public` = $w0',
     );
   });
 
