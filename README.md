@@ -600,6 +600,8 @@ HMAC-SHA256, KMS) — в пакете `@ycforge/orm-security-providers`.
 
 При `updateBy()` для зашифрованного поля ORM собирает AAD из значений AAD-полей, зафиксированных в `where` (например, по PK). Если AAD не может быть однозначно определён из предиката, ORM бросает ошибку — для явного переопределения можно использовать `aadOverride` в `@YdbEncrypted({ aadOverride: '...' })`.
 
+**Контракт `updateBy()` для lazy-полей — только plaintext.** В отличие от `save()`, `updateBy()` принимает обычный патч и не знает, что значение скопировано из ещё не расшифрованного `@YdbEncrypted({ lazy: true })` поля. Поэтому ciphertext (`Uint8Array`/`Buffer`) в патче отвергается до выполнения запроса: сначала получите plaintext через `await entity.decryptField('field')` / `await entity.decryptLazyFields()` и передайте его, либо не включайте поле в патч, чтобы оставить значение в БД без изменений. Обычные `string`/`number`/`boolean` значения шифруются как прежде.
+
 ## JSON-колонки
 
 Поддерживаются три варианта:
