@@ -1058,7 +1058,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           if (subSql) subs.push(subSql);
         }
         if (subs.length) {
-          parts.push(`(${subs.join(` ${combiner} `)})`);
+          const joined = subs.join(` ${combiner} `);
+          // Обёртка нужна только для $or: AND ассоциативен и имеет более
+          // высокий приоритет, поэтому лишние внешние скобки у $and не нужны
+          // (#233 — иначе `(A OR B) AND (C OR D)` превращалось бы в
+          // `((A OR B) AND (C OR D))`). Вложенный $or всегда оборачивается сам.
+          parts.push(combiner === 'OR' ? `(${joined})` : joined);
         }
       } else if (!dbSchema[key] && this.findRelation(key)) {
         // Related filter (#17): the key is a relation property and the value is
