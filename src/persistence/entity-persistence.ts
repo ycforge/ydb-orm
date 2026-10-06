@@ -110,6 +110,19 @@ export interface PersistenceDeps {
 const lazyPendingCiphertext = new WeakMap<object, Map<string, any>>();
 
 /**
+ * Binary value detector for #243. The encryption provider contract accepts
+ * plaintext only as a string, so a Uint8Array/Buffer reaching updateBy() as a
+ * patch value for an @YdbEncrypted field is ciphertext, not plaintext —
+ * typically a pending lazy field copied from a fetched entity. save() can
+ * recognise that case through instance-associated state
+ * (lazyPendingCiphertext), while updateBy() receives an ordinary patch and
+ * must reject the raw ciphertext before building/executing the query.
+ */
+function isBinaryCiphertext(value: unknown): value is Uint8Array {
+  return value instanceof Uint8Array;
+}
+
+/**
  * Returns whether the instance still has any undecrypted lazy fields.
  * Exported for toJSON() in YdbBaseEntity.
  */
@@ -1996,6 +2009,20 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             data[blindIndexColumnName(ef.propertyKey)] = null;
           }
           continue;
+        }
+
+        // #243: updateBy() gets an ordinary patch, so it cannot consult the
+        // instance-associated lazyPendingCiphertext map the way save() does.
+        // Encrypted-field plaintext is always a string (provider contract), so
+        // a binary patch value can only be ciphertext — e.g. copied from a
+        // fetched, not-yet-decrypted lazy entity. Reject it before any query.
+        if (isBinaryCiphertext(value)) {
+          throw new Error(
+            `updateBy() on ${this.entityClass.name} cannot set encrypted field "${ef.propertyKey}" ` +
+              `from a binary value: updateBy() accepts plaintext only. ` +
+              `Decrypt the field first via decryptField("${ef.propertyKey}") / decryptLazyFields(), ` +
+              `or pass an explicit plaintext value.`,
+          );
         }
 
         let aadFields: Record<string, string> = {};
