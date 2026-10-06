@@ -264,7 +264,16 @@ function validateYdbTtlOptions(
         `got "${options?.interval}"`,
     );
   }
-  if (parseIsoDuration(options.interval)?.subMicroRemainder) {
+  const parsed = parseIsoDuration(options.interval);
+  if (parsed === null) {
+    throw new Error(
+      `@YdbTtl on class "${className}": interval "${options.interval}" ` +
+        `contains calendar components (years/months) — YDB Interval supports ` +
+        `only fixed durations representable as integer microseconds ` +
+        `(e.g. "P30D", "PT2H")`,
+    );
+  }
+  if (parsed.subMicroRemainder) {
     throw new Error(
       `@YdbTtl on class "${className}": interval "${options.interval}" is ` +
         `more precise than a microsecond — YDB Interval supports only integer ` +
@@ -307,6 +316,24 @@ export function validateYdbTtlAgainstSchema(
 ): string[] {
   const issues: string[] = [];
   const type = columns[ttl.column];
+
+  // Повторная проверка интервала на уровне схемы (defense-in-depth, #236):
+  // метаданные могут быть собраны в обход @YdbTtl, но календарные компоненты
+  // (годы/месяцы) не должны дойти до генерации DDL.
+  const parsed = parseIsoDuration(ttl.interval);
+  if (parsed === null) {
+    issues.push(
+      `entity "${entityName}": @YdbTtl interval "${ttl.interval}" contains ` +
+        `calendar components (years/months) — YDB Interval supports only fixed ` +
+        `durations representable as integer microseconds (e.g. "P30D", "PT2H")`,
+    );
+  } else if (parsed.subMicroRemainder) {
+    issues.push(
+      `entity "${entityName}": @YdbTtl interval "${ttl.interval}" is more ` +
+        `precise than a microsecond — YDB Interval supports only integer ` +
+        `microseconds (up to 6 fractional second digits)`,
+    );
+  }
 
   if (!type) {
     issues.push(
