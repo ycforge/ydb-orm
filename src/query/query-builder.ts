@@ -3,6 +3,7 @@ import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbPrimitive } from '../core/types.js';
+import { resolveEncryptedProjection } from '../encryption/encrypted-projection.js';
 import {
   resolveRetrieveLimit,
   resolveRetrieveOffset,
@@ -384,6 +385,11 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     this.validateOrderFields(dbSchema);
     this.validateSelectFields(dbSchema);
 
+    const effectiveSelect = resolveEncryptedProjection(
+      meta,
+      this.selectColumns,
+    );
+
     const orderClause = this.orderClauses.length
       ? ' ORDER BY ' +
         this.orderClauses
@@ -391,8 +397,8 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
           .join(', ')
       : '';
 
-    const selectClause = this.selectColumns?.length
-      ? this.selectColumns.map(quoteIdentifier).join(', ')
+    const selectClause = effectiveSelect?.length
+      ? effectiveSelect.map(quoteIdentifier).join(', ')
       : // Default projection — only declared columns (#164):
         // SELECT * would also pull columns removed from the metadata.
         Object.keys(meta.schema).map(quoteIdentifier).join(', ');

@@ -24,6 +24,7 @@ import {
   YdbEncryptionProvider,
   YdbBlindIndexProvider,
 } from '../encryption/ydb-encryption-provider.interface.js';
+import { resolveEncryptedProjection } from '../encryption/encrypted-projection.js';
 import {
   YDB_CREATE_DATE_KEY,
   YDB_UPDATE_DATE_KEY,
@@ -1482,6 +1483,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
     this.validateSelectFields(options?.select, meta);
+    const effectiveSelect = resolveEncryptedProjection(meta, options?.select);
 
     const { whereClause, values, keys, dbSchema } =
       await this.buildWhere(where);
@@ -1492,8 +1494,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       );
     }
 
-    const selectClause = options?.select?.length
-      ? options.select.map(quoteIdentifier).join(', ')
+    const selectClause = effectiveSelect?.length
+      ? effectiveSelect.map(quoteIdentifier).join(', ')
       : this.buildDefaultSelect(meta);
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT 1`;
 
@@ -1525,11 +1527,12 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const exec = this.getExecutor(options?.trx);
     const meta = this.getMeta();
     this.validateSelectFields(options?.select, meta);
+    const effectiveSelect = resolveEncryptedProjection(meta, options?.select);
 
     const { whereClause, values, keys, dbSchema } =
       await this.buildWhere(where);
-    const selectClause = options?.select?.length
-      ? options.select.map(quoteIdentifier).join(', ')
+    const selectClause = effectiveSelect?.length
+      ? effectiveSelect.map(quoteIdentifier).join(', ')
       : this.buildDefaultSelect(meta);
     const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
