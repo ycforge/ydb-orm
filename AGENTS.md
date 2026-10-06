@@ -2,7 +2,7 @@
 
 ## Обзор проекта
 
-**@ycforge/ydb-orm** — TypeScript-библиотека (ESM): TypeORM-like ORM для **YDB (Yandex Database)** с интеграцией с NestJS. 
+**@ycforge/ydb-orm** — TypeScript-библиотека (ESM): TypeORM-like ORM для **YDB (Yandex Database)** с интеграцией с NestJS.
 
 Ключевые возможности: Active Record (`YdbBaseEntity`), декораторы (`@YdbEntity`, `@YdbColumn`, `@YdbPrimaryColumn`, `@YdbEncrypted`, relations, `@EagerLoad`), шифрование полей с blind index, транзакции, schema sync (аналог `synchronize` в TypeORM).
 
@@ -10,14 +10,14 @@
 
 ## Технологический стек
 
-- **Runtime**: Node.js ≥ 22, ESM (`"type": "module"`, `module: nodenext` в tsconfig). Пакетный менеджер — **yarn**.
+- **Runtime**: Node.js ≥ 22.18.0 (`engines`), ESM (`"type": "module"`, `module: nodenext` в tsconfig). Пакетный менеджер — **yarn**.
 - **YDB**: драйвер `@ydbjs/core` + `@ydbjs/query` (новое поколение SDK, не `ydb-sdk`); аутентификация только через готовый `AuthManager` из `@ycforge/auth` (опция `auth` в `YdbModuleOptions`, адаптер `createYdbCredentialsProvider(auth, YDB_AUTH_USAGE, options)` из `@ycforge/auth/ydb`) или через явный `CredentialsProvider`.
 - **NestJS**: `@nestjs/common` / `@nestjs/core` — **optional peerDependencies** (интеграция вынесена в подпакет `@ycforge/ydb-orm/nest`: `YdbOrmModule` / `YdbCoreModule`); для тестов — `@nestjs/testing` (devDependency). Основной пакет ядра NestJS-нейтрален.
 - **Протобуф**: `@ydbjs/api` + `@bufbuild/protobuf` (schema sync ходит в Table service `DescribeTable`). Версия `@bufbuild/protobuf` запинена ровно на `2.12.0` — на `^` ломается типизация `anyUnpack` из-за расхождения branded-типов с `@ydbjs/*`.
 - **Тесты**: Jest 30 + ts-jest (ESM-режим, `NODE_OPTIONS=--experimental-vm-modules`); конфиг jest — в `package.json`.
 - **Линт/форматирование**: ESLint 9 (flat config) + Prettier.
 
-- `examples/` — примеры использования пакета (`01-basic-crud`, `02-relations`, `03-encryption`, `04-schema-sync`). В пакет не попадают, служат документацией и локальными smoke-тестами.
+- `examples/` — нумерованные примеры использования пакета (от базового CRUD до отношений, шифрования, транзакций, миграций и schema sync) плюс подпапка `nestjs/` (интеграция через `@ycforge/ydb-orm/nest`) и общий код в `shared/` (сущности, провайдеры, настройки подключения); актуальный перечень и инструкции по запуску — в `examples/README.md`. В пакет примеры не попадают, служат документацией и локальными smoke-тестами. Сборка — `yarn examples:build` (`tsc -p examples/tsconfig.json` → `dist-examples/`).
 
 ## Структура `src/` (публичный API — `src/index.ts`)
 
@@ -31,7 +31,7 @@
 - `entity/entity-runtime.ts` — runtime-зависимости сущности (executor, encryption/blind-index/validation провайдеры, `uuidGenerator`, кешированный `YdbRepository`). WeakMap по классу: наследники не разделяют состояние.
 - `encryption/` — интерфейсы `YdbEncryptionProvider` / `YdbBlindIndexProvider` (encrypt/decrypt с AAD, hash для blind index). `@YdbEncrypted({ lazy: true })` — ленивая дешифровка: поле дешифруется не при SELECT, а явно через `decryptField()`/`decryptLazyFields()` на инстансе; `toJSON()` требует предварительной дешифровки. Имя synthetic-колонки blind index (`{field}_bi`) задано в одной точке — `blindIndexColumnName`/`BLIND_INDEX_SUFFIX` в `decorators/encryption.decorator.ts` (используют persistence, schema sync, валидация и CLI). **Внимание:** тестовая заглушка шифрования (`TestOnlyEncryptionProvider`) вынесена в отдельный пакет `@ycforge/js-dev-tools` (devDependency из NPM) — в самом `ydb-orm` реальной криптографии нет.
 - `metadata/` — `entity-metadata.ts` (сбор метаданных из Reflect, кеш на класс) и `entity-registry.ts` (глобальный реестр сущностей: `@YdbEntity` регистрирует класс при загрузке файла; используется schema sync).
-- `module/` — интеграция с NestJS (подпакет `src/nest/`, экспортируется как `@ycforge/ydb-orm/nest`):
+- `nest/` — интеграция с NestJS (экспортируется как подпакет `@ycforge/ydb-orm/nest`):
   - `nest/ydb-core.module.ts` — глобальный `YdbCoreModule.forRootAsync(...)` (`useFactory` / `useClass` / `useExisting`): `Driver`, `YdbExecutor` (через `query(driver)`), credentials provider через `auth` (`AuthManager` из `@ycforge/auth`) или явный `credentialsProvider`/`driverOptions.credentialsProvider` (конфликт источников — ошибка), опциональные encryption/blind-index провайдеры, schema sync.
   - `nest/ydb-orm.module.ts` — `YdbOrmModule.forFeature([...Entity], connectionName?)`: через `repository-factory.ts` сущностям инжектируется executor и провайдеры шифрования СВОЕЙ конфигурации (#199), и для каждой создаётся `YdbRepository<Entity>` (без `forFeature` статические методы упадут с понятной ошибкой про `YdbOrmModule.forFeature([...])` / `configureEntities([...])`). `forFeature` регистрирует инжектируемые репозитории — токен получается через `getRepositoryToken(Entity, connectionName?)` или декоратор `@InjectRepository(Entity, connectionName?)`. DI-провайдер репозитория возвращает тот же инстанс `YdbRepository`, что используется Active Record. Также доступен `YdbEntityManager` (фабрика репозиториев).
   - Множественные конфигурации (#199): `YdbModuleAsyncOptions.name` (по умолчанию `'default'`) — в одном процессе может жить по одному экземпляру на имя (`core-module-registry.claimCoreModuleInit` бросает ошибку только при дубликате имени среди живых). Именованные конфигурации получают собственные DI-токены через мемоизированный `getScopedToken(base, name)` (`nest/constants.ts`; для 'default' — исходные символы, полная обратная совместимость); токен менеджера транзакций — `getTransactionManagerToken(name)` (для 'default' — класс `YdbTransactionManager`). Провайдер `YDB_CONNECTION_NAME` (useValue-строка имени) делает module token динамического модуля уникальным — без него NestJS дедуплицирует два forRootAsync одного класса. Каждая конфигурация владеет своими сущностями через `YdbOrmScope` (DI-токен `YDB_ORM_SCOPE`); дефолтная использует процессный синглтон-скоуп (re-bootstrap идемпотентен), именованные — изолированные скоупы. Одна и та же сущность в двух конфигурациях — ошибка при bootstrap; при shutdown `releaseOrmScope` освобождает сущности.
@@ -42,14 +42,15 @@
 - `cli/` — бинарь `ydb-orm` (`bin` в package.json → `dist/cli/cli.js`): `migration:create|generate|run|revert|show/status|check|repair`, `schema:verify`, `entity:create`, `metadata:dump` (#37, `cli/metadata-dump.ts` — детерминированный JSON-дамп канонических метаданных, без БД), `entity:diagram` (#36, `cli/entity-diagram.ts` — Mermaid ER поверх `buildMetadataDump`, без БД), `completion <bash|zsh|fish>` (генерация shell-автодополнения, `cli/completion.ts`). Детерминированная сортировка вывода — `cli/sort.ts` (`compareStrings`, code points, не localeCompare). Цветной diff расхождений схемы для `migration:generate`/`schema:verify` — `cli/diff.ts` (ANSI вручную, отключается не-TTY выводом или `NO_COLOR`); issues строятся экспортируемыми `checkToIssues`/`diffSchemas` из `schema/schema-sync.ts`. Конфиг — `ydb-orm.config.{ts,mts,mjs,js}` (ищется в CWD и выше); в нём обязательно задать `auth` (`AuthManager` из `@ycforge/auth`) или `credentialsProvider`/`driverOptions.credentialsProvider`. Env `YDB_ENDPOINT`/`YDB_CONNECTION_STRING` используется только если конфига нет, но для auth всё равно потребуется файл конфигурации. Для `migration:generate` в конфиге нужен массив `entities`. Подключение — через `core/driver.ts` (общие `createDriver`/`createExecutor`/`resolveCredentialsProvider`, их же использует NestJS-модуль). Проверка готовности (#152): `migration:check`/`migration:show`/`migration:status` идут через общий read-only workflow `cli/migration-verify.ts` + чистый вердикт `migrations/migration-check.ts` (`evaluateMigrationCheck`: ok/pending/interrupted/schema-drift/modified, приоритеты и exit-коды 0–5 в `cli/exit-codes.ts`, тегирование ошибок без заворачивания cause); состояние таблицы учёта читается без DDL через `migrations/migration-bookkeeping.ts` (`readBookkeepingSnapshot`: DescribeTable + голый SELECT, отсутствие таблицы = «не применено ничего», CREATE/ALTER запрещены); команды ничего не меняют в БД, проблемы — в stderr, `--json`-отчёт — весь в stdout.
 - `entity:create` (#24): в TTY — интерактивный мастер колонок (имя → тип YDB → PK/encrypted/enum/date-колонки/TTL) с валидацией до записи и предпросмотром; вне TTY — детерминированный шаблон по умолчанию без чтения stdin; существующий файл никогда не перезаписывается; отмена/EOF — exit 130 без записи. Код: `cli/generators.ts` (спека `YdbEntitySpec`, `validateEntitySpec`, `renderEntityFile`, `createEntityFileFromSpec`), `cli/prompt.ts` (readline-очередь ответов, `PromptCancelledError`), `cli/entity-wizard.ts` (мастер + `runEntityCreateCommand`). Программный API экспортируется из `src/index.ts`; БД не трогается вовсе.
 
-
 ## Тесты (`test/`)
 
-- `test/fixtures/` — тестовые сущности (`UserEntity` + relations/encryption/eager, `UserRoleEntity` с составным PK, `PhotoEntity` со всеми примитивами YDB и blind index), импортируют библиотеку через публичный API (`../../../src/index.js`). Фикстуры слабых мест (#109): `enum_order/order-status.entity.ts` (@YdbEnum, storage Int32), `ttl_document/ttl-document.entity.ts` (@YdbTtl), `indexed_article/indexed-article.entity.ts` (@YdbIndex: автоимя + явное имя составного), `one_to_one/device.entity.ts` + `device-license.entity.ts` (OneToOne через loadRelations).
+- `test/fixtures/` — тестовые сущности, импортируют библиотеку через публичный API (`../../../src/index.js`). Набор разбит по подкаталогам-семействам (перечень ниже иллюстративный, не исчерпывающий — актуальный состав смотри в `test/fixtures/`): базовые сущности и CRUD (`user`, `photo`, `user_role` с составным PK), relations (`one_to_one` device/device-license, `user_profile`, `photo_with_tags`, `tag`, `membership` — M:N через join-таблицу), шифрование/blind index/AAD (`aad_override`, `lazy_secret`, token-collision-сценарии), а также `enum_order` (@YdbEnum, storage Int32), `ttl_document` (@YdbTtl), `indexed_article` (@YdbIndex: автоимя и явное имя составного), `json_doc` (`@YdbColumn('Json'/'JsonDocument')`), `timestamp`, `where_operator` и `param_collision`.
 - `test/helpers/mock-executor.ts` — легаси-мок `YdbExecutor` (записывает SQL и параметры, резолвится заданными строками; result set = массив result sets, каждый — массив строк). Используется существующими спеками; для новых многошаговых сценариев предпочтителен программный мок ниже.
 - `test/helpers/ydb-mock.ts` — **программируемый детерминированный мок** `createScriptedExecutor()` (#109): сценарная очередь шагов `db.expect(sql|regex)` с текучей настройкой `.returns(resultSets)` / `.returnsRows(...rows)` / `.throws(error)` / `.inTransaction()` / `.outsideTransaction()` / `.hangsUntilAbort()`. Строгость: неожиданный SQL/порядок/контекст транзакции — немедленный reject из then() (`UnexpectedMockQueryError`); неистребованные шаги ловит `db.assertComplete()` (вызывать в конце теста); транзакции моделируются событиями begin → commit | rollback в `db.transactionEvents` (после rollback последующие шаги не «закоммичены», каждая транзакция получает свою метку-scope в `RecordedCall.scope`); AbortSignal/timeout/idempotent/cancel записываются на каждый вызов (`RecordedCall.awaited` отличает построенный запрос от отправленного), а `.hangsUntilAbort()` резолвится только отменой переданного сигнала. Мок НЕ эмулирует внутренние ретраи SDK и события 'retry' — их у реального запроса до сбоя транспорта нет. Контракт мока фиксирует `test/ydb-mock.spec.ts`; сценарные регресс-тесты через продакшн-код — `test/scripted-scenarios.spec.ts` (TTL-DDL поток schema sync, парсинг DescribeTable всех примитивов) и `test/scripted-transactions.spec.ts` (commit/rollback через DI-YdbTransactionManager, наблюдаемость signal/timeout, insertMany+enum).
 - `test/helpers/ydb-responses.ts` — фабрики типовых ответов и ошибок (#109): статусные ошибки YDB (`ydbStatusError`, `unavailableError`, `abortedTransactionError`, `schemeError`) и `commitError(cause)`; реалистичные ответы Table service (`describeTableResponse({ columns, primaryKey, indexes, ttl })`, `failedOperationResponse`, `tableNotFoundResponse`, `dateTtlSettings`/`numericTtlSettings`) и мок драйвера `tableServiceDriver([responses])` с очередью ответов describeTable для `YdbSchemaSyncer`.
 - `test/nestjs/` — **критичные интеграционные тесты использования через NestJS** (`Test.createTestingModule`): wiring модуля + Active Record, транзакции, шифрование через DI, schema sync при bootstrap. Сети нет: `YDB_DRIVER` / `YDB_QUERY` подменяются через `overrideProvider` (для именованных конфигураций — `overrideProvider(getScopedToken(YDB_QUERY, name))`, см. `multiple-configs.spec.ts`, #199). Множественные конфигурации и владение сущностями также покрыты `test/orm-scope.spec.ts` (standalone/unit).
+- `test/cli/` — spec'и CLI-команд (`completion`, `entity:create`, `entity:diagram`, `metadata:dump`, `migration:check`, `migration:show --json`, diff схемы).
+- `test/e2e/` — e2e-тесты против реальной YDB; исключены из `yarn test` (`--testPathIgnorePatterns=test/e2e`), запускаются `yarn test:e2e`.
 - Unit-тесты лежат рядом с кодом (`src/**/*.spec.ts`, напр. `src/schema/schema-sync.spec.ts`).
 
 Особенность: в ESM-режиме jest `jest` импортируется из `@jest/globals`.
@@ -58,14 +59,26 @@
 
 ```bash
 yarn install
-yarn build        # tsc -p tsconfig.build.json → dist/ (ESM + .d.ts)
-yarn test         # все тесты (unit + NestJS-интеграционные)
-yarn test:cov     # с покрытием
-yarn lint         # eslint --fix (src, test и examples)
-yarn format       # prettier --write
+yarn build          # tsc -p tsconfig.build.json → dist/ (ESM + .d.ts)
+yarn examples:build # tsc -p examples/tsconfig.json → dist-examples/
+yarn test           # unit + NestJS-интеграционные (test/e2e исключены)
+yarn test:cov       # то же с покрытием
+yarn test:e2e       # e2e против реальной YDB (test/e2e)
+yarn lint           # eslint --fix (src, test и examples)
+yarn format         # prettier --write
 ```
 
-CI/CD пока нет. Публикация: `prepublishOnly` запускает `yarn build`; в пакет попадает только `dist/` + `README.md` + `LICENSE`. Имя пакета — `@ycforge/ydb-orm`, `publishConfig.access` = `public`.
+Публикация: `prepublishOnly` запускает `yarn build`; в пакет попадает только `dist/` (+ `package.json`, `README.md`, `LICENSE`, которые npm включает всегда). Имя пакета — `@ycforge/ydb-orm`, `publishConfig.access` = `public`.
+
+## CI/CD и автоматизация
+
+GitHub Actions в `.github/workflows/`:
+
+- `ci.yml` — при push и pull request в `main` и `dev`: job'ы lint (`yarn lint`), test (`yarn test:cov`) и build (`yarn build` + выгрузка артефакта `dist/`), каждый в матрице Node `22.18.0` и `24.x`. Активная разработка идёт в ветке `dev`, `main` — стабильная.
+- `ai-review.yml` — AI-ревью Pull Request (`hustcer/deepseek-review`, модель задаётся переменной `DEEPSEEK_MODEL`, по умолчанию `deepseek/deepseek-v4-flash`); триггеры opened/reopened/synchronize/labeled, draft-PR пропускаются, для внешних контрибьюторов нужно проставить метку `ai review`.
+- `release.yml` — на push тега `v*`: CI-gate (lint/test/build на Node 22), затем публикация в npm с provenance (`--tag beta` для тегов с дефисом, иначе `latest`) и создание GitHub Release.
+
+`context7.json` в корне — метаданные регистрации проекта в сервисе Context7 (`url` + `public_key` для индексации документации). На сборку, тесты и CI не влияет.
 
 ## Стиль кода и соглашения
 
