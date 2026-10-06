@@ -158,6 +158,49 @@ describe('JSON columns', () => {
       expect((q.params.w1 as any).value).toBe('admin');
     });
 
+    it('binds JSON_VALUE operand as Utf8 for Utf8 + @YdbJson (#235)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonValue('metadata', '$.role', 'admin')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.params.w1).toBeInstanceOf(Utf8);
+      expect((q.params.w1 as any).value).toBe('admin');
+    });
+
+    it('binds JSON_VALUE operand as Utf8 for native Json (#235)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonValue('payload', '$.items[0]', '1')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('JSON_VALUE(`payload`, $w0) = $w1');
+      expect(q.params.w1).toBeInstanceOf(Utf8);
+      expect(q.params.w1).not.toBeInstanceOf(Json);
+      expect((q.params.w1 as any).value).toBe('1');
+    });
+
+    it('binds JSON_VALUE operand as Utf8 for native JsonDocument (#235)', async () => {
+      const mock = createMockExecutor([[]]);
+      JsonDocEntity.setExecutor(mock.executor);
+
+      await JsonDocEntity.query()
+        .andWhereJsonValue('document', '$.title', 'doc')
+        .getMany();
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('JSON_VALUE(`document`, $w0) = $w1');
+      expect(q.params.w1).toBeInstanceOf(Utf8);
+      expect(q.params.w1).not.toBeInstanceOf(JsonDocument);
+      expect((q.params.w1 as any).value).toBe('doc');
+    });
+
     it('composes three JSON_EXISTS on the same column with AND (#201)', async () => {
       const mock = createMockExecutor([[]]);
       JsonDocEntity.setExecutor(mock.executor);
