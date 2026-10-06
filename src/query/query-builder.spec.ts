@@ -285,6 +285,22 @@ describe('YdbQueryBuilder', () => {
     );
   });
 
+  it('getCount returns a bigint count at MAX_SAFE_INTEGER exactly (#245)', async () => {
+    mockRuntime([[{ cnt: 9007199254740991n }]]);
+
+    await expect(QbPhotoEntity.query().getCount()).resolves.toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it('getCount throws for a bigint count above MAX_SAFE_INTEGER (#245)', async () => {
+    mockRuntime([[{ cnt: 9007199254740993n }]]);
+
+    await expect(QbPhotoEntity.query().getCount()).rejects.toThrow(
+      /9007199254740993/,
+    );
+  });
+
   it('clamps limit to 1000 and floor-offsets', async () => {
     mockRuntime();
     const { sql } = await QbPhotoEntity.query().limit(5000).offset(-5).toYql();

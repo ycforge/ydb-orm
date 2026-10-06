@@ -39,6 +39,7 @@ import {
   resolveRetrieveOffset,
 } from '../core/query-limits.js';
 import { executeYdbQuery } from '../core/execute-query.js';
+import { toSafeCount } from '../core/safe-count.js';
 import { resolveExecutorLogger } from '../core/query-logger.js';
 import type { YdbPrimitive } from '../core/types.js';
 import {
@@ -1628,7 +1629,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    return Number(rows[0]?.[0]?.cnt ?? 0);
+    return toSafeCount(rows[0]?.[0]?.cnt);
   }
 
   /** Alias for find(). */
@@ -1688,7 +1689,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       query,
       options,
     );
-    return Number(rows[0]?.[0]?.cnt ?? 0);
+    return toSafeCount(rows[0]?.[0]?.cnt);
   }
 
   /**
