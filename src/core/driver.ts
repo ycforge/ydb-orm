@@ -14,14 +14,29 @@ import { withRetryPolicy } from './retry-executor.js';
 import { resolveYdbRetryPolicy } from './retry.js';
 
 /**
+ * Нормализация endpoint (#244): пробелы по краям срезаются в одной точке,
+ * чтобы адаптер AuthManager и драйвер выводили транспорт из одного и того же
+ * значения. Драйвер трактует endpoint как URL и тоже принимает окружающие
+ * пробелы — без нормализации `secure` мог бы разойтись с фактическим режимом.
+ */
+export function normalizeEndpoint(endpoint: string): string {
+  return endpoint.trim();
+}
+
+/**
  * Fail-fast validation of module options: without an endpoint the driver
- * would fail later with a confusing error deep inside the SDK.
+ * would fail later with a confusing error deep inside the SDK. Returns the
+ * endpoint normalized for reuse by the driver and the credentials adapter.
  */
 export function validateYdbModuleOptions(
   opts: YdbModuleOptions,
   injected?: CredentialsProvider,
-): void {
-  if (!opts || typeof opts.endpoint !== 'string' || !opts.endpoint.trim()) {
+): string {
+  if (
+    !opts ||
+    typeof opts.endpoint !== 'string' ||
+    !normalizeEndpoint(opts.endpoint)
+  ) {
     throw new Error(
       'YDB module options: "endpoint" is required ' +
         '(e.g. "grpcs://ydb.serverless.yandexcloud.net:2135"). ' +
@@ -37,6 +52,23 @@ export function validateYdbModuleOptions(
   // allocated, otherwise the failure would surface later from createExecutor()
   // and leak both resources.
   resolveYdbRetryPolicy(opts.retry);
+  return normalizeEndpoint(opts.endpoint);
+}
+
+/**
+ * Опции адаптера для пути AuthManager (#244): endpoint сначала нормализуется,
+ * чтобы `secure` выводился из того же значения, что использует драйвер.
+ */
+function authAdapterOptions(endpoint: string): {
+  endpoint: string;
+  secure: boolean;
+} {
+  const normalized = normalizeEndpoint(endpoint);
+  return {
+    endpoint: normalized,
+    // grpc:// — local insecure endpoint; grpcs:// — TLS (default).
+    secure: !normalized.startsWith('grpc://'),
+  };
 }
 
 /**
@@ -127,11 +159,11 @@ export function resolveCredentialsProvider(
   const provider =
     opts.credentialsProvider ??
     (opts.auth !== undefined
-      ? createYdbCredentialsProvider(opts.auth, YDB_AUTH_USAGE, {
-          endpoint: opts.endpoint,
-          // grpc:// — local insecure endpoint; grpcs:// — TLS (default).
-          secure: !opts.endpoint.startsWith('grpc://'),
-        })
+      ? createYdbCredentialsProvider(
+          opts.auth,
+          YDB_AUTH_USAGE,
+          authAdapterOptions(opts.endpoint),
+        )
       : undefined) ??
     injected ??
     opts.driverOptions?.credentialsProvider;
@@ -150,7 +182,7 @@ export async function createDriver(
   opts: YdbModuleOptions,
   credentialsProvider?: CredentialsProvider,
 ): Promise<Driver> {
-  validateYdbModuleOptions(opts, credentialsProvider);
+  const endpoint = validateYdbModuleOptions(opts, credentialsProvider);
   // The provider is resolved by the single priority rule (#96) and is passed
   // AFTER spreading driverOptions: driverOptions.credentialsProvider cannot
   // silently overwrite the already-resolved provider.
@@ -160,7 +192,7 @@ export async function createDriver(
   );
   const { credentialsProvider: _driverOptionsProvider, ...restDriverOptions } =
     opts.driverOptions ?? {};
-  const driver = new Driver(opts.endpoint, {
+  const driver = new Driver(endpoint, {
     ...restDriverOptions,
     credentialsProvider: resolvedProvider,
   });
