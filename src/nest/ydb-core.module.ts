@@ -1,3 +1,4 @@
+import { YdbTopics } from '../topic/ydb-topics.js';
 import {
   DynamicModule,
   Global,
@@ -30,6 +31,7 @@ import {
   DEFAULT_CONNECTION_NAME,
   getScopedToken,
   getTransactionManagerToken,
+  getTopicsToken,
 } from './constants.js';
 import { YdbModuleAsyncOptions, YdbOptionsFactory } from './interfaces.js';
 import type { YdbModuleOptions, YdbExecutor } from '../core/interfaces.js';
@@ -115,6 +117,7 @@ class YdbCoreModuleLifecycle
   constructor(
     private readonly state: CoreModuleState,
     private readonly schemaSyncer: YdbSchemaSyncer,
+    private readonly topics: YdbTopics,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -151,7 +154,13 @@ class YdbCoreModuleLifecycle
     // The configuration's entities are released: after shutdown they can be
     // claimed by another configuration (#199).
     releaseOrmScope(this.state.ormScope);
-    await closeOwnedDriver(this.state, opts);
+    try {
+      await this.topics.close();
+    } catch (error) {
+      if (!opts.ignoreCloseErrors) throw error;
+    } finally {
+      await closeOwnedDriver(this.state, opts);
+    }
   }
 }
 
@@ -197,6 +206,7 @@ export class YdbCoreModule {
       ormScope: getScopedToken(YDB_ORM_SCOPE, name),
       lifecycle: getScopedToken(YDB_CORE_LIFECYCLE, name),
       transactionManager: getTransactionManagerToken(name),
+      topics: getTopicsToken(name),
     };
     const state: CoreModuleState = {
       entityScope: createEntityScope(),
@@ -221,6 +231,11 @@ export class YdbCoreModule {
       module: YdbCoreModule,
       imports: [...(options.imports || [])],
       providers: [
+        {
+          provide: tokens.topics,
+          useFactory: (driver: Driver) => new YdbTopics(driver),
+          inject: [tokens.driver],
+        },
         ...asyncProviders,
 
         {
@@ -347,9 +362,9 @@ export class YdbCoreModule {
 
         {
           provide: tokens.lifecycle,
-          useFactory: (syncer: YdbSchemaSyncer) =>
-            new YdbCoreModuleLifecycle(state, syncer),
-          inject: [tokens.schemaSync],
+          useFactory: (syncer: YdbSchemaSyncer, topics: YdbTopics) =>
+            new YdbCoreModuleLifecycle(state, syncer, topics),
+          inject: [tokens.schemaSync, tokens.topics],
         },
 
         {
@@ -362,6 +377,7 @@ export class YdbCoreModule {
         },
       ],
       exports: [
+        tokens.topics,
         tokens.options,
         tokens.driver,
         tokens.query,

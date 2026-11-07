@@ -1259,6 +1259,22 @@
     "@ydbjs/error" "^6.0.0"
     nice-grpc "^2.1.13"
 
+"@ydbjs/topic@6.1.4":
+  version "6.1.4"
+  resolved "https://registry.yarnpkg.com/@ydbjs/topic/-/topic-6.1.4.tgz#6490f19443de75aa9e1227f515a3374dd2776d1b"
+  integrity sha512-+a3JhUILbtLRsNqqtsGUM1Kd00jW4rAgYSJC4zou63MRXuV6Q3jQdBGXBbeXPbHV1CnEm7RA8my9mrMGMRDNag==
+  dependencies:
+    "@bufbuild/protobuf" "2.12.0"
+    "@ydbjs/api" "^6.0.7"
+    "@ydbjs/core" "^6.3.1"
+    "@ydbjs/debug" "^6.0.0"
+    "@ydbjs/error" "^6.0.6"
+    "@ydbjs/retry" "^6.3.0"
+    "@ydbjs/value" "^6.0.8"
+    ms "^2.1.3"
+    nice-grpc "^2.1.13"
+    xstate "^5.24.0"
+
 "@ydbjs/value@6.0.8", "@ydbjs/value@^6.0.8":
   version "6.0.8"
   resolved "https://registry.yarnpkg.com/@ydbjs/value/-/value-6.0.8.tgz#d85857883bdfccaed653d82d88cf22d5a1902e15"
@@ -3382,6 +3398,11 @@ write-file-atomic@^5.0.1:
   dependencies:
     imurmurhash "^0.1.4"
     signal-exit "^4.0.1"
+
+xstate@^5.24.0:
+  version "5.33.4"
+  resolved "https://registry.yarnpkg.com/xstate/-/xstate-5.33.4.tgz#aa847fa8127192244f7b93576c302f810ca5d8e3"
+  integrity sha512-eGNMu3BNqU0Z85P+ouYG5OCZqIABU+QsW6vUieFt9p9gOGs3C+BL10Exg7XdRPSXPQKlP6XoYpYf93r9VmW8mQ==
 
 y18n@^5.0.5:
   version "5.0.8"

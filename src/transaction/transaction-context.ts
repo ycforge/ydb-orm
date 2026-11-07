@@ -1,3 +1,4 @@
+import { inheritTopicTransaction } from '../topic/transaction-binding.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { YdbExecutor } from '../core/interfaces.js';
 import type { YdbTransactionsSettings } from '../core/interfaces.js';
@@ -247,6 +248,7 @@ export function inheritExecutorIdentity(
   source: YdbExecutor,
   target: YdbExecutor,
 ): void {
+  inheritTopicTransaction(source, target);
   const id = identityRegistry.get(source);
   if (id !== undefined) {
     identityRegistry.set(target, id);

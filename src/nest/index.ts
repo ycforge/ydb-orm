@@ -36,5 +36,6 @@ export {
   DEFAULT_CONNECTION_NAME,
   getScopedToken,
   getTransactionManagerToken,
+  getTopicsToken,
 } from './constants.js';
 export type { YdbOptionsFactory, YdbModuleAsyncOptions } from './interfaces.js';
