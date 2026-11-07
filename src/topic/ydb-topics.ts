@@ -141,6 +141,15 @@ export class YdbTopics implements AsyncDisposable {
         throw new Error('Topic transaction mixing detected.');
       return ambient;
     }
+    if (active) {
+      // Активная транзакция без ambient: ресурс без явного { trx } вышел бы
+      // из транзакции (writer опубликовал бы сообщение даже при rollback).
+      // Явный отказ вместо тихой утечки; вне транзакции ресурсы создавать можно.
+      throw new Error(
+        'Topic resource would escape the active transaction: ' +
+          'pass { trx } or enable ambient transactions.',
+      );
+    }
     return tx;
   }
 }

@@ -2,7 +2,10 @@ import { describe, it, expect, jest } from '@jest/globals';
 import type { Driver } from '@ydbjs/core';
 import type { TX } from '@ydbjs/query';
 import type { YdbExecutor } from '../core/interfaces.js';
-import { bindTopicTransaction } from './transaction-binding.js';
+import {
+  bindTopicTransaction,
+  resolveTopicTransaction,
+} from './transaction-binding.js';
 import {
   createTransactionContext,
   runWithTransactionContext,
@@ -110,6 +113,55 @@ describe('YdbTopics: маршрутизация SDK', () => {
         expect(() =>
           topics.createWriter({ topic: 'news' }, { trx: foreign }),
         ).toThrow('mixing');
+        await Promise.resolve();
+      },
+    );
+    await topics.close();
+  });
+
+  it('не даёт ресурсу тихо выйти из активной не-ambient транзакции', async () => {
+    const driver = {} as Driver;
+    const trx = txFixture(driver);
+    const topics = new YdbTopics(driver);
+    await runWithTransactionContext(
+      createTransactionContext({
+        transactionId: Symbol(),
+        trx,
+        db: trx,
+        ambient: false,
+      }),
+      async () => {
+        expect(() => topics.createWriter({ topic: 'news' })).toThrow(
+          'escape the active transaction',
+        );
+        expect(() =>
+          topics.createReader({ topic: 'news', consumer: 'search' }),
+        ).toThrow('escape the active transaction');
+        await Promise.resolve();
+      },
+    );
+    // Вне транзакции ресурсы по-прежнему создаются без ограничений.
+    expect('close' in topics.createWriter({ topic: 'news' })).toBe(true);
+    await topics.close();
+  });
+
+  it('явный trx, совпадающий с ambient, использует ту же транзакцию SDK', async () => {
+    const driver = {} as Driver;
+    const trx = txFixture(driver);
+    const topics = new YdbTopics(driver);
+    await runWithTransactionContext(
+      createTransactionContext({
+        transactionId: Symbol(),
+        trx,
+        db: trx,
+        ambient: true,
+      }),
+      async () => {
+        const writer = topics.createWriter({ topic: 'news' }, { trx });
+        expect('close' in writer).toBe(false);
+        // Тот же снимок SDK TX, что у ambient-транзакции: без ошибки смешивания.
+        const expected = resolveTopicTransaction(trx, driver);
+        expect(client.createTxWriter.mock.calls.at(-1)![0]).toBe(expected);
         await Promise.resolve();
       },
     );

@@ -66,6 +66,26 @@ describe('YdbTopics: границы транзакций и ресурсы', () 
     expect(snapshot.transactionId).toBe('transaction');
   });
 
+  it('отклоняет операцию при уже прерванном сигнале привязки', () => {
+    const { driver, trx } = fixture();
+    // Сигнал транзакции (таймаут/отмена) уже сработал — ресурс не создаётся.
+    bindTopicTransaction(
+      trx,
+      trx,
+      driver,
+      'serializableReadWrite',
+      AbortSignal.abort(),
+    );
+    let caught: unknown;
+    try {
+      resolveTopicTransaction(trx, driver);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeDefined();
+    expect((caught as Error).name).toBe('AbortError');
+  });
+
   it('ambient не позволяет использовать транзакцию другого драйвера', async () => {
     const { trx } = fixture();
     const topics = new YdbTopics({} as Driver);

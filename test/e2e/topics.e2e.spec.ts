@@ -1,5 +1,6 @@
 import { beforeAll, afterAll, describe, it, expect } from '@jest/globals';
 import { create } from '@bufbuild/protobuf';
+import { identifier } from '@ydbjs/query';
 import { abortedTransactionError } from '../helpers/ydb-responses.js';
 import {
   TopicServiceDefinition,
@@ -28,10 +29,16 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
   const prefix = `orm_topics_${Date.now()}`;
   const paths: string[] = [];
   const table = `${prefix}_rows`;
-  const sql = (query: string, executor = db) => {
-    const request = executor([query] as unknown as TemplateStringsArray);
-    return query.startsWith('SELECT') ? request.idempotent(true) : request;
-  };
+  // Значения — только шаблонными параметрами ($p0, ...), идентификаторы —
+  // через identifier(): интерполяция значений в текст запроса запрещена.
+  const sql =
+    (executor = db) =>
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const request = executor(strings, ...values);
+      return strings[0].trimStart().startsWith('SELECT')
+        ? request.idempotent(true)
+        : request;
+    };
 
   beforeAll(async () => {
     ctx = (await createE2eContext())!;
@@ -42,7 +49,7 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
     });
     topics = new YdbTopics(ctx.driver);
     manager = new YdbTransactionManager(db);
-    await sql(`CREATE TABLE \`${table}\` (id Utf8 NOT NULL, PRIMARY KEY (id))`);
+    await sql()`CREATE TABLE ${identifier(table)} (id Utf8 NOT NULL, PRIMARY KEY (id))`;
   }, 60000);
 
   afterAll(async () => {
@@ -51,7 +58,7 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
     const client = ctx.driver.createClient(TopicServiceDefinition);
     for (const path of paths)
       await client.dropTopic(create(DropTopicRequestSchema, { path }));
-    await sql(`DROP TABLE \`${table}\``);
+    await sql()`DROP TABLE ${identifier(table)}`;
     ctx.driver.close();
   }, 60000);
 
@@ -190,9 +197,8 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
             }
             if (scenario !== 'topic-topic')
               await sql(
-                `UPSERT INTO \`${table}\` (id) VALUES ('${name}')`,
                 trx,
-              );
+              )`UPSERT INTO ${identifier(table)} (id) VALUES (${name})`;
             if (scenario !== 'topic-table') {
               // Проверяем ambient вместе с явным trx у reader и SQL.
               const writer = topics.createWriter({
@@ -212,9 +218,8 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
         if (rollback) await expect(result).rejects.toThrow();
         else await result;
         if (scenario !== 'topic-topic') {
-          const rows = await sql(
-            `SELECT id FROM \`${table}\` WHERE id = '${name}'`,
-          );
+          const rows =
+            await sql()`SELECT id FROM ${identifier(table)} WHERE id = ${name}`;
           expect(rows[0]).toHaveLength(rollback ? 0 : 1);
         }
         if (scenario !== 'topic-table')
