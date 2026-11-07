@@ -89,6 +89,7 @@
     "@ydbjs/error": "6.0.6",
     "@ydbjs/query": "6.3.0",
     "@ydbjs/retry": "6.3.0",
+    "@ydbjs/topic": "6.1.4",
     "@ydbjs/value": "6.0.8",
     "uuid": "13.0.2"
   },

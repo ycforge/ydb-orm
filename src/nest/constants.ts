@@ -1,3 +1,4 @@
+import { YdbTopics } from '../topic/ydb-topics.js';
 import { YdbTransactionManager } from '../transaction/transaction.manager.js';
 
 /** DI token of the YDB driver. */
@@ -69,3 +70,13 @@ export function getTransactionManagerToken(
 }
 
 const YDB_TRANSACTION_MANAGER_BASE = Symbol('YDB_TRANSACTION_MANAGER');
+
+/** DI-токен топиков конкретной конфигурации. */
+export function getTopicsToken(
+  name = DEFAULT_CONNECTION_NAME,
+): symbol | typeof YdbTopics {
+  return name === DEFAULT_CONNECTION_NAME
+    ? YdbTopics
+    : getScopedToken(YDB_TOPICS_BASE, name);
+}
+const YDB_TOPICS_BASE = Symbol('YDB_TOPICS');

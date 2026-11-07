@@ -1337,3 +1337,121 @@ yarn format       # prettier --write
 
 - Версия `@bufbuild/protobuf` запинена на `2.12.0`: на `^` ломается типизация `anyUnpack` из-за расхождения branded-типов с `@ydbjs/*`.
 - Запросы к YDB параметризованы (`query.parameter(...)`) — значения никогда не конкатенируются в SQL.
+
+## Топики YDB
+
+`YdbTopics` работает с **существующими** топиками и consumers. Создание,
+настройка и удаление этих объектов в API не входят. Используется
+`@ydbjs/topic` 6.1.4 вместе с `@ydbjs/core` 6.3.1 и `@ydbjs/query` 6.3.0;
+Node.js ≥ 22.18. Интеграционные сценарии проверены на YDB 26.2.1.14
+(`ydbplatform/local-ydb`, digest `sha256:9e46fd45875551a75bcf34d0bb9ca0baa1d8763a4ccf2070af45f4467c4b7402`). Сервер должен поддерживать транзакции Topics через Query
+Service и `UpdateOffsetsInTransaction`; доступность зависит от версии и
+конфигурации YDB. При отсутствии поддержки ошибка сервера передаётся вызывающему
+коду: замены общей транзакции независимыми операциями нет.
+
+```ts
+import { YdbTopics, YdbTransactionManager, createDriver, createExecutor } from '@ycforge/ydb-orm';
+
+const driver = await createDriver(options); // endpoint + auth или credentialsProvider
+const executor = createExecutor(driver, options);
+const topics = new YdbTopics(driver);
+const transactions = new YdbTransactionManager(executor);
+
+try {
+  // Вне транзакции: явная отправка и фиксация прочитанного offset.
+  const writer = topics.createWriter({ topic: '/local/news', producer: 'publisher-1' });
+  writer.write(new TextEncoder().encode('NewsPublished'));
+  await writer.flush();
+  if ('close' in writer) await writer.close();
+
+  const reader = topics.createReader({ topic: '/local/news', consumer: 'search-indexer' });
+  for await (const batch of reader.read({ limit: 10, waitMs: 1000 })) {
+    for (const message of batch) await processMessage(message.payload);
+    if ('commit' in reader) await reader.commit(batch);
+  }
+  if ('close' in reader) await reader.close();
+
+  // Таблица + событие: единый commit или rollback.
+  await transactions.runInTransaction(async (trx) => {
+    await NewsEntity.save(news, { trx });
+    const writer = topics.createWriter({ topic: '/local/news', producer: 'publisher-1' }, { trx });
+    writer.write(new TextEncoder().encode(JSON.stringify({ type: 'NewsPublished', id: news.uuid })));
+    // Перед commit SDK дождётся flush; вручную закрывать этот writer нельзя.
+  }, { idempotent: false });
+
+  // Входной offset + таблица + выходной топик: единая транзакция.
+  await transactions.runInTransaction(async (trx, signal) => {
+    const reader = topics.createReader({ topic: '/local/news', consumer: 'processor' }, { trx });
+    const writer = topics.createWriter({ topic: '/local/processed', producer: 'processor-1' });
+    for await (const batch of reader.read({ limit: 10, waitMs: 1000, signal })) {
+      for (const message of batch) {
+        await processInDatabase(message, trx);
+        writer.write(message.payload);
+      }
+    }
+  }, { ambient: true, idempotent: false, signal: AbortSignal.timeout(30_000) });
+} finally {
+  await topics.close(); // также доступен await using
+  driver.close();
+}
+```
+
+`createReader`/`createWriter` принимают вторым аргументом `{ trx }`. Без него
+они присоединяются к активной ambient-транзакции, если она включена. Внутри
+активной транзакции без ambient создание ресурса без `{ trx }` — ошибка:
+ресурс не может тихо выйти из транзакции (writer опубликовал бы сообщение
+даже при rollback таблиц). Вне транзакции ресурс создаётся обычным
+(нетранзакционным). `trx` должен быть получен через `YdbTransactionManager`
+над `createExecutor()` с тем же Driver. Поддерживается только
+`serializableReadWrite`. Чужие, завершённые и неподдерживаемые транзакции
+отклоняются до создания ресурса. Привязка сохраняется через логирование и retry
+обёртки ORM.
+
+У обычного reader есть `commit(batch)`; он фиксирует позицию независимо от
+транзакций таблиц. У транзакционного reader метода `commit` нет: **все сообщения
+в каждой выданной порции** учитываются SDK перед commit общей транзакции.
+Обработайте всю порцию или бросьте ошибку для rollback; нельзя пропустить часть
+порции и успешно завершить callback. Размер порций и ожидание ограничивайте через
+`read({ limit, waitMs, signal })`. Транзакционные reader/writer создавайте заново
+в каждой попытке callback; их закрытием управляют хуки SDK. Методы ручного
+закрытия у транзакционных фасадов намеренно отсутствуют: раннее закрытие reader
+удалило бы накопленные offset до commit.
+
+При rollback изменения таблиц, выходные сообщения и продвижение входного offset
+не сохраняются. После ошибки commit результат может быть неизвестен вызывающему
+коду: не повторяйте внешние эффекты вслепую. Опции `retry`/`idempotent` менеджера
+могут приводить к повторному выполнению **всего callback**. Обеспечьте его
+идемпотентность и используйте стабильные producer IDs согласно модели
+дедупликации YDB. Отправка email и изменения внешнего поискового индекса не
+участвуют в атомарности YDB; для них нужны собственные меры против дублей.
+
+В NestJS `YdbTopics` предоставляется `YdbCoreModule` автоматически:
+
+```ts
+import { Inject, Injectable } from '@nestjs/common';
+import { YdbTopics, getTopicsToken } from '@ycforge/ydb-orm/nest';
+
+@Injectable()
+class NewsService {
+  constructor(
+    private readonly topics: YdbTopics,
+    @Inject(getTopicsToken('reporting')) private readonly reportingTopics: YdbTopics,
+  ) {}
+}
+```
+
+`getTopicsToken()` возвращает токен конфигурации по имени (по умолчанию
+`default`). При shutdown модуль закрывает обычные reader/writer до драйвера.
+При самостоятельной работе закрывайте отдельные ресурсы после использования
+или весь `YdbTopics` в `finally`; `close()` идемпотентен. Активные транзакции
+следует завершить до shutdown. `YdbTopics` не закрывает переданный Driver.
+
+Запуск интеграционных тестов топиков на подготовленной YDB:
+
+```bash
+YDB_ENDPOINT=grpc://localhost:2136/local YDB_AUTH_TYPE=anonymous \
+  yarn test:e2e --runInBand --runTestsByPath test/e2e/topics.e2e.spec.ts
+```
+
+Тесты создают уникальные временные топики, consumer и таблицу, а затем удаляют
+их. Используйте тестовую БД и учётную запись с соответствующими правами.

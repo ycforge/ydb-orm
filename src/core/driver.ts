@@ -1,3 +1,4 @@
+import { bindTopicTransaction } from '../topic/transaction-binding.js';
 import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
@@ -231,8 +232,16 @@ export function createExecutor(
       fn: (trx: YdbExecutor, signal?: AbortSignal) => Promise<T>,
     ): Promise<T> => {
       const { isolation, signal, idempotent } = options ?? {};
-      return client.transaction({ isolation, idempotent, signal }, (tx, sgn) =>
-        fn(tx as unknown as YdbExecutor, sgn),
+      return client.transaction(
+        { isolation, idempotent, signal },
+        (tx, sgn) => {
+          const transactionExecutor = ((
+            strings: TemplateStringsArray,
+            ...args: unknown[]
+          ) => tx(strings, ...args)) as unknown as YdbExecutor;
+          bindTopicTransaction(transactionExecutor, tx, driver, isolation, sgn);
+          return fn(transactionExecutor, sgn);
+        },
       );
     },
   });
