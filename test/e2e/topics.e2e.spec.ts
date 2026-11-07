@@ -23,13 +23,12 @@ const suite = hasYdbCredentials() ? describe : describe.skip;
 suite('YDB Topics: реальные commit/rollback (#265)', () => {
   let ctx: E2eContext;
   let db: YdbExecutor;
-  let verificationDb: YdbExecutor;
   let topics: YdbTopics;
   let manager: YdbTransactionManager;
   const prefix = `orm_topics_${Date.now()}`;
   const paths: string[] = [];
   const table = `${prefix}_rows`;
-  const sql = (query: string, executor = verificationDb) => {
+  const sql = (query: string, executor = db) => {
     const request = executor([query] as unknown as TemplateStringsArray);
     return query.startsWith('SELECT') ? request.idempotent(true) : request;
   };
@@ -41,7 +40,6 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
       logQueries: { log: () => undefined },
       retry: true,
     });
-    verificationDb = createExecutor(ctx.driver, { endpoint: 'unused' });
     topics = new YdbTopics(ctx.driver);
     manager = new YdbTransactionManager(db);
     await sql(`CREATE TABLE \`${table}\` (id Utf8 NOT NULL, PRIMARY KEY (id))`);

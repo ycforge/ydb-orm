@@ -86,7 +86,8 @@ describe('YdbTopics: маршрутизация SDK', () => {
         await writer.flush();
         const readerTx = client.createTxReader.mock.calls.at(-1)![0];
         expect(client.createTxWriter.mock.calls.at(-1)![0]).toBe(readerTx);
-        const raw = client.createTxWriter.mock.results.at(-1)!.value;
+        const raw = client.createTxWriter.mock.results.at(-1)!
+          .value as ReturnType<typeof makeResource>;
         expect(raw.write).toHaveBeenCalledWith(new Uint8Array([1]), undefined);
       },
     );
