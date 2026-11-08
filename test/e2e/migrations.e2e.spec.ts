@@ -8,6 +8,7 @@ import {
   createE2eContext,
   closeE2eContext,
   hasYdbCredentials,
+  writeCliConfig,
   type E2eContext,
 } from './setup.js';
 
@@ -20,6 +21,11 @@ let tmpDir: string;
 beforeAll(async () => {
   ctx = await createE2eContext();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ydb-orm-e2e-mig-'));
+  writeCliConfig(
+    tmpDir,
+    process.env.YDB_ENDPOINT ?? 'grpc://localhost:2136/local',
+  );
+  fs.mkdirSync(path.join(tmpDir, 'migrations'), { recursive: true });
 });
 
 afterAll(() => {
@@ -64,8 +70,10 @@ describeE2e()('Migrations e2e', () => {
   });
 
   it('migration:show lists no migrations initially', async () => {
+    const emptyDir = path.join(tmpDir, 'empty');
+    fs.mkdirSync(emptyDir, { recursive: true });
     const result = await execAsync(
-      `node ${cliBin} migration:show --dir ${tmpDir}`,
+      `node ${cliBin} migration:show --dir ${emptyDir}`,
       { cwd: tmpDir, timeout: 30000, env: cliEnv() },
     );
 

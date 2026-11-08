@@ -1,4 +1,7 @@
 import 'reflect-metadata';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
@@ -72,6 +75,48 @@ function createCredentialsProvider(authType: string): CredentialsProvider {
 }
 
 /**
+ * Writes a CLI config for tests that invoke the built `ydb-orm` binary.
+ * Environment variables alone are not enough for the CLI: it requires an
+ * explicit auth source, so an anonymous inline provider is used for local YDB.
+ */
+export function writeCliConfig(dir: string, endpoint: string): void {
+  // The config is imported by Node directly, so bare specifiers must resolve
+  // from the temporary directory. A node_modules symlink keeps the temp dir
+  // isolated while allowing the config to construct a real provider class.
+  const repoRoot = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '../..',
+  );
+  const nodeModules = path.join(dir, 'node_modules');
+  fs.mkdirSync(path.join(nodeModules, '@ycforge'), { recursive: true });
+  const linkedPackage = path.join(nodeModules, '@ycforge', 'ydb-orm');
+  if (!fs.existsSync(linkedPackage)) {
+    fs.symlinkSync(repoRoot, linkedPackage, 'dir');
+  }
+  const linkedYdbjs = path.join(nodeModules, '@ydbjs');
+  if (!fs.existsSync(linkedYdbjs)) {
+    fs.symlinkSync(
+      path.join(repoRoot, 'node_modules', '@ydbjs'),
+      linkedYdbjs,
+      'dir',
+    );
+  }
+  fs.writeFileSync(
+    path.join(dir, 'ydb-orm.config.mjs'),
+    `import { AnonymousCredentialsProvider } from '@ydbjs/auth/anonymous';
+
+export default {
+  endpoint: ${JSON.stringify(endpoint)},
+  credentialsProvider: new AnonymousCredentialsProvider(),
+  // Single-node local YDB: go straight to the endpoint.
+  driverOptions: { 'ydb.sdk.enable_discovery': false },
+};
+`,
+    'utf-8',
+  );
+}
+
+/**
  * Создаёт подключение к YDB и executor.
  * Возвращает null если переменные окружения не заданы (skip tests).
  */
@@ -84,15 +129,26 @@ export async function createE2eContext(): Promise<E2eContext | null> {
   }
 
   const credentialsProvider = createCredentialsProvider(authType);
-  const driver = new Driver(endpoint, { credentialsProvider });
+  // A single-node local YDB can be addressed by a scheme subdirectory instead
+  // of a real tenant database; discovery rejects such paths, so it can be
+  // disabled explicitly for local runs.
+  const driver = new Driver(endpoint, {
+    credentialsProvider,
+    ...(getEnv('YDB_DISABLE_DISCOVERY') === '1'
+      ? { 'ydb.sdk.enable_discovery': false }
+      : {}),
+  });
   await driver.ready();
 
   const executor = query(driver) as unknown as YdbExecutor;
   const encryptionProvider = new TestOnlyEncryptionProvider();
 
-  // Извлекаем путь БД из endpoint (параметр database)
+  // Extract the database path from the endpoint: either an explicit
+  // ?database= parameter or the pathname (grpc://host:2136/local).
   const url = new URL(endpoint);
-  const dbPath = url.searchParams.get('database') ?? '/local';
+  const dbPath =
+    url.searchParams.get('database') ??
+    (url.pathname !== '/' ? url.pathname : '/local');
 
   return {
     driver,

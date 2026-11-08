@@ -27,10 +27,15 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
   let topics: YdbTopics;
   let manager: YdbTransactionManager;
   const prefix = `orm_topics_${Date.now()}`;
+  // The SDK rolls back a transaction fire-and-forget: the rejected promise can
+  // settle before the server has processed the rollback. Reusing the session
+  // pool immediately may then hit SESSION_BUSY, so rollback scenarios wait
+  // briefly before running follow-up queries.
+  const ROLLBACK_SETTLE_MS = 500;
   const paths: string[] = [];
   const table = `${prefix}_rows`;
-  // Значения — только шаблонными параметрами ($p0, ...), идентификаторы —
-  // через identifier(): интерполяция значений в текст запроса запрещена.
+  // Values use template parameters only ($p0, ...); identifiers go through
+  // identifier(). Interpolating values into the query text is forbidden.
   const sql =
     (executor = db) =>
     (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -200,7 +205,7 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
                 trx,
               )`UPSERT INTO ${identifier(table)} (id) VALUES (${name})`;
             if (scenario !== 'topic-table') {
-              // Проверяем ambient вместе с явным trx у reader и SQL.
+              // Exercise ambient together with an explicit trx for reader and SQL.
               const writer = topics.createWriter({
                 topic: output,
                 producer: `${name}_result`,
@@ -215,8 +220,12 @@ suite('YDB Topics: реальные commit/rollback (#265)', () => {
             signal: AbortSignal.timeout(30000),
           },
         );
-        if (rollback) await expect(result).rejects.toThrow();
-        else await result;
+        if (rollback) {
+          await expect(result).rejects.toThrow();
+          await new Promise((resolve) =>
+            setTimeout(resolve, ROLLBACK_SETTLE_MS),
+          );
+        } else await result;
         if (scenario !== 'topic-topic') {
           const rows =
             await sql()`SELECT id FROM ${identifier(table)} WHERE id = ${name}`;
