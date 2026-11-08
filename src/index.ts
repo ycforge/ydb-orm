@@ -362,3 +362,7 @@ export type {
 } from '@ydbjs/topic/reader';
 export type { TopicWriter, TopicTxWriter } from '@ydbjs/topic/writer';
 export type { TopicMessage } from '@ydbjs/topic/message';
+
+export { rawJson, RawJson } from './core/json-value.js';
+
+export { serverlessYdbOptions } from './core/serverless-options.js';

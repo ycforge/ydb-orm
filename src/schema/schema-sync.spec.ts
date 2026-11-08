@@ -1915,7 +1915,12 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
       ...(children?.length ? { issues: children } : {}),
     });
 
-  function makeDescribeTableSyncer(describeResponse: unknown): {
+  function makeDescribeTableSyncer(
+    describeResponse: unknown,
+    schemeResponse: unknown = {
+      operation: { status: StatusIds_StatusCode.SCHEME_ERROR },
+    },
+  ): {
     syncer: YdbSchemaSyncer;
     executedSql: () => string[];
   } {
@@ -1924,6 +1929,7 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
         Promise.resolve({ operation: { result: sessionResult } }),
       ),
       describeTable: jest.fn(() => Promise.resolve(describeResponse)),
+      describePath: jest.fn(() => Promise.resolve(schemeResponse)),
       deleteSession: jest.fn(() => Promise.resolve({})),
     };
     const driver = {
@@ -1990,6 +1996,27 @@ describe('YdbSchemaSyncer.describeTable: not-found vs other errors (#91)', () =>
         'status=SCHEME_ERROR; Access denied: no permissions for path',
     );
   });
+
+  it('confirms an issues-less Table error through Scheme.DescribePath before creating', async () => {
+    const { syncer } = makeDescribeTableSyncer(
+      { operation: { status: StatusIds_StatusCode.SCHEME_ERROR } },
+      { operation: { status: StatusIds_StatusCode.NOT_FOUND } },
+    );
+    await expect(syncer.describeTable('missing')).resolves.toBeNull();
+  });
+
+  it.each([StatusIds_StatusCode.SUCCESS, StatusIds_StatusCode.UNAUTHORIZED])(
+    'does not classify Scheme status %s as absence',
+    async (status) => {
+      const { syncer } = makeDescribeTableSyncer(
+        { operation: { status: StatusIds_StatusCode.SCHEME_ERROR } },
+        { operation: { status } },
+      );
+      await expect(syncer.describeTable('protected')).rejects.toThrow(
+        'SCHEME_ERROR',
+      );
+    },
+  );
 
   it('treats issues-less SCHEME_ERROR as an error, not as missing table', async () => {
     // ydb-platform/ydb#7791: DescribeTable may send no issues at all.

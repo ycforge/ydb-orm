@@ -54,9 +54,10 @@ describe('YdbQueryBuilder', () => {
     );
   });
 
-  it('throws on unknown ORDER BY field', async () => {
+  it('throws on unknown ORDER BY field before compiling SQL', () => {
     mockRuntime();
-    await expect(QbPhotoEntity.query().orderBy('nope').toYql()).rejects.toThrow(
+    // @ts-expect-error Unknown columns are also rejected by the type checker.
+    expect(() => QbPhotoEntity.query().orderBy('nope')).toThrow(
       /Unknown field in ORDER BY: "nope" on entity QbPhotoEntity\. Known fields:/,
     );
   });

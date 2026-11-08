@@ -1,3 +1,4 @@
+import { getEntityDbSchema } from '../persistence/entity-persistence.js';
 import type { YdbBaseEntity } from '../entity/base-entity.js';
 import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
@@ -226,7 +227,11 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /** Sets the ORDER BY clause, replacing any previously set order. */
-  orderBy(field: string, direction: OrderDirection = 'ASC'): this {
+  orderBy(
+    field: Extract<keyof T, string>,
+    direction: OrderDirection = 'ASC',
+  ): this {
+    this.assertOrderField(field);
     this.orderClauses = [
       { field, direction: this.normalizeDirection(direction) },
     ];
@@ -234,7 +239,11 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   }
 
   /** Appends an additional ORDER BY clause. */
-  addOrderBy(field: string, direction: OrderDirection = 'ASC'): this {
+  addOrderBy(
+    field: Extract<keyof T, string>,
+    direction: OrderDirection = 'ASC',
+  ): this {
+    this.assertOrderField(field);
     this.orderClauses.push({
       field,
       direction: this.normalizeDirection(direction),
@@ -426,9 +435,18 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     return meta;
   }
 
+  private assertOrderField(field: string): void {
+    const schema = getEntityDbSchema(this.getMeta());
+    if (typeof field !== 'string' || !Object.hasOwn(schema, field)) {
+      throw new Error(
+        `Unknown field in ORDER BY: "${field}" on entity ${this.entity.name}. Known fields: ${Object.keys(schema).join(', ')}.`,
+      );
+    }
+  }
+
   private validateOrderFields(dbSchema: Record<string, YdbPrimitive>): void {
     for (const { field } of this.orderClauses) {
-      if (!dbSchema[field]) {
+      if (!Object.hasOwn(dbSchema, field)) {
         throw new Error(
           `Unknown field in ORDER BY: "${field}" on entity ` +
             `${this.entity.name}. Known fields: ${this.knownFields(dbSchema)}. ` +
@@ -440,7 +458,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   private validateSelectFields(dbSchema: Record<string, YdbPrimitive>): void {
     for (const field of this.selectColumns ?? []) {
-      if (!dbSchema[field]) {
+      if (!Object.hasOwn(dbSchema, field)) {
         throw new Error(
           `Unknown field in select: "${field}" on entity ` +
             `${this.entity.name}. Known fields: ${this.knownFields(dbSchema)}. ` +

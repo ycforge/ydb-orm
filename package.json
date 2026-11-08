@@ -25,7 +25,12 @@
       "types": "./dist/nest/index.d.ts",
       "default": "./dist/nest/index.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cjs": {
+      "types": "./dist/cjs/index.d.cts",
+      "require": "./dist/cjs/index.cjs",
+      "default": "./dist/cjs/index.cjs"
+    }
   },
   "files": [
     "dist"
@@ -48,7 +53,7 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/build-interop.mjs",
     "prepublishOnly": "yarn build",
     "examples:build": "tsc -p examples/tsconfig.json",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"examples/**/*.ts\"",
@@ -57,7 +62,8 @@
     "test:unit": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e",
     "test:e2e": "NODE_OPTIONS=--experimental-vm-modules jest --testPathPatterns=test/e2e --testTimeout=30000",
     "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
-    "test:cov": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e --coverage"
+    "test:cov": "NODE_OPTIONS=--experimental-vm-modules jest --testPathIgnorePatterns=test/e2e --coverage",
+    "test:package": "yarn build && node scripts/package-smoke.mjs"
   },
   "peerDependencies": {
     "@nestjs/common": ">=10.0.0",
@@ -101,6 +107,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.10.7",
     "@ycforge/js-dev-tools": "^0.1.1",
+    "esbuild": "0.25.12",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",

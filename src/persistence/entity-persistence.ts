@@ -1,5 +1,6 @@
 import { toJs } from '@ydbjs/value';
 import type { Value } from '@ydbjs/value';
+import { serializeJson } from '../core/json-value.js';
 import type { AadFormat } from '../encryption/aad.js';
 import {
   buildAad,
@@ -38,6 +39,8 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import {
   chunkInValues,
   dedupeInValues,
+  DEFAULT_RETRIEVE_LIMIT,
+  MAX_RETRIEVE_LIMIT,
   resolveRetrieveLimit,
   resolveRetrieveOffset,
 } from '../core/query-limits.js';
@@ -477,7 +480,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       dbType === 'Json' ||
       dbType === 'JsonDocument'
     ) {
-      return typeof value === 'string' ? value : JSON.stringify(value);
+      return dbType === 'Json' || dbType === 'JsonDocument'
+        ? value
+        : serializeJson(value);
     }
     return value;
   }
@@ -487,11 +492,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
     const dbType = dbSchema[key];
-    if (
-      meta.jsonColumns.includes(key) ||
-      dbType === 'Json' ||
-      dbType === 'JsonDocument'
-    ) {
+    if (dbType === 'Json' || dbType === 'JsonDocument') return value;
+    if (meta.jsonColumns.includes(key)) {
       return typeof value === 'string' ? JSON.parse(value) : value;
     }
     return value;
@@ -1162,7 +1164,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         const pathName = ctx.nextParam();
         const valName = ctx.nextParam();
         addParam(pathName, path, 'Utf8');
-        addParam(valName, this.normalizeWhereValue(field, equals), 'Utf8');
+        addParam(valName, equals, 'Utf8');
         return `JSON_VALUE(${quotedField}, $${pathName}) = $${valName}`;
       }
       default:
@@ -1676,7 +1678,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
   /**
    * Finds all entities matching the conditions. With no conditions it returns
-   * the whole table's rows up to the resolveRetrieveLimit default of 100.
+   * at most 100 rows, rejecting overflow unless a limit is explicit.
    * @param where filter conditions (defaults to an empty filter).
    * @param options query options (limit/offset semantics, transaction, etc.).
    * @returns the matching entities.
@@ -1695,7 +1697,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const selectClause = effectiveSelect?.length
       ? effectiveSelect.map(quoteIdentifier).join(', ')
       : this.buildDefaultSelect(meta);
-    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
+    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${options?.limit === undefined ? DEFAULT_RETRIEVE_LIMIT + 1 : resolveRetrieveLimit(options.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindNormalizedParams(query, values, keys, dbSchema, fields);
@@ -1705,7 +1707,69 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       options,
     );
 
+    if (
+      options?.limit === undefined &&
+      (rows[0]?.length ?? 0) > DEFAULT_RETRIEVE_LIMIT
+    ) {
+      throw new Error(
+        `findAll() exceeds the implicit ${DEFAULT_RETRIEVE_LIMIT}-row safety limit. Use findAllPaged() or pass an explicit limit.`,
+      );
+    }
     return this.hydrate(rows[0] ?? [], options);
+  }
+
+  /** Reads all matching rows in ordered pages. Use a transaction for a consistent snapshot. */
+  async findAllPaged(
+    where: Record<string, any> = {},
+    options?: QueryOptions & { pageSize?: number },
+  ): Promise<T[]> {
+    const pageSize = options?.pageSize ?? MAX_RETRIEVE_LIMIT;
+    if (
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > MAX_RETRIEVE_LIMIT
+    ) {
+      throw new Error('pageSize must be an integer between 1 and 1000.');
+    }
+    if (
+      options?.limit !== undefined &&
+      (!Number.isSafeInteger(options.limit) || options.limit < 0)
+    ) {
+      throw new Error('Invalid LIMIT: expected a non-negative safe integer.');
+    }
+    const meta = this.getMeta();
+    if (!meta.primaryKeys.length)
+      throw new Error(
+        'findAllPaged() requires a declared primary key for stable ordering.',
+      );
+    const result: T[] = [];
+    const maximum = options?.limit ?? Infinity;
+    let offset = resolveRetrieveOffset(options?.offset);
+    const exec = this.getExecutor(options?.trx);
+    this.validateSelectFields(options?.select, meta);
+    const projection = resolveEncryptedProjection(meta, options?.select);
+    const select = projection?.length
+      ? projection.map(quoteIdentifier).join(', ')
+      : this.buildDefaultSelect(meta);
+    const { whereClause, values, keys, dbSchema, fields } =
+      await this.buildWhere(where);
+    const order = meta.primaryKeys.map(quoteIdentifier).join(', ');
+    while (result.length < maximum) {
+      options?.signal?.throwIfAborted();
+      const limit = Math.min(pageSize, maximum - result.length);
+      const sql = `SELECT ${select} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
+      const query = exec([sql] as unknown as TemplateStringsArray);
+      this.bindNormalizedParams(query, values, keys, dbSchema, fields);
+      const rows = await this.executeQuery<Record<string, any>[][]>(
+        query,
+        options,
+      );
+      const page = rows[0] ?? [];
+      result.push(...(await this.hydrate(page, options)));
+      if (page.length < limit) break;
+      offset += page.length;
+    }
+    return result;
   }
 
   /**

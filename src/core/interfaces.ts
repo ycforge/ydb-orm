@@ -1,6 +1,7 @@
 import { Driver, DriverOptions } from '@ydbjs/core';
 import type { CredentialsProvider } from '@ydbjs/auth';
 import type { AuthManager } from '@ycforge/auth';
+import type { SessionPoolOptions } from '@ydbjs/query';
 import {
   YdbBlindIndexProvider,
   YdbEncryptionProvider,
@@ -60,11 +61,7 @@ export interface YdbModuleOptions {
    */
   driverFactory?: () => Driver | Promise<Driver>;
   driverOptions?: DriverOptions;
-  poolOptions?: {
-    minSize?: number;
-    maxSize?: number;
-    sessionTimeout?: number;
-  };
+  poolOptions?: SessionPoolOptions;
   encryptionProvider?: YdbEncryptionProvider;
   blindIndexProvider?: YdbBlindIndexProvider;
   /**
