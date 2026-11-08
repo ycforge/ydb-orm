@@ -19,7 +19,7 @@ export interface QueryOptions {
    * INSERT with fixed PK, etc.).
    */
   idempotent?: boolean;
-  /** Maximum rows in SELECT (default 100) */
+  /** Maximum rows in SELECT. findAll probes the implicit 100-row limit and rejects overflow. */
   limit?: number;
   /** Offset for SELECT */
   offset?: number;

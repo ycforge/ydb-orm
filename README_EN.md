@@ -1294,3 +1294,6 @@ The tests do not touch the network: the NestJS integration tests (`test/nestjs/`
 
 - The `@bufbuild/protobuf` version is pinned to `2.12.0`: on `^`, the `anyUnpack` typings break due to a branded-type mismatch with `@ydbjs/*`.
 - Queries to YDB are parameterized (`query.parameter(...)`) — values are never concatenated into SQL.
+## Serverless and migration notes
+
+See the updated [serverless guide and behavior changes](README.md#serverless-безопасные-настройки-и-сборка) and [NestJS packaging example](examples/serverless-nest/README.md). This change adds an async CommonJS bridge (`@ycforge/ydb-orm/cjs`), explicit findAll overflow errors plus findAllPaged, JSON string values and rawJson, and self-declaring timestamp decorators. Existing callers passing serialized JSON strings must use rawJson.
