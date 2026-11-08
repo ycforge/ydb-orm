@@ -6,6 +6,7 @@ export interface YdbEncryptionContext {
   entityName: string;
   tableName: string;
   fieldName: string;
+  /** Canonical complete PK tuple for encrypt/decrypt; absent for blind-index queries. */
   primaryKeyValue?: string;
   aadFields: Record<string, string>;
 }
@@ -33,7 +34,9 @@ export interface YdbEncryptionProvider {
 
 /**
  * Computes a deterministic hash over the plaintext for a blind index,
- * allowing equality lookups without exposing the value.
+ * allowing equality lookups without exposing the value. Hash domains must
+ * include tableName and fieldName, but must not depend on primaryKeyValue:
+ * the same value must be searchable without knowing a record's PK.
  */
 export interface YdbBlindIndexProvider {
   hash(plaintext: string, context: YdbEncryptionContext): Promise<string>;
