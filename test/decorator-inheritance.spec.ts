@@ -431,7 +431,9 @@ describe('decorator inheritance semantics (#107)', () => {
         primaryKeyValue: undefined,
         aadFields: {},
       });
-      const mock = createMockExecutor([[{ secret: ciphertext }]]);
+      const mock = createMockExecutor([
+        [{ uuid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', secret: ciphertext }],
+      ]);
       EncDuplicatedEager.setExecutor(mock.executor);
 
       const [entity] = await EncDuplicatedEager.findAll({});

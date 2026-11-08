@@ -91,6 +91,16 @@ GitHub Actions в `.github/workflows/`:
 - Запросы к YDB параметризованы (`query.parameter(...)`) — сохраняйте этот паттерн, не конкатенируйте значения в SQL.
 - `authorized_key.json` (ключ сервисного аккаунта YC) — секретный файл, в `.gitignore`; не коммитить, не выводить содержимое в код/логи/ответы. Это касается и `.env`.
 
+## Encryption binding
+
+`primaryKeyValue` — полный типизированный JSON tuple `pk:v1`, нормализованный
+через SDK. Общая сериализация используется при encrypt/eager/lazy decrypt и
+updateBy с полным PK. Проекции encrypted-полей всегда включают полный PK.
+Lazy pending state хранит исходный fingerprint PK/AAD: изменённая привязка
+отвергается перед сохранением/дешифровкой. Зашифрованный updateBy требует
+равенств всех PK даже с aadOverride; null-clearing остаётся массовым.
+Проверки: test/encryption-binding.spec.ts и test/e2e/encryption-binding.e2e.spec.ts.
+
 ## Serverless usability
 
 - `findAll` без limit проверяет границу 100 (SQL LIMIT 101) и бросает ошибку при переполнении. `findAllPaged` у Active Record/Repository читает страницы с ORDER BY по полному PK, pageSize 1–1000, общий limit и offset; без trx нет гарантии единого снимка.

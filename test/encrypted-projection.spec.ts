@@ -213,7 +213,7 @@ describe('Security AAD retention in projections (#240)', () => {
     expect(queries[0].sql).toMatch(/SELECT `tenant_id` FROM/);
   });
 
-  it('aadOverride-поле проецируется без AAD-колонки сущности', async () => {
+  it('aadOverride preserves complete PK identity in projections', async () => {
     setupStrict('pin');
     const row = makeOverrideRow();
     const { executor, queries } = createProjectingExecutor([row]);
@@ -224,7 +224,7 @@ describe('Security AAD retention in projections (#240)', () => {
       { select: ['secret'] },
     );
 
-    expect(queries[0].sql).toMatch(/SELECT `secret` FROM/);
+    expect(queries[0].sql).toMatch(/SELECT `secret`, `uuid` FROM/);
     expect(found!.secret).toBe('pin-secret-value');
   });
 });
