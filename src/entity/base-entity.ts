@@ -148,6 +148,14 @@ export class YdbBaseEntity {
    * @param options - Query options (transaction, timeout, limit, offset, signal, idempotent).
    * @returns Array of entity instances.
    */
+  static async findAllPaged<T extends YdbBaseEntity>(
+    this: { new (): T } & typeof YdbBaseEntity,
+    where: Record<string, any> = {},
+    options?: QueryOptions & { pageSize?: number },
+  ): Promise<T[]> {
+    return getOrCreateRepository<T>(this).findAllPaged(where, options);
+  }
+
   static async findAll<T extends YdbBaseEntity>(
     this: { new (): T } & typeof YdbBaseEntity,
     where: Record<string, any> = {},

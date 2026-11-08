@@ -53,8 +53,35 @@ export function validateYdbModuleOptions(
   // retry policy must fail BEFORE the connection-name claim and the driver are
   // allocated, otherwise the failure would surface later from createExecutor()
   // and leak both resources.
+  validatePoolOptions(opts.poolOptions);
   resolveYdbRetryPolicy(opts.retry);
   return normalizeEndpoint(opts.endpoint);
+}
+
+/** Reject ignored/invalid pool options before allocating the driver. */
+export function validatePoolOptions(
+  options: YdbModuleOptions['poolOptions'],
+): void {
+  if (options === undefined) return;
+  if (!options || typeof options !== 'object')
+    throw new Error('poolOptions must be an object.');
+  const allowed = new Set(['minSize', 'maxSize', 'waitQueueFactor']);
+  for (const [key, value] of Object.entries(options)) {
+    if (!allowed.has(key))
+      throw new Error(
+        `Unsupported poolOptions.${key}. Use the options supported by @ydbjs/query.`,
+      );
+    if (
+      value !== undefined &&
+      (!Number.isSafeInteger(value) || value < (key === 'minSize' ? 0 : 1))
+    ) {
+      throw new Error(
+        `Invalid poolOptions.${key}: expected a ${key === 'minSize' ? 'non-negative' : 'positive'} integer.`,
+      );
+    }
+  }
+  if ((options.minSize ?? 0) > (options.maxSize ?? 50))
+    throw new Error('poolOptions.minSize must not exceed maxSize.');
 }
 
 /**
@@ -251,6 +278,7 @@ export function createExecutor(
   driver: Driver,
   opts: YdbModuleOptions,
 ): YdbExecutor {
+  validatePoolOptions(opts.poolOptions);
   const client = query(driver, {
     poolOptions: opts.poolOptions
       ? Object.fromEntries(

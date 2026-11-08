@@ -74,7 +74,7 @@ function makeRow(over: Record<string, unknown> = {}): Record<string, unknown> {
     email: new TextEncoder().encode('a@b.c'),
     note: null,
     status: 0,
-    profile: '{"city":"Msk"}',
+    profile: { city: 'Msk' },
     // Необъявленная колонка — legacy-секрет из БД.
     legacy_secret: 'top-secret',
     ...over,

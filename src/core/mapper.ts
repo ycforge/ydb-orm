@@ -1,3 +1,4 @@
+import { serializeJson } from './json-value.js';
 import { YdbPrimitive } from './types.js';
 import {
   Uuid,
@@ -187,10 +188,8 @@ const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   // See JSDoc `toJsDate` for millisecond precision of Timestamp.
   Timestamp: (value: Date | number | string) =>
     new Timestamp(toValidJsDate(value)),
-  Json: (value: any) =>
-    new Json(typeof value === 'string' ? value : JSON.stringify(value)),
-  JsonDocument: (value: any) =>
-    new JsonDocument(typeof value === 'string' ? value : JSON.stringify(value)),
+  Json: (value: any) => new Json(serializeJson(value)),
+  JsonDocument: (value: any) => new JsonDocument(serializeJson(value)),
 };
 
 /**

@@ -1,3 +1,4 @@
+import { rawJson } from './json-value.js';
 import {
   Uuid,
   Utf8,
@@ -291,7 +292,7 @@ describe('mapToYdb', () => {
 
   describe('Json', () => {
     it('wraps a string into Json value', () => {
-      const val = mapToYdb('Json', '{"a":1}');
+      const val = mapToYdb('Json', rawJson('{"a":1}'));
       expect(val).toBeInstanceOf(Json);
       expect((val as any).value).toBe('{"a":1}');
     });
@@ -310,7 +311,7 @@ describe('mapToYdb', () => {
 
   describe('JsonDocument', () => {
     it('wraps a string into JsonDocument value', () => {
-      const val = mapToYdb('JsonDocument', '{"a":1}');
+      const val = mapToYdb('JsonDocument', rawJson('{"a":1}'));
       expect(val).toBeInstanceOf(JsonDocument);
       expect((val as any).value).toBe('{"a":1}');
     });
