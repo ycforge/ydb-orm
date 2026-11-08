@@ -7,6 +7,7 @@ import {
   ConsoleQueryLogger,
   wrapExecutorWithLogging,
   getExecutorLogger,
+  registerQueryParamFields,
   resolveExecutorLogger,
   type QueryLogger,
   type QueryLogEntry,
@@ -42,6 +43,22 @@ describe('ConsoleQueryLogger', () => {
       '[ydb-orm] UserEntity: query executed outside any transaction ' +
         '(warnOutsideTransaction is enabled).',
     );
+  });
+
+  it('prints the logical field alongside an opaque parameter name (#238)', () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    logSpies.push(logSpy);
+    const logger = new ConsoleQueryLogger();
+
+    logger.log({
+      sql: 'SELECT * FROM users WHERE `uuid` = $w0',
+      paramNames: ['w0'],
+      paramFields: { w0: 'uuid' },
+      maskedParams: { w0: '<string:36>' },
+      durationMs: 1,
+    });
+
+    expect(logSpy.mock.calls[0][0]).toContain('uuid(w0)=');
   });
 
   it('logs query with params and duration', () => {
@@ -374,6 +391,23 @@ describe('wrapExecutorWithLogging', () => {
 
     expect(logEntries[0].maskedParams.title).toBe('Hello');
     expect(logEntries[0].maskedParams.salary).toBe('<number>');
+  });
+
+  it('allowlist matches logical fields of opaque WHERE parameters (#238)', async () => {
+    const mock = createMockExecutor([[]]);
+    const logging = wrapExecutorWithLogging(mock.executor, mockLogger, {
+      values: ['email_encrypted_bi'],
+    });
+
+    const q = logging([
+      'SELECT * FROM users WHERE `email_encrypted_bi` = $w0',
+    ] as unknown as TemplateStringsArray);
+    registerQueryParamFields(q, { w0: 'email_encrypted_bi' });
+    q.parameter('w0', 'blind-index-hash');
+    await q;
+
+    expect(logEntries[0].paramFields).toEqual({ w0: 'email_encrypted_bi' });
+    expect(logEntries[0].maskedParams.w0).toBe('blind-index-hash');
   });
 
   it('allowlist by regex matches parameter names (#168)', async () => {

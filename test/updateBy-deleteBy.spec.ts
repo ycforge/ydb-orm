@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { UserEntity } from './fixtures/user/user.entity.js';
 import { UserRoleEntity } from './fixtures/user_role/user_role.entity.js';
 import { TimestampEntity } from './fixtures/timestamp/timestamp.entity.js';
+import { WhereOperatorEntity } from './fixtures/where_operator/where-operator.entity.js';
+import { MembershipEntity } from './fixtures/membership/membership.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
 import {
@@ -97,6 +99,12 @@ describe('updateBy() / deleteBy()', () => {
     AadCompositeEntity.setExecutor(undefined as any);
     AadCompositeEntity.setEncryptionProvider(undefined);
     AadCompositeEntity.setBlindIndexProvider(undefined);
+    WhereOperatorEntity.setExecutor(undefined as any);
+    WhereOperatorEntity.setEncryptionProvider(undefined);
+    WhereOperatorEntity.setBlindIndexProvider(undefined);
+    MembershipEntity.setExecutor(undefined as any);
+    MembershipEntity.setEncryptionProvider(undefined);
+    MembershipEntity.setBlindIndexProvider(undefined);
   });
 
   describe('updateBy()', () => {
@@ -112,9 +120,9 @@ describe('updateBy() / deleteBy()', () => {
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `user_roles`');
       expect(q.sql).toContain('SET');
-      expect(q.sql).toContain('`is_global` = $is_global');
-      expect(q.sql).toContain('WHERE `user_uuid` = $user_uuid');
-      expect(q.params.is_global).toEqual({
+      expect(q.sql).toContain('`is_global` = $s0');
+      expect(q.sql).toContain('WHERE `user_uuid` = $w0');
+      expect(q.params.s0).toEqual({
         type: expect.anything(),
         value: true,
       });
@@ -168,8 +176,8 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `timestamp_test`');
-      expect(q.sql).toContain('`updated_at` = $updated_at');
-      expect(q.params.updated_at).toBeDefined();
+      expect(q.sql).toContain('`updated_at` = $s1');
+      expect(q.params.s1).toBeDefined();
     });
 
     it('throws for unknown field in patch', async () => {
@@ -194,8 +202,8 @@ describe('updateBy() / deleteBy()', () => {
       );
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`role_uuid` = $role_uuid');
-      expect(q.sql).toContain('`is_global` = $is_global');
+      expect(q.sql).toContain('`role_uuid` = $s0');
+      expect(q.sql).toContain('`is_global` = $s1');
     });
 
     it('works with encryption provider', async () => {
@@ -212,8 +220,8 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `users`');
-      expect(q.sql).toContain('`email_encrypted` = $email_encrypted');
-      const emailParam = q.params.email_encrypted;
+      expect(q.sql).toContain('`email_encrypted` = $s0');
+      const emailParam = q.params.s0;
       expect((emailParam as any).value).toEqual(
         new TextEncoder().encode('secret@example.com'),
       );
@@ -232,17 +240,39 @@ describe('updateBy() / deleteBy()', () => {
       expect(q.sql).toContain('RETURNING `user_uuid`');
     });
 
-    it('throws when the same field is in where and patch', async () => {
+    it('allows the same field in where and patch with distinct param names (#238)', async () => {
       const mock = createMockExecutor([[]]);
       UserRoleEntity.setExecutor(mock.executor);
 
+      const affected = await UserRoleEntity.updateBy(
+        { is_global: true },
+        { is_global: false },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('SET `is_global` = $s0');
+      expect(q.sql).toContain('WHERE `is_global` = $w0');
+      expect((q.params.w0 as any).value).toBe(true);
+      expect((q.params.s0 as any).value).toBe(false);
+      expect(affected).toBe(0);
+    });
+
+    it('rejects changing an @YdbSecurityAAD field when encrypted values exist (#238)', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadEntity.setEncryptionProvider(provider);
+      AadEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadEntity.setExecutor(mock.executor);
+      const newUuid = '00000000-0000-0000-0000-000000000003';
+
       await expect(
-        UserRoleEntity.updateBy(
-          { user_uuid: userRow.uuid },
-          { user_uuid: userRow.uuid, is_global: true },
-        ),
-      ).rejects.toThrow(/present in both where and patch/);
+        AadEntity.updateBy({ uuid: userRow.uuid }, { uuid: newUuid }),
+      ).rejects.toThrow(
+        /cannot change @YdbSecurityAAD field\(s\) "uuid".*undecryptable/,
+      );
+
       expect(mock.queries).toHaveLength(0);
+      expect(provider.encryptContexts).toHaveLength(0);
     });
 
     it('updates encrypted field when AAD field is fixed in where', async () => {
@@ -260,7 +290,7 @@ describe('updateBy() / deleteBy()', () => {
       expect(mock.queries).toHaveLength(1);
       const [q] = mock.queries;
       expect(q.sql).toContain('UPDATE `aad_test`');
-      expect(q.sql).toContain('`secret` = $secret');
+      expect(q.sql).toContain('`secret` = $s0');
 
       expect(provider.encryptContexts).toHaveLength(1);
       expect(provider.encryptContexts[0].aadFields).toEqual({
@@ -303,9 +333,9 @@ describe('updateBy() / deleteBy()', () => {
       );
 
       const [q] = mock.queries;
-      expect(q.sql).toContain('`secret` = $secret');
-      expect(Object.keys(q.params)).toContain('secret');
-      expect(Object.keys(q.params)).toContain('uuid');
+      expect(q.sql).toContain('`secret` = $s0');
+      expect(Object.keys(q.params)).toContain('s0');
+      expect(Object.keys(q.params)).toContain('w0');
       expect(provider.encryptContexts[0].aadFields).toEqual({
         uuid: userRow.uuid,
       });
@@ -397,9 +427,9 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('DELETE FROM `user_roles`');
-      expect(q.sql).toContain('WHERE `user_uuid` = $user_uuid');
+      expect(q.sql).toContain('WHERE `user_uuid` = $w0');
       expect(q.sql).toContain('RETURNING `user_uuid`');
-      expect(q.params.user_uuid).toBeDefined();
+      expect(q.params.w0).toBeDefined();
       expect(affected).toBe(0);
     });
 
@@ -440,9 +470,159 @@ describe('updateBy() / deleteBy()', () => {
 
       const [q] = mock.queries;
       expect(q.sql).toContain('DELETE FROM `user_roles`');
-      expect(q.sql).toContain('`user_uuid` = $user_uuid');
-      expect(q.sql).toContain('`role_uuid` = $role_uuid');
+      expect(q.sql).toContain('`user_uuid` = $w0');
+      expect(q.sql).toContain('`role_uuid` = $w1');
       expect(q.sql).toContain('AND');
+    });
+  });
+
+  describe('parameterless predicates (#237)', () => {
+    it('updateBy() accepts { field: null } and emits IS NULL', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.updateBy({ name: null }, { status: 'active' });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('UPDATE `where_operator_test`');
+      expect(q.sql).toContain('WHERE `name` IS NULL');
+      expect(q.sql).toContain('SET `status` = $s0');
+      expect((q.params.s0 as any).value).toBe('active');
+      expect(q.params.w0).toBeUndefined();
+    });
+
+    it('deleteBy() accepts { field: { $ne: null } } and emits IS NOT NULL', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.deleteBy({ name: { $ne: null } });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('DELETE FROM `where_operator_test`');
+      expect(q.sql).toContain('WHERE `name` IS NOT NULL');
+      expect(Object.keys(q.params)).toHaveLength(0);
+    });
+
+    it('accepts nested parameterless logical predicates', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await WhereOperatorEntity.updateBy(
+        { $or: [{ name: null }, { status: null }] },
+        { rating: 1 },
+      );
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('WHERE (`name` IS NULL OR `status` IS NULL)');
+      expect((q.params.s0 as any).value).toBe(1);
+    });
+
+    it('deleteBy() rejects a predicate of only undefined before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.deleteBy({ name: undefined }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects an empty object before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.updateBy({}, { rating: 1 }),
+      ).rejects.toThrow(/requires at least one WHERE condition/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects a nested predicate resolving to nothing', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.updateBy(
+          { $or: [{ name: undefined }] },
+          { rating: 1 },
+        ),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table update/);
+      expect(mock.queries).toHaveLength(0);
+    });
+  });
+
+  describe('empty relation filters are not effective (#237)', () => {
+    it('deleteBy() rejects many-to-one { parent: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(MembershipEntity.deleteBy({ user: {} })).rejects.toThrow(
+        /no effective WHERE condition.*full-table delete/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('updateBy() rejects many-to-one { parent: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.updateBy({ user: {} }, { role: 'admin' }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table update/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects { parent: { uuid: undefined } } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.deleteBy({ user: { uuid: undefined } }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects { $or: [{ parent: {} }] } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await expect(
+        MembershipEntity.deleteBy({ $or: [{ user: {} }] }),
+      ).rejects.toThrow(/no effective WHERE condition.*full-table delete/);
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('deleteBy() rejects one-to-many { children: {} } before execution', async () => {
+      const mock = createMockExecutor([[]]);
+      UserEntity.setExecutor(mock.executor);
+
+      await expect(UserEntity.deleteBy({ userRoles: {} })).rejects.toThrow(
+        /no effective WHERE condition.*full-table delete/,
+      );
+      expect(mock.queries).toHaveLength(0);
+    });
+
+    it('still accepts a related filter with an effective inner predicate', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await MembershipEntity.deleteBy({ user: { uuid: userRow.uuid } });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('DELETE FROM `memberships`');
+      expect(q.sql).toContain('`user_uuid` IN (SELECT `uuid` FROM `users`');
+      expect(q.sql).toContain('WHERE `uuid` = $w0');
+    });
+
+    it('keeps the read path findAll({ relation: {} }) working', async () => {
+      const mock = createMockExecutor([[]]);
+      MembershipEntity.setExecutor(mock.executor);
+
+      await MembershipEntity.findAll({ user: {} });
+
+      const [q] = mock.queries;
+      expect(q.sql).toContain('FROM `memberships`');
+      expect(q.sql).toContain('`user_uuid` IN (SELECT `uuid` FROM `users`)');
     });
   });
 });

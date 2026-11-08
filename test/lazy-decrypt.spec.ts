@@ -201,10 +201,55 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
 
     const query = mock.queries[0];
     expect(query.sql).toContain('secret_lazy_bi');
-    expect((query.params['secret_lazy_bi'] as any).value).toBe(
-      biHash('lazy-secret-value'),
-    );
+    expect((query.params['w0'] as any).value).toBe(biHash('lazy-secret-value'));
     // Поиск по blind index не требует дешифровки значения
     expect(provider.decryptCalls).toEqual(['secret_eager']);
+  });
+
+  it('updateBy отвергает ciphertext недешифрованного lazy-поля до запроса (#243)', async () => {
+    const row = makeRow();
+    const mock = createMockExecutor([[row]]);
+    LazySecretEntity.setExecutor(mock.executor);
+
+    const entity = (await LazySecretEntity.find({ uuid: row.uuid }))!;
+    provider.encryptCalls = [];
+    mock.queries.length = 0;
+
+    await expect(
+      LazySecretEntity.updateBy(
+        { uuid: row.uuid },
+        { secret_lazy: entity.secret_lazy },
+      ),
+    ).rejects.toThrow(
+      /encrypted field "secret_lazy".*binary value.*updateBy\(\) accepts plaintext only/,
+    );
+
+    expect(mock.queries).toHaveLength(0);
+    expect(provider.encryptCalls).toEqual([]);
+  });
+
+  it('updateBy принимает расшифрованное lazy-поле и шифрует ровно один раз (#243)', async () => {
+    const row = makeRow();
+    const mock = createMockExecutor([[row]]);
+    LazySecretEntity.setExecutor(mock.executor);
+
+    const entity = (await LazySecretEntity.find({ uuid: row.uuid }))!;
+    await entity.decryptField('secret_lazy');
+    provider.encryptCalls = [];
+    mock.queries.length = 0;
+
+    await LazySecretEntity.updateBy(
+      { uuid: row.uuid },
+      { secret_lazy: entity.secret_lazy },
+    );
+
+    const [q] = mock.queries;
+    expect(q.sql).toContain('`secret_lazy` = $s0');
+    expect(q.sql).toContain('`secret_lazy_bi` = $s1');
+    // identity provider: re-encrypting the plaintext yields the original
+    // ciphertext
+    expect((q.params['s0'] as any).value).toEqual(row.secret_lazy);
+    expect((q.params['s1'] as any).value).toBe(row.secret_lazy_bi);
+    expect(provider.encryptCalls).toEqual(['secret_lazy']);
   });
 });

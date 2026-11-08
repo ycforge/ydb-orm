@@ -16,6 +16,7 @@ examples/
 ├── 09-migrations/     миграции: runner, loader, пример конфига для CLI
 ├── 10-repository/     YdbRepository / YdbEntityManager без DI
 ├── 11-advanced/       продвинутые декораторы: enum, json, TTL, индексы, таймстампы, хуки
+├── 12-topics/         топики YDB: writer/reader, общие транзакции таблиц и сообщений
 └── nestjs/            примеры интеграции с NestJS (подпакет @ycforge/ydb-orm/nest)
     ├── 01-crud/           модуль, Active Record и инжектируемый репозиторий
     ├── 02-transactions/   транзакции через YdbTransactionManager из DI
@@ -57,6 +58,16 @@ node dist-examples/examples/01-users/main.js
   обязательны только для примеров, работающих с зашифрованными полями
   (`06-encryption`, `nestjs/03-encryption`).
 
+## Топики
+
+Пример `12-topics` работает с готовыми топиками и consumers — создаёт их
+заранее, например через ydb CLI (см. комментарий в `main.ts`):
+
+```bash
+ydb -e grpc://localhost:2136/local topic create /local/news --consumers name=processor
+ydb -e grpc://localhost:2136/local topic create /local/processed --consumers name=processor
+```
+
 ## Миграции и CLI
 
 Пример `09-migrations` показывает как программный runner, так и CLI-конфиг
@@ -84,5 +95,5 @@ yarn ydb-orm migration:revert
 Для NestJS-примеров внутри папки лежит `app.module.ts` (корневой модуль),
 сервисы и `main.ts`.
 
-Комментарии в примерах — на русском, следуют соглашениям кодовой базы
-(идентификаторы на английском).
+Комментарии в примерах — на русском (примеры служат документацией);
+комментарии в `src/` и `test/` — на английском. Идентификаторы — на английском.

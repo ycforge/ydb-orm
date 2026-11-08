@@ -40,10 +40,10 @@ describe('YdbQueryBuilder', () => {
 
     expect(sql).toBe(
       'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos` ' +
-        'WHERE `is_public` = $is_public AND `title` = $title ' +
+        'WHERE `is_public` = $w0 AND `title` = $w1 ' +
         'ORDER BY `rating` DESC, `title` ASC LIMIT 20 OFFSET 10',
     );
-    expect(values).toEqual({ is_public: true, title: 'Sunset' });
+    expect(values).toEqual({ w0: true, w1: 'Sunset' });
   });
 
   it('builds SELECT without WHERE', async () => {
@@ -140,7 +140,7 @@ describe('YdbQueryBuilder', () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toBeInstanceOf(QbPhotoEntity);
     expect(result[0].title).toBe('Sunset');
-    expect(mock.queries[0].sql).toContain('WHERE `is_public` = $is_public');
+    expect(mock.queries[0].sql).toContain('WHERE `is_public` = $w0');
   });
 
   it('getOne limits to 1 and returns first entity or null', async () => {
@@ -281,7 +281,23 @@ describe('YdbQueryBuilder', () => {
 
     expect(count).toBe(7);
     expect(mock.queries[0].sql).toBe(
-      'SELECT COUNT(*) AS cnt FROM `qb_photos` WHERE `is_public` = $is_public',
+      'SELECT COUNT(*) AS cnt FROM `qb_photos` WHERE `is_public` = $w0',
+    );
+  });
+
+  it('getCount returns a bigint count at MAX_SAFE_INTEGER exactly (#245)', async () => {
+    mockRuntime([[{ cnt: 9007199254740991n }]]);
+
+    await expect(QbPhotoEntity.query().getCount()).resolves.toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+  });
+
+  it('getCount throws for a bigint count above MAX_SAFE_INTEGER (#245)', async () => {
+    mockRuntime([[{ cnt: 9007199254740993n }]]);
+
+    await expect(QbPhotoEntity.query().getCount()).rejects.toThrow(
+      /9007199254740993/,
     );
   });
 
@@ -345,6 +361,105 @@ describe('YdbQueryBuilder', () => {
       const many = await builder.getMany();
       expect(many).toHaveLength(1);
       expect(builder).toBeDefined();
+    });
+  });
+
+  describe('logical groups across andWhere() (#233)', () => {
+    const SELECT =
+      'SELECT `uuid`, `title`, `is_public`, `rating` FROM `qb_photos` ';
+
+    it('(A OR B) AND (C OR D): a new root $or is not overwritten', async () => {
+      mockRuntime();
+      const { sql, values } = await QbPhotoEntity.query()
+        .where({ is_public: true })
+        .orWhere({ title: 'Sunset' })
+        .andWhere({ $or: [{ rating: { $gte: 5 } }, { title: 'Dawn' }] })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT +
+          'WHERE (`is_public` = $w0 OR `title` = $w1) ' +
+          'AND (`rating` >= $w2 OR `title` = $w3) ' +
+          'LIMIT 100 OFFSET 0',
+      );
+      expect(values).toEqual({
+        w0: true,
+        w1: 'Sunset',
+        w2: 5,
+        w3: 'Dawn',
+      });
+    });
+
+    it('repeated root $or keys are combined with AND, never overwritten', async () => {
+      mockRuntime();
+      const { sql, values } = await QbPhotoEntity.query()
+        .where({ $or: [{ is_public: true }, { rating: 5 }] })
+        .andWhere({ $or: [{ title: 'Sunset' }, { rating: 3 }] })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT +
+          'WHERE (`is_public` = $w0 OR `rating` = $w1) ' +
+          'AND (`title` = $w2 OR `rating` = $w3) ' +
+          'LIMIT 100 OFFSET 0',
+      );
+      expect(values).toEqual({ w0: true, w1: 5, w2: 'Sunset', w3: 3 });
+    });
+
+    it('repeated root $and keys are combined, never overwritten', async () => {
+      mockRuntime();
+      const { sql, values } = await QbPhotoEntity.query()
+        .where({ $and: [{ is_public: true }] })
+        .andWhere({ $and: [{ rating: { $gte: 4 } }] })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT +
+          'WHERE `is_public` = $w0 AND `rating` >= $w1 ' +
+          'LIMIT 100 OFFSET 0',
+      );
+      expect(values).toEqual({ w0: true, w1: 4 });
+    });
+
+    it('scalar andWhere() still merges by key (unchanged)', async () => {
+      mockRuntime();
+      const { sql, values } = await QbPhotoEntity.query()
+        .where({ is_public: true })
+        .andWhere({ title: 'Sunset' })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT + 'WHERE `is_public` = $w0 AND `title` = $w1 LIMIT 100 OFFSET 0',
+      );
+      expect(values).toEqual({ w0: true, w1: 'Sunset' });
+    });
+
+    it('where(A).orWhere(B) stays a flat OR chain (#173)', async () => {
+      mockRuntime();
+      const { sql } = await QbPhotoEntity.query()
+        .where({ is_public: true })
+        .orWhere({ title: 'Sunset' })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT +
+          'WHERE (`is_public` = $w0 OR `title` = $w1) LIMIT 100 OFFSET 0',
+      );
+    });
+
+    it('andWhere after orWhere links through AND: (A OR B) AND C (#173)', async () => {
+      mockRuntime();
+      const { sql } = await QbPhotoEntity.query()
+        .where({ is_public: true })
+        .orWhere({ title: 'Sunset' })
+        .andWhere({ rating: { $gte: 4 } })
+        .toYql();
+
+      expect(sql).toBe(
+        SELECT +
+          'WHERE (`is_public` = $w0 OR `title` = $w1) AND `rating` >= $w2 ' +
+          'LIMIT 100 OFFSET 0',
+      );
     });
   });
 });

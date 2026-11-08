@@ -12,6 +12,11 @@ export interface QueryLogEntry {
   sql: string;
   /** Parameter names (without values). */
   paramNames: string[];
+  /**
+   * Logical field for each opaque WHERE/SET parameter (e.g. `w0` -> `uuid`).
+   * Absent for write paths whose parameter names are already column names.
+   */
+  paramFields?: Record<string, string>;
   /** Masked parameter values: raw is hidden, only type + size class. */
   maskedParams: Record<string, unknown>;
   /** Execution duration in milliseconds. */
@@ -72,16 +77,32 @@ export type YdbLogParamValues =
   boolean | string[] | RegExp | ((name: string) => boolean);
 
 /** An application-approved name — the raw-value source selector (#168). */
+function matchesParamName(
+  values: Exclude<YdbLogParamValues, boolean>,
+  candidate: string,
+): boolean {
+  if (typeof values === 'function') return values(candidate);
+  if (Array.isArray(values)) return values.includes(candidate);
+  values.lastIndex = 0;
+  return values.test(candidate);
+}
+
+/**
+ * Raw-value disclosure decision (#168). Opaque SQL parameter names (`w0`,
+ * `s0`) are matched against the logical field recorded by the WHERE/SET
+ * compiler as well, so allowlists keep working by column name.
+ */
 function allowRawValue(
   values: YdbLogParamValues | undefined,
   name: string,
+  field?: string,
 ): boolean {
   if (values === undefined || values === false) return false;
   if (values === true) return true;
-  if (typeof values === 'function') return values(name);
-  if (Array.isArray(values)) return values.includes(name);
-  values.lastIndex = 0;
-  return values.test(name);
+  if (matchesParamName(values, name)) return true;
+  return field !== undefined && field !== name
+    ? matchesParamName(values, field)
+    : false;
 }
 
 /**
@@ -140,6 +161,29 @@ function lengthBucket(length: number): string {
 }
 
 /**
+ * Opaque WHERE/SET parameter -> logical field mapping, registered by the
+ * persistence layer before binding. It lets query logs and `logParamValues`
+ * allowlists keep referring to column names even though SQL parameters are
+ * collision-free (`w0`, `s1`, ...).
+ */
+const queryParamFields = new WeakMap<object, Record<string, string>>();
+
+/** Associates opaque parameter names with their logical fields (#238/#168). */
+export function registerQueryParamFields(
+  query: object,
+  fields: Record<string, string>,
+): void {
+  if (Object.keys(fields).length > 0) queryParamFields.set(query, fields);
+}
+
+/** Returns the logical field mapping registered for a query, if any. */
+export function getQueryParamFields(
+  query: object,
+): Record<string, string> | undefined {
+  return queryParamFields.get(query);
+}
+
+/**
  * Masking of a scalar value. Bytes are never disclosed (only the size class).
  * Raw values are allowed only for names in the application's explicit
  * allowlist (#168); long strings are then truncated.
@@ -163,11 +207,12 @@ function maskScalarValue(
   return safeMetaValue(value);
 }
 
-/** Masks a parameter value by parameter name. */
+/** Masks a parameter value by parameter name (and its logical field). */
 function maskValue(
   name: string,
   value: unknown,
   values?: YdbLogParamValues,
+  field?: string,
 ): unknown {
   if (value === null || value === undefined) return value;
   if (
@@ -178,9 +223,9 @@ function maskValue(
     // YDB typed value { type: ..., value: ... }
     const inner = (value as any).value;
     if (inner === null || inner === undefined) return inner;
-    return maskScalarValue(name, inner, allowRawValue(values, name));
+    return maskScalarValue(name, inner, allowRawValue(values, name, field));
   }
-  return maskScalarValue(name, value, allowRawValue(values, name));
+  return maskScalarValue(name, value, allowRawValue(values, name, field));
 }
 
 /** Serializes a parameter value for console output (#190). */
@@ -209,7 +254,12 @@ function formatParamValue(value: unknown): string {
 export class ConsoleQueryLogger implements QueryLogger {
   log(entry: QueryLogEntry): void {
     const params = Object.entries(entry.maskedParams)
-      .map(([k, v]) => `${k}=${formatParamValue(v)}`)
+      .map(([name, value]) => {
+        const field = entry.paramFields?.[name];
+        const label =
+          field !== undefined && field !== name ? `${field}(${name})` : name;
+        return `${label}=${formatParamValue(value)}`;
+      })
       .join(', ');
 
     const base = `[YDB] QUERY ${entry.durationMs}ms`;
@@ -282,7 +332,7 @@ export function wrapExecutorWithLogging(
   options?: YdbLoggingOptions,
 ): YdbExecutor {
   const values = options?.values;
-  const wrapped: any = (strings: TemplateStringsArray, ...args: any[]) => {
+  const wrapped: any = (strings: TemplateStringsArray, ...args: unknown[]) => {
     const sql = strings[0];
     const startTime = performance.now();
     const paramNames: string[] = [];
@@ -294,7 +344,9 @@ export function wrapExecutorWithLogging(
     const proxied: any = {
       parameter(name: string, value: unknown) {
         paramNames.push(name);
-        maskedParams[name] = maskValue(name, value, values);
+        const fields =
+          getQueryParamFields(proxied) ?? getQueryParamFields(query);
+        maskedParams[name] = maskValue(name, value, values, fields?.[name]);
         originalParameter(name, value);
         // Return the proxy, otherwise a parameter().parameter() chain escapes
         // the proxy and subsequent calls lose logging
@@ -323,7 +375,14 @@ export function wrapExecutorWithLogging(
         const promise = query.then(
           (result: any) => {
             const durationMs = Math.round(performance.now() - startTime);
-            logger.log({ sql, paramNames, maskedParams, durationMs });
+            logger.log({
+              sql,
+              paramNames,
+              paramFields:
+                getQueryParamFields(proxied) ?? getQueryParamFields(query),
+              maskedParams,
+              durationMs,
+            });
             return result;
           },
           (error: any) => {
@@ -331,6 +390,8 @@ export function wrapExecutorWithLogging(
             logger.log({
               sql,
               paramNames,
+              paramFields:
+                getQueryParamFields(proxied) ?? getQueryParamFields(query),
               maskedParams,
               durationMs,
               error: error instanceof Error ? error : new Error(String(error)),

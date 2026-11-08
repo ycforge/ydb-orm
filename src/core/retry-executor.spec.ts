@@ -262,6 +262,8 @@ describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => 
   function makeSdkLikeExecutor(options: {
     failuresBeforeSuccess: number;
     executions: number[];
+    nativeAbort?: boolean;
+    afterRetryEvent?: () => void;
   }): YdbExecutor {
     let failureCount = 0;
     const executor = ((_strings: TemplateStringsArray): YdbQuery => {
@@ -292,6 +294,7 @@ describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => 
           return Promise.resolve()
             .then((): unknown => {
               if (signal?.aborted) {
+                if (options.nativeAbort) signal.throwIfAborted();
                 const abortError = new Error('The operation was aborted');
                 abortError.name = 'AbortError';
                 throw abortError;
@@ -304,8 +307,10 @@ describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => 
                 for (const listener of listeners) {
                   listener({ attempt: failureCount, error: boom });
                 }
+                options.afterRetryEvent?.();
                 // The policy cancelled the signal — no next attempt:
                 if (signal?.aborted) {
+                  if (options.nativeAbort) signal.throwIfAborted();
                   const abortError = new Error('The operation was aborted');
                   abortError.name = 'AbortError';
                   throw abortError;
@@ -344,6 +349,84 @@ describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => 
     // internal loop (unbounded budget) is silenced by the policy: without
     // silencing, each policy attempt would spin in the SDK's infinite loop.
     expect(executions).toEqual([1, 2, 3]);
+  });
+
+  it('восстанавливает ошибку YDB после нативного AbortSignal.throwIfAborted()', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // AbortController in Node creates a DOMException from another realm in the Jest VM.
+    expect(controller.signal.reason.name).toBe('AbortError');
+    const executions: number[] = [];
+    const base = makeSdkLikeExecutor({
+      failuresBeforeSuccess: 1,
+      executions,
+      nativeAbort: true,
+    });
+    const seen: unknown[] = [];
+    const wrapped = withRetryPolicy(base, {
+      maxAttempts: 2,
+      sleep: () => Promise.resolve(),
+      onRetry: (ctx) => {
+        seen.push(ctx.error);
+      },
+    });
+    await expect(wrapped`SELECT 1`.idempotent(true)).resolves.toEqual([
+      [{ done: true }],
+    ]);
+    expect(executions).toEqual([1, 2]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(YDBError);
+  });
+
+  it('при исчерпании бюджета возвращает статус YDB и не превышает число попыток', async () => {
+    const executions: number[] = [];
+    const base = makeSdkLikeExecutor({
+      failuresBeforeSuccess: 5,
+      executions,
+      nativeAbort: true,
+    });
+    const wrapped = withRetryPolicy(base, {
+      maxAttempts: 2,
+      sleep: () => Promise.resolve(),
+    });
+    await expect(wrapped`SELECT 1`.idempotent(true)).rejects.toMatchObject({
+      code: Code.ABORTED,
+    });
+    expect(executions).toEqual([1, 2]);
+  });
+
+  it('не подменяет пользовательскую отмену сохранённой ошибкой SDK', async () => {
+    const controller = new AbortController();
+    const cancelled = new Error('User cancelled');
+    const executions: number[] = [];
+    const base = makeSdkLikeExecutor({
+      failuresBeforeSuccess: 1,
+      executions,
+      nativeAbort: true,
+      afterRetryEvent: () => controller.abort(cancelled),
+    });
+    const wrapped = withRetryPolicy(base, {
+      maxAttempts: 3,
+      sleep: () => Promise.resolve(),
+    });
+    await expect(
+      wrapped`SELECT 1`.idempotent(true).signal(controller.signal),
+    ).rejects.toBe(cancelled);
+    expect(executions).toEqual([1]);
+  });
+
+  it('не повторяет непомеченную запись и возвращает исходную ошибку вместо DOMException', async () => {
+    const executions: number[] = [];
+    const base = makeSdkLikeExecutor({
+      failuresBeforeSuccess: 3,
+      executions,
+      nativeAbort: true,
+    });
+    const wrapped = withRetryPolicy(base, { maxAttempts: 3 });
+    await expect(
+      wrapped`UPSERT INTO news (id) VALUES (1)`,
+    ).rejects.toBeInstanceOf(YDBError);
+    expect(executions).toEqual([1]);
   });
 
   it('original error reaches policy, not AbortError from cancellation', async () => {

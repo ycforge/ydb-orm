@@ -345,3 +345,20 @@ export { buildEntityDiagram, writeDiagramFile } from './cli/entity-diagram.js';
 // so users can type their implementations without a direct
 // dependency on @ydbjs/auth.
 export type { CredentialsProvider } from '@ydbjs/auth';
+
+export { YdbTopics } from './topic/ydb-topics.js';
+export type {
+  YdbTopicTxReader,
+  YdbTopicTxWriter,
+  YdbTopicOperationOptions,
+  YdbTopicWriterOptions,
+  YdbTopicReader,
+  YdbTopicWriter,
+} from './topic/ydb-topics.js';
+export type {
+  TopicReaderOptions,
+  TopicReader,
+  TopicTxReader,
+} from '@ydbjs/topic/reader';
+export type { TopicWriter, TopicTxWriter } from '@ydbjs/topic/writer';
+export type { TopicMessage } from '@ydbjs/topic/message';

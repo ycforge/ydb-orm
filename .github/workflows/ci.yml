@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['22.18.0']
+        node-version: ['22.18.0', '24.x']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['22.18.0']
+        node-version: ['22.18.0', '24.x']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        node-version: ['22.18.0']
+        node-version: ['22.18.0', '24.x']
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -63,3 +63,45 @@ jobs:
           name: dist-${{ matrix.node-version }}
           path: dist/
           retention-days: 7
+
+  e2e:
+    name: E2E (YDB in-memory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22.18.0'
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn build
+      - name: Start local YDB (2GB tmpfs)
+        run: |
+          docker run -d --name ydb-e2e \
+            --tmpfs /ydb_data:rw,size=2g \
+            -p 2136:2136 -p 2135:2135 \
+            -e YDB_GRPC_ENABLE_TLS=false \
+            ydbplatform/local-ydb@sha256:9e46fd45875551a75bcf34d0bb9ca0baa1d8763a4ccf2070af45f4467c4b7402
+          for i in $(seq 1 60); do
+            if docker exec ydb-e2e /ydb -e grpc://localhost:2136 -d /local --no-discovery scheme ls . >/dev/null 2>&1; then
+              echo "YDB is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "YDB did not start in time"
+          docker logs ydb-e2e
+          exit 1
+      - name: Run e2e
+        env:
+          YDB_ENDPOINT: grpc://localhost:2136/local
+          YDB_AUTH_TYPE: anonymous
+          YDB_DISABLE_DISCOVERY: '1'
+        run: yarn test:e2e --runInBand
+      - name: YDB logs
+        if: failure()
+        run: docker logs ydb-e2e
+      - name: Stop local YDB
+        if: always()
+        run: docker rm -f ydb-e2e

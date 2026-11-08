@@ -373,6 +373,12 @@ await user.loadRelations(['roles']);
 
 `QueryOptions`: `trx`, `timeout` (мс), `signal` (AbortSignal), `limit` (по умолчанию 100, макс 1000; семантика та же, что у `limit()` билдера — см. таблицу ниже: `0` → пустой результат, отрицательное/дробное — ошибка `Invalid LIMIT`), `offset`.
 
+`insertMany()` обрабатывает вход батчами по 100 строк: шифрование и удержание данных ограничены текущим батчем. Как и при ошибке записи SQL-батча, сбой предобработки/шифрования в более позднем батче оставляет ранее записанные батчи в БД (частичная вставка); операция целиком не откатывается.
+
+Явная проекция (`select` в `find`/`findAll` или `select()` в QueryBuilder) при выборе `@YdbEncrypted`-поля автоматически добавляет в SQL недостающие `@YdbSecurityAAD`-колонки — иначе дешифровка построила бы неполный аутентифицированный контекст. Эти добавленные поля будут присутствовать и в возвращённом инстансе (и в `toJSON()`). Поля с `aadOverride` дополнительных колонок не требуют.
+
+`count()` возвращает `Promise<number>`. YDB отдаёт `COUNT(*)` как Int64, который может прийти из драйвера в виде `bigint`, `number` или `string`. Значения до `Number.MAX_SAFE_INTEGER` (2^53 − 1 = `9007199254740991`) возвращаются точно; значение выше диапазона безопасных целых не представимо типом `number` без потери точности, поэтому вместо молчаливого округления `count()` бросает ошибку с фактическим значением. Сужайте выборку через `where`, чтобы считать меньше строк. `QueryBuilder.getCount()` использует ту же семантику.
+
 ## QueryBuilder
 
 Цепочный builder поверх Active Record (`src/query/`):
@@ -469,7 +475,7 @@ await UserEntity.findAll({
 | many-to-one / one-to-one | `root.fk IN (SELECT target.pk FROM target WHERE pred)` |
 | many-to-many | `root.pk IN (SELECT jt.owner FROM jt WHERE jt.inverse IN (SELECT target.pk FROM target WHERE pred))` |
 
-Пустой предикат `{ tags: {} }` означает «есть хотя бы одна связанная строка». Связи можно вкладывать (`{ linkedUser: { roles: { role: 'admin' } } }`).
+Пустой предикат `{ tags: {} }` означает «есть хотя бы одна связанная строка». Связи можно вкладывать (`{ linkedUser: { roles: { role: 'admin' } } }`). В bulk-операциях (`updateBy`/`deleteBy`) такой пустой предикат не считается значимым условием WHERE: если он единственный, операция отвергается как потенциально full-table.
 
 Ограничения и гарантии:
 
@@ -600,6 +606,10 @@ HMAC-SHA256, KMS) — в пакете `@ycforge/orm-security-providers`.
 
 При `updateBy()` для зашифрованного поля ORM собирает AAD из значений AAD-полей, зафиксированных в `where` (например, по PK). Если AAD не может быть однозначно определён из предиката, ORM бросает ошибку — для явного переопределения можно использовать `aadOverride` в `@YdbEncrypted({ aadOverride: '...' })`.
 
+**`updateBy()` не меняет `@YdbSecurityAAD`-поля.** AAD аутентифицируется в каждом ciphertext, а bulk-обновление не перешифровывает существующие значения. Поэтому патч, содержащий AAD-поле (обычно это PK), отвергается до выполнения запроса: иначе строки стали бы нерасшифровываемыми. Используйте `save()` для перешифровки сущности или обновляйте только не-AAD поля.
+
+**Контракт `updateBy()` для lazy-полей — только plaintext.** В отличие от `save()`, `updateBy()` принимает обычный патч и не знает, что значение скопировано из ещё не расшифрованного `@YdbEncrypted({ lazy: true })` поля. Поэтому ciphertext (`Uint8Array`/`Buffer`) в патче отвергается до выполнения запроса: сначала получите plaintext через `await entity.decryptField('field')` / `await entity.decryptLazyFields()` и передайте его, либо не включайте поле в патч, чтобы оставить значение в БД без изменений. Обычные `string`/`number`/`boolean` значения шифруются как прежде.
+
 ## JSON-колонки
 
 Поддерживаются три варианта:
@@ -640,8 +650,8 @@ await EventEntity.query()
   .andWhereJsonExists('metadata', '$.settings.theme')
   .andWhereJsonValue('metadata', '$.role', 'admin')
   .getMany();
-// WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists)
-//    AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) = $metadata_1_jsonvalue_val)
+// WHERE (JSON_EXISTS(`metadata`, $w0)
+//    AND JSON_VALUE(`metadata`, $w1) = $w2)
 ```
 
 ## Schema sync
@@ -989,15 +999,15 @@ YdbCoreModule.forRootAsync({
 ```
 
 - `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void; warn?(message: string): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams`, `durationMs` и опциональную `error`. Опциональный `warn` получает предупреждения ORM (см. `warnOutsideTransaction`).
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void; warn?(message: string): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `paramFields`, `maskedParams`, `durationMs` и опциональную `error`. `paramFields` сопоставляет непрозрачные имена WHERE/SET-параметров (`w0`, `s1`) с исходными полями (`uuid`, `email_encrypted_bi`). Опциональный `warn` получает предупреждения ORM (см. `warnOutsideTransaction`).
 - Утилита `wrapExecutorWithLogging(executor, logger, options?)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
 - **Значения параметров по умолчанию скрыты (#168)**: raw-значения не попадают в журналы вообще, только тип и укрупнённый класс размера (`<string:1-31>`, `<json:512-2047>`, `<bytes:128-511>`). Точная длина скрыта (чтобы по журналам нельзя было различать значения). Это intentional behavior change: раньше маскировался лишь конечный денylist имён (`password`, `token`, `email`, ...), и значения с произвольными именами (`salary`, `medical_record`, blind-index хеши не из денylist) утекали в лог.
 - **Бинарные значения маскируются всегда**, даже при явном opt-in: ciphertext шифрованных колонок логируется только как `<bytes:<класс размера>>`.
 - **Опциональное raw-раскрытие** — `logParamValues` в `YdbModuleOptions` (standalone и NestJS) или `options.values` у `wrapExecutorWithLogging`:
   - `true` — все значения (кроме бинарных);
-  - `string[]` — только перечисленные имена параметров;
-  - `RegExp` — только имена по маске;
-  - `(name) => boolean` — предикат приложения.
+  - `string[]` — только перечисленные имена параметров или логические поля (для WHERE/SET ORM сравнивает и с `paramFields`, например `"email_encrypted_bi"`);
+  - `RegExp` — только имена/логические поля по маске;
+  - `(name) => boolean` — предикат приложения (получает и имя параметра, и логическое поле).
   При opt-in длинные строки обрезаются до 64 символов. Blind-index хеши — обычные строки: по умолчанию маскируются, раскрываются только при явном opt-in на их имя.
 
 ## Аутентификация
@@ -1006,6 +1016,8 @@ YdbCoreModule.forRootAsync({
 `ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
 типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
 передаётся в опцию `auth`:
+
+При создании драйвера ORM проверяет транспорт: для `grpc://` выводится однократное предупреждение о незашифрованном соединении. Используйте `grpcs://` вне локальной разработки.
 
 ```ts
 import { createAuth, authKeyFromFile } from '@ycforge/auth';
@@ -1333,3 +1345,127 @@ yarn format       # prettier --write
 
 - Версия `@bufbuild/protobuf` запинена на `2.12.0`: на `^` ломается типизация `anyUnpack` из-за расхождения branded-типов с `@ydbjs/*`.
 - Запросы к YDB параметризованы (`query.parameter(...)`) — значения никогда не конкатенируются в SQL.
+
+## Топики YDB
+
+`YdbTopics` работает с **существующими** топиками и consumers. Создание,
+настройка и удаление этих объектов в API не входят. Используется
+`@ydbjs/topic` 6.1.4 вместе с `@ydbjs/core` 6.3.1 и `@ydbjs/query` 6.3.0;
+Node.js ≥ 22.18. Интеграционные сценарии проверены на YDB 26.2.1.14
+(`ydbplatform/local-ydb`, digest `sha256:9e46fd45875551a75bcf34d0bb9ca0baa1d8763a4ccf2070af45f4467c4b7402`). Сервер должен поддерживать транзакции Topics через Query
+Service и `UpdateOffsetsInTransaction`; доступность зависит от версии и
+конфигурации YDB. При отсутствии поддержки ошибка сервера передаётся вызывающему
+коду: замены общей транзакции независимыми операциями нет.
+
+```ts
+import { YdbTopics, YdbTransactionManager, createDriver, createExecutor } from '@ycforge/ydb-orm';
+
+const driver = await createDriver(options); // endpoint + auth или credentialsProvider
+const executor = createExecutor(driver, options);
+const topics = new YdbTopics(driver);
+const transactions = new YdbTransactionManager(executor);
+
+try {
+  // Вне транзакции: явная отправка и фиксация прочитанного offset.
+  const writer = topics.createWriter({ topic: '/local/news', producer: 'publisher-1' });
+  writer.write(new TextEncoder().encode('NewsPublished'));
+  await writer.flush();
+  if ('close' in writer) await writer.close();
+
+  const reader = topics.createReader({ topic: '/local/news', consumer: 'search-indexer' });
+  for await (const batch of reader.read({ limit: 10, waitMs: 1000 })) {
+    for (const message of batch) await processMessage(message.payload);
+    if ('commit' in reader) await reader.commit(batch);
+  }
+  if ('close' in reader) await reader.close();
+
+  // Таблица + событие: единый commit или rollback.
+  await transactions.runInTransaction(async (trx) => {
+    await NewsEntity.save(news, { trx });
+    const writer = topics.createWriter({ topic: '/local/news', producer: 'publisher-1' }, { trx });
+    writer.write(new TextEncoder().encode(JSON.stringify({ type: 'NewsPublished', id: news.uuid })));
+    // Перед commit SDK дождётся flush; вручную закрывать этот writer нельзя.
+  }, { idempotent: false });
+
+  // Входной offset + таблица + выходной топик: единая транзакция.
+  await transactions.runInTransaction(async (trx, signal) => {
+    const reader = topics.createReader({ topic: '/local/news', consumer: 'processor' }, { trx });
+    const writer = topics.createWriter({ topic: '/local/processed', producer: 'processor-1' });
+    for await (const batch of reader.read({ limit: 10, waitMs: 1000, signal })) {
+      for (const message of batch) {
+        await processInDatabase(message, trx);
+        writer.write(message.payload);
+      }
+    }
+  }, { ambient: true, idempotent: false, signal: AbortSignal.timeout(30_000) });
+} finally {
+  await topics.close(); // также доступен await using
+  driver.close();
+}
+```
+
+`createReader`/`createWriter` принимают вторым аргументом `{ trx }`. Без него
+они присоединяются к активной ambient-транзакции, если она включена. Внутри
+активной транзакции без ambient создание ресурса без `{ trx }` — ошибка:
+ресурс не может тихо выйти из транзакции (writer опубликовал бы сообщение
+даже при rollback таблиц). Явный `{ trx }` в не-ambient транзакции разрешён:
+ресурс привязывается к переданной транзакции (смешивание с другой активной
+транзакцией отвергается). Вне транзакции ресурс создаётся обычным
+(нетранзакционным). `trx` должен быть получен через `YdbTransactionManager`
+над `createExecutor()` с тем же Driver. Поддерживается только
+`serializableReadWrite`. Чужие, завершённые и неподдерживаемые транзакции
+отклоняются до создания ресурса. Привязка сохраняется через логирование и retry
+обёртки ORM.
+
+У обычного reader есть `commit(batch)`; он фиксирует позицию независимо от
+транзакций таблиц. У транзакционного reader метода `commit` нет: **все сообщения
+в каждой выданной порции** учитываются SDK перед commit общей транзакции.
+Обработайте всю порцию или бросьте ошибку для rollback; нельзя пропустить часть
+порции и успешно завершить callback. Размер порций и ожидание ограничивайте через
+`read({ limit, waitMs, signal })`. Транзакционные reader/writer создавайте заново
+в каждой попытке callback; их закрытием управляют хуки SDK. Методы ручного
+закрытия у транзакционных фасадов намеренно отсутствуют: раннее закрытие reader
+удалило бы накопленные offset до commit.
+
+При rollback изменения таблиц, выходные сообщения и продвижение входного offset
+не сохраняются. После ошибки commit результат может быть неизвестен вызывающему
+коду: не повторяйте внешние эффекты вслепую. Опции `retry`/`idempotent` менеджера
+могут приводить к повторному выполнению **всего callback**. Обеспечьте его
+идемпотентность и используйте стабильные producer IDs согласно модели
+дедупликации YDB. Отправка email и изменения внешнего поискового индекса не
+участвуют в атомарности YDB; для них нужны собственные меры против дублей.
+
+В NestJS `YdbTopics` предоставляется `YdbCoreModule` автоматически:
+
+```ts
+import { Inject, Injectable } from '@nestjs/common';
+import { YdbTopics, getTopicsToken } from '@ycforge/ydb-orm/nest';
+
+@Injectable()
+class NewsService {
+  constructor(
+    private readonly topics: YdbTopics,
+    @Inject(getTopicsToken('reporting')) private readonly reportingTopics: YdbTopics,
+  ) {}
+}
+```
+
+`getTopicsToken()` возвращает токен конфигурации по имени (по умолчанию
+`default`). При shutdown модуль закрывает обычные reader/writer до драйвера.
+При самостоятельной работе закрывайте отдельные ресурсы после использования
+или весь `YdbTopics` в `finally`; `close()` идемпотентен. Активные транзакции
+следует завершить до shutdown. `YdbTopics` не закрывает переданный Driver.
+
+Запуск интеграционных тестов топиков на подготовленной YDB:
+
+```bash
+YDB_ENDPOINT=grpc://localhost:2136/local YDB_AUTH_TYPE=anonymous \
+  YDB_DISABLE_DISCOVERY=1 \
+  yarn test:e2e --runInBand --runTestsByPath test/e2e/topics.e2e.spec.ts
+```
+
+Для локального одноузлового YDB discovery может вернуть недоступный извне адрес;
+`YDB_DISABLE_DISCOVERY=1` заставляет SDK подключаться напрямую к endpoint.
+
+Тесты создают уникальные временные топики, consumer и таблицу, а затем удаляют
+их. Используйте тестовую БД и учётную запись с соответствующими правами.

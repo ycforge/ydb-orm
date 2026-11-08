@@ -28,12 +28,19 @@ const BASE_OPTIONS: YdbModuleOptions = {
 
 class StubDriver {
   static calls: Array<{ endpoint: string; options: Record<string, any> }> = [];
+  static readyError: Error | undefined;
+  static closeCalls = 0;
   constructor(cs: string, options: Record<string, any>) {
     StubDriver.calls.push({ endpoint: cs, options });
   }
-  async ready(): Promise<void> {}
+  ready(): Promise<void> {
+    if (StubDriver.readyError) return Promise.reject(StubDriver.readyError);
+    return Promise.resolve();
+  }
 
-  close(): any {}
+  close(): any {
+    StubDriver.closeCalls++;
+  }
 }
 
 type DriverModule = typeof import('./driver.js');
@@ -256,5 +263,51 @@ describe('createDriver (#96): provider reaches Driver', () => {
     const options = StubDriver.calls.at(-1)!.options;
     expect(options['ydb.sdk.ready_timeout_ms']).toBe(1234);
     expect(options.credentialsProvider).toBe(custom);
+  });
+
+  it('closes the driver when ready() rejects and preserves the original error', async () => {
+    const readyError = new Error('driver is not ready');
+    StubDriver.readyError = readyError;
+    StubDriver.closeCalls = 0;
+
+    try {
+      await expect(
+        mod.createDriver({
+          ...BASE_OPTIONS,
+          endpoint: 'grpcs://not-ready.example:2135/local',
+        }),
+      ).rejects.toBe(readyError);
+      expect(StubDriver.closeCalls).toBe(1);
+    } finally {
+      StubDriver.readyError = undefined;
+    }
+  });
+
+  it('warns once for an insecure grpc:// endpoint', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const endpoint = 'grpc://insecure-review.example:2135/local';
+      await mod.createDriver({ ...BASE_OPTIONS, endpoint });
+      await mod.createDriver({ ...BASE_OPTIONS, endpoint });
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toContain('grpc://');
+      expect(warnSpy.mock.calls[0][0]).toContain('insecure transport');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not warn for a secure grpcs:// endpoint', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await mod.createDriver({
+        ...BASE_OPTIONS,
+        endpoint: 'grpcs://secure-review.example:2135/local',
+      });
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });

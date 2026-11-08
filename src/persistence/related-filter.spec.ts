@@ -215,7 +215,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
 
     const sql = mock.queries[0].sql;
     // Root equality + two independent IN subqueries combined with AND.
-    expect(sql).toContain('`status` = $status');
+    expect(sql).toContain('`status` = $w0');
     expect(sql).toContain(
       '`profile_uuid` IN (SELECT `uuid` FROM `rf_profiles` WHERE `bio` = $',
     );
@@ -223,7 +223,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
       '`uuid` IN (SELECT `user_uuid` FROM `rf_roles` WHERE `is_admin` = $',
     );
     expect(sql.match(/IN \(SELECT/g)?.length).toBe(2);
-    expect((mock.queries[0].params.status as any).value).toBe('active');
+    expect((mock.queries[0].params.w0 as any).value).toBe('active');
   });
 
   it('3. nested logical conditions: $or/$and mix root and relations', async () => {
@@ -234,7 +234,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     });
     const orSql = mock.queries[0].sql;
     expect(orSql).toContain(
-      '(`status` = $status_0_eq OR `uuid` IN (SELECT `user_uuid` FROM `rf_roles` WHERE `role` = $',
+      '(`status` = $w0 OR `uuid` IN (SELECT `user_uuid` FROM `rf_roles` WHERE `role` = $',
     );
 
     // $or INSIDE a relation predicate.
@@ -382,7 +382,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     expect(sql).not.toContain('admin');
     expect(sql).not.toContain("'active'");
     expect(sql).toContain('LIMIT 10');
-    expect(Object.keys(values)).toContain('role_0_eq');
+    expect(Object.keys(values)).toContain('w1');
 
     await RfUser.count({ roles: { is_admin: true } });
     const countSql = mock.queries[0].sql;

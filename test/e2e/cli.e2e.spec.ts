@@ -8,6 +8,7 @@ import {
   createE2eContext,
   closeE2eContext,
   hasYdbCredentials,
+  writeCliConfig,
   type E2eContext,
 } from './setup.js';
 
@@ -20,6 +21,11 @@ let tmpDir: string;
 beforeAll(async () => {
   ctx = await createE2eContext();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ydb-orm-e2e-cli-'));
+  writeCliConfig(
+    tmpDir,
+    process.env.YDB_ENDPOINT ?? 'grpc://localhost:2136/local',
+  );
+  fs.mkdirSync(path.join(tmpDir, 'migrations'), { recursive: true });
 });
 
 afterAll(() => {
@@ -79,7 +85,7 @@ describeE2e()('CLI e2e', () => {
 
   it('migration:run with no pending migrations', async () => {
     const result = await execAsync(
-      `node ${cliBin} migration:run --dir ${tmpDir}`,
+      `node ${cliBin} migration:run --dir ${path.join(tmpDir, 'migrations')}`,
       { cwd: tmpDir, timeout: 30000, env: cliEnv() },
     );
 
@@ -90,11 +96,14 @@ describeE2e()('CLI e2e', () => {
   it('migration:revert with nothing to revert', async () => {
     // Revert may fail if previous migrations exist in DB but files are missing — that's expected
     try {
-      await execAsync(`node ${cliBin} migration:revert --dir ${tmpDir}`, {
-        cwd: tmpDir,
-        timeout: 30000,
-        env: cliEnv(),
-      });
+      await execAsync(
+        `node ${cliBin} migration:revert --dir ${path.join(tmpDir, 'migrations')}`,
+        {
+          cwd: tmpDir,
+          timeout: 30000,
+          env: cliEnv(),
+        },
+      );
     } catch (e: any) {
       // Expected: "not found — cannot revert" or "nothing to revert"
       expect(e.stderr || e.stdout).toMatch(/not found|nothing to revert/i);

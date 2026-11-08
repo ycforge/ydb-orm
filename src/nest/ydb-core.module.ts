@@ -1,3 +1,4 @@
+import { YdbTopics } from '../topic/ydb-topics.js';
 import {
   DynamicModule,
   Global,
@@ -30,6 +31,8 @@ import {
   DEFAULT_CONNECTION_NAME,
   getScopedToken,
   getTransactionManagerToken,
+  getTopicsToken,
+  getCoreCleanupToken,
 } from './constants.js';
 import { YdbModuleAsyncOptions, YdbOptionsFactory } from './interfaces.js';
 import type { YdbModuleOptions, YdbExecutor } from '../core/interfaces.js';
@@ -58,6 +61,62 @@ import {
 } from './core-module-registry.js';
 
 /**
+ * Closes the driver created by a module instance at most once (#232). The
+ * owned driver is nulled out BEFORE closing, so a repeated call — the normal
+ * lifecycle shutdown after a failed provider, or two shutdowns — cannot close
+ * it twice. A close error is rethrown unless `ignoreCloseErrors` is set; then
+ * it is only logged so the original bootstrap error keeps propagating.
+ */
+async function closeOwnedDriver(
+  state: CoreModuleState,
+  opts: { ignoreCloseErrors?: boolean } = {},
+): Promise<void> {
+  const driver = state.ownedDriver;
+  if (!driver) return;
+  state.ownedDriver = undefined;
+  try {
+    // Driver close() is synchronous (void) in @ydbjs/core, but a custom
+    // driverFactory may return a driver with async closing — wait for it.
+    const closing = driver.close() as unknown;
+    if (closing instanceof Promise) {
+      await closing;
+    }
+  } catch (error) {
+    if (!opts.ignoreCloseErrors) throw error;
+    // On a failed bootstrap the original configuration error must propagate
+    // up, so the driver close error is only logged.
+    console.error(
+      'Failed to close YDB driver after failed bootstrap:',
+      (error as Error)?.message ?? error,
+    );
+  }
+}
+
+/**
+ * Releases everything a module instance owns: the connection-name claim, the
+ * ORM entity scope, topic resources and the owned driver. Every step is
+ * idempotent, so both the shutdown hook and post-driver provider failure
+ * paths can call it safely (#232).
+ */
+async function disposeCoreModule(
+  state: CoreModuleState,
+  topics: YdbTopics | undefined,
+  opts: { ignoreCloseErrors?: boolean } = {},
+): Promise<void> {
+  releaseCoreModuleInit(state);
+  // The configuration's entities are released: after shutdown they can be
+  // claimed by another configuration (#199).
+  releaseOrmScope(state.ormScope);
+  try {
+    await topics?.close();
+  } catch (error) {
+    if (!opts.ignoreCloseErrors) throw error;
+  } finally {
+    await closeOwnedDriver(state, opts);
+  }
+}
+
+/**
  * Internal core lifecycle provider (#93).
  *
  * - onApplicationBootstrap: schema sync (if `sync: true`). The hook runs
@@ -83,6 +142,7 @@ class YdbCoreModuleLifecycle
   constructor(
     private readonly state: CoreModuleState,
     private readonly schemaSyncer: YdbSchemaSyncer,
+    private readonly topics: YdbTopics,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -109,35 +169,13 @@ class YdbCoreModuleLifecycle
   }
 
   /** Idempotent: unregister + release the entity scope (#199)
-   * + close the module-created driver. */
+   * + close topics and the module-created driver. */
   private async dispose(
     opts: { ignoreCloseErrors?: boolean } = {},
   ): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    releaseCoreModuleInit(this.state);
-    // The configuration's entities are released: after shutdown they can be
-    // claimed by another configuration (#199).
-    releaseOrmScope(this.state.ormScope);
-
-    const driver = this.state.ownedDriver;
-    if (!driver) return;
-    try {
-      // Driver close() is synchronous (void), but a custom driverFactory may
-      // return a driver with async closing — wait for it.
-      const closing = driver.close() as unknown;
-      if (closing instanceof Promise) {
-        await closing;
-      }
-    } catch (error) {
-      if (!opts.ignoreCloseErrors) throw error;
-      // On a failed bootstrap the original schema error must propagate up,
-      // so the driver close error is only logged.
-      console.error(
-        'Failed to close YDB driver after failed bootstrap:',
-        (error as Error)?.message ?? error,
-      );
-    }
+    await disposeCoreModule(this.state, this.topics, opts);
   }
 }
 
@@ -183,6 +221,8 @@ export class YdbCoreModule {
       ormScope: getScopedToken(YDB_ORM_SCOPE, name),
       lifecycle: getScopedToken(YDB_CORE_LIFECYCLE, name),
       transactionManager: getTransactionManagerToken(name),
+      topics: getTopicsToken(name),
+      cleanup: getCoreCleanupToken(name),
     };
     const state: CoreModuleState = {
       entityScope: createEntityScope(),
@@ -207,6 +247,21 @@ export class YdbCoreModule {
       module: YdbCoreModule,
       imports: [...(options.imports || [])],
       providers: [
+        {
+          provide: tokens.topics,
+          useFactory: (driver: Driver) => new YdbTopics(driver),
+          inject: [tokens.driver],
+        },
+        {
+          // Idempotent cleanup for post-driver provider failures (#232), e.g.
+          // invalid entity metadata thrown by a forFeature repository factory
+          // after the driver already exists. The original error is preserved:
+          // close errors are ignored here.
+          provide: tokens.cleanup,
+          useFactory: (topics?: YdbTopics) => () =>
+            disposeCoreModule(state, topics, { ignoreCloseErrors: true }),
+          inject: [{ token: tokens.topics, optional: true }],
+        },
         ...asyncProviders,
 
         {
@@ -272,8 +327,23 @@ export class YdbCoreModule {
 
         {
           provide: tokens.query,
-          useFactory: (driver: Driver, opts: YdbModuleOptions): YdbExecutor =>
-            createExecutor(driver, opts),
+          useFactory: async (
+            driver: Driver,
+            opts: YdbModuleOptions,
+          ): Promise<YdbExecutor> => {
+            try {
+              return createExecutor(driver, opts);
+            } catch (error) {
+              // Executor creation failed after the owned driver was created
+              // (#232): close that driver exactly once and release the
+              // connection-name claim, otherwise the driver stays open and a
+              // repeated bootstrap in the same process fails as a false
+              // duplicate. The original configuration error is surfaced.
+              releaseCoreModuleInit(state);
+              await closeOwnedDriver(state, { ignoreCloseErrors: true });
+              throw error;
+            }
+          },
           inject: [tokens.driver, tokens.options],
         },
 
@@ -318,9 +388,9 @@ export class YdbCoreModule {
 
         {
           provide: tokens.lifecycle,
-          useFactory: (syncer: YdbSchemaSyncer) =>
-            new YdbCoreModuleLifecycle(state, syncer),
-          inject: [tokens.schemaSync],
+          useFactory: (syncer: YdbSchemaSyncer, topics: YdbTopics) =>
+            new YdbCoreModuleLifecycle(state, syncer, topics),
+          inject: [tokens.schemaSync, tokens.topics],
         },
 
         {
@@ -333,6 +403,8 @@ export class YdbCoreModule {
         },
       ],
       exports: [
+        tokens.topics,
+        tokens.cleanup,
         tokens.options,
         tokens.driver,
         tokens.query,
@@ -373,7 +445,7 @@ export class YdbCoreModule {
       return [
         {
           provide: optionsToken,
-          useFactory: async (...args: any[]) => {
+          useFactory: async (...args: unknown[]) => {
             const opts = await options.useFactory!(...args);
             validateYdbModuleOptions(opts);
             claimCoreModuleInit(state);

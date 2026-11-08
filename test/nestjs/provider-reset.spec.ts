@@ -133,7 +133,7 @@ describe('NestJS integration: сброс провайдеров при повт�
     );
   });
 
-  it('createActiveRecordEntityProvider: повторный вызов без провайдеров сбрасывает их', () => {
+  it('createActiveRecordEntityProvider: повторный вызов без провайдеров сбрасывает их', async () => {
     const provider = createActiveRecordEntityProvider(ResetPlain);
     const useFactory = (
       provider as unknown as {
@@ -142,7 +142,7 @@ describe('NestJS integration: сброс провайдеров при повт�
           opts: any,
           encryptionProvider?: YdbEncryptionProvider,
           blindIndexProvider?: YdbBlindIndexProvider,
-        ) => unknown;
+        ) => Promise<unknown>;
       }
     ).useFactory;
     const opts = {
@@ -152,7 +152,7 @@ describe('NestJS integration: сброс провайдеров при повт�
     const db = createMockExecutor().executor;
     const { encryptionProvider, blindIndexProvider } = makeTaggedProviders('A');
 
-    useFactory(db, opts, encryptionProvider, blindIndexProvider);
+    await useFactory(db, opts, encryptionProvider, blindIndexProvider);
     expect(getEntityRuntime(ResetPlain).encryptionProvider).toBe(
       encryptionProvider,
     );
@@ -161,12 +161,12 @@ describe('NestJS integration: сброс провайдеров при повт�
     );
 
     // Повторная инициализация без провайдеров — явный сброс в undefined
-    useFactory(db, opts, undefined, undefined);
+    await useFactory(db, opts, undefined, undefined);
     expect(getEntityRuntime(ResetPlain).encryptionProvider).toBeUndefined();
     expect(getEntityRuntime(ResetPlain).blindIndexProvider).toBeUndefined();
   });
 
-  it('createActiveRecordEntityProvider: сбой конфигурации откатывает ранее сконфигурированную сущность (#200)', () => {
+  it('createActiveRecordEntityProvider: сбой конфигурации откатывает ранее сконфигурированную сущность (#200)', async () => {
     const provider = createActiveRecordEntityProvider(ResetPlain);
     const useFactory = (
       provider as unknown as {
@@ -178,7 +178,7 @@ describe('NestJS integration: сброс провайдеров при повт�
           _validationProvider?: unknown,
           _entityAppScope?: unknown,
           ormScope?: YdbOrmScope,
-        ) => unknown;
+        ) => Promise<unknown>;
       }
     ).useFactory;
 
@@ -195,7 +195,7 @@ describe('NestJS integration: сброс провайдеров при повт�
     const { encryptionProvider, blindIndexProvider } = makeTaggedProviders('A');
 
     // 1. Успешная конфигурация — сущность уже настроена до падающего вызова.
-    useFactory(
+    await useFactory(
       firstDb,
       opts,
       encryptionProvider,
@@ -218,7 +218,7 @@ describe('NestJS integration: сброс провайдеров при повт�
     });
 
     try {
-      expect(() =>
+      await expect(
         useFactory(
           secondDb,
           opts,
@@ -228,7 +228,7 @@ describe('NestJS integration: сброс провайдеров при повт�
           undefined,
           scope,
         ),
-      ).toThrow('simulated configuration failure');
+      ).rejects.toThrow('simulated configuration failure');
     } finally {
       setExecutorSpy.mockRestore();
     }

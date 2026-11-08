@@ -89,6 +89,7 @@
     "@ydbjs/error": "6.0.6",
     "@ydbjs/query": "6.3.0",
     "@ydbjs/retry": "6.3.0",
+    "@ydbjs/topic": "6.1.4",
     "@ydbjs/value": "6.0.8",
     "uuid": "13.0.2"
   },
@@ -116,17 +117,19 @@
     "moduleFileExtensions": [
       "js",
       "json",
-      "ts"
+      "ts",
+      "mts"
     ],
     "testRegex": ".*\\.spec\\.ts$",
     "extensionsToTreatAsEsm": [
-      ".ts"
+      ".ts",
+      ".mts"
     ],
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "transform": {
-      "^.+\\.(t|j)s$": [
+      "^.+\\.(m?ts|js)$": [
         "ts-jest",
         {
           "useESM": true

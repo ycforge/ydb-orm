@@ -65,7 +65,7 @@ describeE2e()('Encryption e2e', () => {
 
   it('search by encrypted field without blind index throws', async () => {
     await expect(E2eSecretEntity.find({ notes: 'some notes' })).rejects.toThrow(
-      /without blind index/,
+      /blind index is disabled/,
     );
   });
 

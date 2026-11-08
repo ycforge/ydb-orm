@@ -144,7 +144,7 @@ describe('NestJS integration: encryption providers', () => {
       expect.objectContaining({ fieldName: 'author_email' }),
     );
     const [select] = mock.queries;
-    expect(select.sql).toContain('WHERE `author_email_bi` = $author_email_bi');
-    expect((select.params.author_email_bi as any).value).toBe('bi:a@b.c');
+    expect(select.sql).toContain('WHERE `author_email_bi` = $w0');
+    expect((select.params.w0 as any).value).toBe('bi:a@b.c');
   });
 });

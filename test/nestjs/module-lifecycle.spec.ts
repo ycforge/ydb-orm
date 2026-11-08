@@ -20,6 +20,7 @@ import {
   YDB_QUERY,
   YdbBaseEntity,
   YdbEntity,
+  YdbColumn,
   YdbPrimaryColumn,
   getRegisteredYdbEntities,
   registerYdbEntity,
@@ -34,6 +35,18 @@ import { createMockExecutor } from '../helpers/mock-executor.js';
   imports: [YdbOrmModule.forFeature([UserEntity, UserRoleEntity, PhotoEntity])],
 })
 class TestFeatureModule {}
+
+/** Metadata-invalid entity: no primary key (validation throws in forFeature). */
+@YdbEntity('invalid_no_pk')
+class InvalidEntity extends YdbBaseEntity {
+  @YdbColumn('Utf8')
+  name!: string;
+}
+
+@Module({
+  imports: [YdbOrmModule.forFeature([InvalidEntity])],
+})
+class InvalidFeatureModule {}
 
 /**
  * Фейковый драйвер для schema sync. По умолчанию все таблицы «не существуют»
@@ -96,6 +109,12 @@ function coreImports(
   sync = false,
   overrides: {
     driverFactory?: () => Driver | Promise<Driver>;
+    poolOptions?: {
+      minSize?: number;
+      maxSize?: number;
+      sessionTimeout?: number;
+    };
+    retry?: { maxAttempts?: number };
   } = {},
 ) {
   return [
@@ -332,6 +351,115 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
       .compile();
     openModules.push(retry);
     await retry.init();
+  });
+
+  it('невалидная retry-конфигурация валидируется до создания ресурсов (#232)', async () => {
+    const closeSpy = jest.fn(() => undefined);
+    const driverFactory = jest.fn(
+      () => ({ close: closeSpy }) as unknown as Driver,
+    );
+
+    await expect(
+      Test.createTestingModule({
+        imports: coreImports(false, {
+          driverFactory,
+          retry: { maxAttempts: 0 },
+        }),
+      }).compile(),
+    ).rejects.toThrow(/"maxAttempts" must be an integer >= 1/);
+
+    // Validated BEFORE the claim and driver creation: the factory is not called.
+    expect(driverFactory).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // The name slot is free: a repeated bootstrap with the same name succeeds.
+    const retry = await Test.createTestingModule({
+      imports: coreImports(),
+    })
+      .overrideProvider(YDB_DRIVER)
+      .useValue({})
+      .overrideProvider(YDB_QUERY)
+      .useValue(createMockExecutor().executor)
+      .compile();
+    openModules.push(retry);
+    await retry.init();
+  });
+
+  it('ошибка создания executor после драйвера закрывает его и освобождает слот (#232)', async () => {
+    let closeCount = 0;
+    const fakeDriver = {
+      close: () => {
+        closeCount++;
+      },
+    };
+
+    // minSize > maxSize: SessionPool throws RangeError AFTER the driver has
+    // already been created by the YDB_DRIVER provider.
+    await expect(
+      Test.createTestingModule({
+        imports: coreImports(false, {
+          driverFactory: () => fakeDriver as unknown as Driver,
+          poolOptions: { minSize: 5, maxSize: 1 },
+        }),
+      }).compile(),
+    ).rejects.toThrow(/minSize \(5\) cannot exceed maxSize \(1\)/);
+
+    // The original configuration error is propagated; the driver is closed
+    // exactly once.
+    expect(closeCount).toBe(1);
+
+    // The name slot is free: a repeated bootstrap with the same name succeeds
+    // and the driver is not closed again.
+    const retry = await Test.createTestingModule({
+      imports: coreImports(),
+    })
+      .overrideProvider(YDB_DRIVER)
+      .useValue({})
+      .overrideProvider(YDB_QUERY)
+      .useValue(createMockExecutor().executor)
+      .compile();
+    openModules.push(retry);
+    await retry.init();
+    expect(closeCount).toBe(1);
+  });
+
+  it('ошибка forFeature после драйвера закрывает его и освобождает слот (#232)', async () => {
+    let closeCount = 0;
+    const fakeDriver = {
+      close: () => {
+        closeCount++;
+      },
+    };
+
+    await expect(
+      Test.createTestingModule({
+        imports: [
+          ...coreImports(false, {
+            driverFactory: () => fakeDriver as unknown as Driver,
+          }),
+          InvalidFeatureModule,
+        ],
+      })
+        .overrideProvider(YDB_QUERY)
+        .useValue(createMockExecutor().executor)
+        .compile(),
+    ).rejects.toThrow(/metadata validation failed/);
+
+    // The post-driver forFeature failure releases the whole configuration:
+    // the owned driver is closed exactly once and the name claim is free.
+    expect(closeCount).toBe(1);
+
+    const retry = await Test.createTestingModule({
+      imports: coreImports(),
+    })
+      .overrideProvider(YDB_DRIVER)
+      .useValue({})
+      .overrideProvider(YDB_QUERY)
+      .useValue(createMockExecutor().executor)
+      .compile();
+    openModules.push(retry);
+    await retry.init();
+    expect(closeCount).toBe(1);
   });
 
   it('YdbOrmModule.forRoot наследует защиту от дублей', async () => {

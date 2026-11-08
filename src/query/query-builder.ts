@@ -3,6 +3,7 @@ import { getYdbEntityMetadata } from '../metadata/entity-metadata.js';
 import { quoteIdentifier } from '../core/sql-utils.js';
 import type { QueryOptions } from '../core/query-options.js';
 import type { YdbPrimitive } from '../core/types.js';
+import { resolveEncryptedProjection } from '../encryption/encrypted-projection.js';
 import {
   resolveRetrieveLimit,
   resolveRetrieveOffset,
@@ -28,11 +29,19 @@ export interface BuiltQuery {
 interface CompiledQuery extends BuiltQuery {
   keys: string[];
   dbSchema: Record<string, YdbPrimitive>;
+  fields: Record<string, string>;
 }
 
 type EntityClass<T extends YdbBaseEntity> = {
   new (): T;
 } & typeof YdbBaseEntity;
+
+/** Logical WHERE combinators that must never overwrite an accumulated group. */
+function isLogicalNode(node: unknown): boolean {
+  if (node === null || typeof node !== 'object') return false;
+  const record = node as Record<string, any>;
+  return record.$and !== undefined || record.$or !== undefined;
+}
 
 /**
  * Chainable query builder over an Active Record entity.
@@ -40,6 +49,12 @@ type EntityClass<T extends YdbBaseEntity> = {
  * operators as the persistence layer, including comparison operators,
  * `$in`, `$like`, `$between`, `$and` / `$or`, JSON predicates, and
  * related-entity filters where supported.
+ *
+ * Accumulated predicates are kept as an AND-joined list of expression
+ * factors (#233): a new criteria carrying a logical key is appended as a
+ * separate factor instead of overwriting an existing root `$and`/`$or`.
+ * So `.where({ $or: [A, B] }).andWhere({ $or: [C, D] })` yields
+ * `(A OR B) AND (C OR D)`.
  *
  * JSON predicates (`andWhereJsonExists` / `andWhereJsonValue`) for the same
  * column do NOT overwrite each other — they compose via AND (#201).
@@ -57,7 +72,7 @@ type EntityClass<T extends YdbBaseEntity> = {
  *     .getMany();
  */
 export class YdbQueryBuilder<T extends YdbBaseEntity> {
-  private whereValues: Record<string, any> = {};
+  private factors: Record<string, any>[] = [];
   private orderClauses: { field: string; direction: OrderDirection }[] = [];
   private limitValue?: number;
   private offsetValue?: number;
@@ -68,7 +83,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   /** Adds equality conditions (AND). Repeated calls append to the conditions. */
   where(criteria: Record<string, any>): this {
-    this.whereValues = { ...this.whereValues, ...criteria };
+    this.addAndCriteria(criteria);
     return this;
   }
 
@@ -85,24 +100,58 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
    * andWhere/where is combined via AND: `(A OR B OR C) AND D`.
    */
   orWhere(criteria: Record<string, any>): this {
-    const keys = Object.keys(this.whereValues).filter(
-      (key) => this.whereValues[key] !== undefined,
-    );
+    const current = this.materialize();
+    const keys = current
+      ? Object.keys(current).filter((key) => current[key] !== undefined)
+      : [];
     // No accumulated predicate — the first orWhere just sets the predicate.
-    if (keys.length === 0) {
-      this.whereValues = criteria;
+    if (!current || keys.length === 0) {
+      this.factors = [{ ...criteria }];
       return this;
     }
     // The accumulated predicate is exactly $or: append to the existing list,
     // keeping the flat `A OR B OR C` chain without nesting.
     if (keys.length === 1 && keys[0] === '$or') {
-      const existing = this.whereValues.$or;
+      const existing = current.$or;
       const list = Array.isArray(existing) ? existing : [existing];
-      this.whereValues = { $or: [...list, criteria] };
+      this.factors = [{ $or: [...list, criteria] }];
       return this;
     }
-    this.whereValues = { $or: [this.whereValues, criteria] };
+    this.factors = [{ $or: [current, criteria] }];
     return this;
+  }
+
+  /**
+   * Combines a new criteria node with the accumulated predicate via AND (#233).
+   *
+   * Plain criteria are merged into the last plain factor by key (preserving
+   * the previous scalar semantics exactly). A criteria carrying a logical key
+   * is appended as a separate factor, so repeated root `$and`/`$or` groups are
+   * never overwritten.
+   */
+  private addAndCriteria(criteria: Record<string, any>): void {
+    const last = this.factors[this.factors.length - 1];
+    if (
+      last !== undefined &&
+      !isLogicalNode(last) &&
+      !isLogicalNode(criteria)
+    ) {
+      this.factors[this.factors.length - 1] = { ...last, ...criteria };
+      return;
+    }
+    this.factors.push({ ...criteria });
+  }
+
+  /**
+   * Materializes the AND-joined factors into a single WHERE node. A lone
+   * factor is used as-is; several factors become a root `$and` group. The
+   * WHERE compiler renders `$and` without redundant outer parentheses, so the
+   * result is `(A OR B) AND (C OR D)` rather than `((A OR B) AND (C OR D))`.
+   */
+  private materialize(): Record<string, any> | undefined {
+    if (this.factors.length === 0) return undefined;
+    if (this.factors.length === 1) return this.factors[0];
+    return { $and: this.factors };
   }
 
   /**
@@ -139,7 +188,8 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
     column: string,
     predicate: Record<string, any>,
   ): this {
-    const existing: unknown = this.whereValues[column];
+    const target = this.ensurePlainFactor();
+    const existing: unknown = target[column];
     const isJsonGroup =
       existing !== null &&
       typeof existing === 'object' &&
@@ -157,8 +207,22 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       // Any previous value of the same column is preserved into the group.
       next = { $and: [existing, predicate] };
     }
-    this.whereValues = { ...this.whereValues, [column]: next };
+    target[column] = next;
     return this;
+  }
+
+  /**
+   * Returns the last factor if it is plain (no logical key) so a JSON
+   * predicate can be merged into it; otherwise starts a new plain factor.
+   * Keeps `appendJsonCondition` composing with ordinary where/andWhere
+   * criteria while never writing into a logical group (#233).
+   */
+  private ensurePlainFactor(): Record<string, any> {
+    const last = this.factors[this.factors.length - 1];
+    if (last !== undefined && !isLogicalNode(last)) return last;
+    const factor: Record<string, any> = {};
+    this.factors.push(factor);
+    return factor;
   }
 
   /** Sets the ORDER BY clause, replacing any previously set order. */
@@ -257,13 +321,14 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   /** Executes the query and returns entities (with eager relations). */
   async getMany(): Promise<T[]> {
-    const { sql, values, keys, dbSchema } = await this.build();
+    const { sql, values, keys, dbSchema, fields } = await this.build();
     const rows = await this.entity._executeSelect(
       sql,
       values,
       keys,
       dbSchema,
       this.queryOptions,
+      fields,
     );
     return rows as T[];
   }
@@ -287,8 +352,8 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   /** COUNT(*) over the same conditions (ignores limit/offset/order). */
   async getCount(): Promise<number> {
     const meta = this.getMeta();
-    const { whereClause, values, keys, dbSchema } =
-      await this.entity._buildWhereClause(this.whereValues);
+    const { whereClause, values, keys, dbSchema, fields } =
+      await this.entity._buildWhereClause(this.materialize() ?? {});
     const sql =
       `SELECT COUNT(*) AS cnt FROM ${quoteIdentifier(meta.tableName)}` +
       `${whereClause ? ` ${whereClause}` : ''}`;
@@ -298,13 +363,14 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       keys,
       dbSchema,
       this.queryOptions,
+      fields,
     );
   }
 
   /** Clone of the builder: executing the clone does not change the source's state. */
   private clone(): YdbQueryBuilder<T> {
     const copy = new YdbQueryBuilder<T>(this.entity);
-    copy.whereValues = { ...this.whereValues };
+    copy.factors = this.factors.map((factor) => ({ ...factor }));
     copy.orderClauses = this.orderClauses.map((o) => ({ ...o }));
     copy.limitValue = this.limitValue;
     copy.offsetValue = this.offsetValue;
@@ -317,10 +383,15 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   private async build(): Promise<CompiledQuery> {
     const meta = this.getMeta();
-    const { whereClause, values, keys, dbSchema } =
-      await this.entity._buildWhereClause(this.whereValues);
+    const { whereClause, values, keys, dbSchema, fields } =
+      await this.entity._buildWhereClause(this.materialize() ?? {});
     this.validateOrderFields(dbSchema);
     this.validateSelectFields(dbSchema);
+
+    const effectiveSelect = resolveEncryptedProjection(
+      meta,
+      this.selectColumns,
+    );
 
     const orderClause = this.orderClauses.length
       ? ' ORDER BY ' +
@@ -329,8 +400,8 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
           .join(', ')
       : '';
 
-    const selectClause = this.selectColumns?.length
-      ? this.selectColumns.map(quoteIdentifier).join(', ')
+    const selectClause = effectiveSelect?.length
+      ? effectiveSelect.map(quoteIdentifier).join(', ')
       : // Default projection — only declared columns (#164):
         // SELECT * would also pull columns removed from the metadata.
         Object.keys(meta.schema).map(quoteIdentifier).join(', ');
@@ -340,7 +411,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       `${whereClause ? ` ${whereClause}` : ''}${orderClause}` +
       ` LIMIT ${this.resolveLimit()} OFFSET ${this.resolveOffset()}`;
 
-    return { sql, values, keys, dbSchema };
+    return { sql, values, keys, dbSchema, fields };
   }
 
   private getMeta() {

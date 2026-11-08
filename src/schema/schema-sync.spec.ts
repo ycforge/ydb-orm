@@ -46,7 +46,7 @@ import {
 } from '../decorators/relation.decorators.js';
 import { EagerLoad } from '../decorators/eager.decorator.js';
 import { YdbIndex } from '../decorators/index.decorator.js';
-import { YdbTtl } from '../decorators/ttl.decorator.js';
+import { YdbTtl, YDB_TTL_KEY } from '../decorators/ttl.decorator.js';
 
 @YdbEntity('test_users')
 @YdbIndex({ columns: ['secret_bi'] })
@@ -403,6 +403,26 @@ describe('buildExpectedTableSchema', () => {
   it('throws when no primary key is declared', () => {
     expect(() => buildExpectedTableSchema(meta(TestNoPkEntity))).toThrow(
       /no primary key is declared/,
+    );
+  });
+
+  it('rejects calendar-based TTL before DDL rendering (#236)', () => {
+    @YdbEntity('test_calendar_ttl')
+    class CalendarTtlEntity extends YdbBaseEntity {
+      @YdbPrimaryColumn('Uuid')
+      uuid: string;
+
+      @YdbColumn('Datetime')
+      expires_at: Date;
+    }
+    Reflect.defineMetadata(
+      YDB_TTL_KEY,
+      { interval: 'P1Y', column: 'expires_at' },
+      CalendarTtlEntity,
+    );
+
+    expect(() => buildExpectedTableSchema(meta(CalendarTtlEntity))).toThrow(
+      /calendar components/,
     );
   });
 });
