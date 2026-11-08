@@ -354,7 +354,7 @@ describe('withRetryPolicy(): silencing SDK internal retry (retry event)', () => 
   it('восстанавливает ошибку YDB после нативного AbortSignal.throwIfAborted()', async () => {
     const controller = new AbortController();
     controller.abort();
-    // AbortController Node создаёт DOMException из другого realm в Jest VM.
+    // AbortController in Node creates a DOMException from another realm in the Jest VM.
     expect(controller.signal.reason.name).toBe('AbortError');
     const executions: number[] = [];
     const base = makeSdkLikeExecutor({

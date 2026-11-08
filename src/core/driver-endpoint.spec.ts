@@ -11,17 +11,18 @@ import { CredentialsProvider } from '@ydbjs/auth';
 import { createAuth } from '@ycforge/auth';
 
 /**
- * Регрессия #244: endpoint нормализуется (trim) до вывода `secure`, поэтому
- * адаптер AuthManager (@ycforge/auth/ydb) и драйвер видят один транспорт.
+ * Regression #244: the endpoint is normalized (trimmed) before `secure` is
+ * derived, so the AuthManager adapter (@ycforge/auth/ydb) and the driver see
+ * the same transport.
  *
- * @ydbjs/core и @ycforge/auth/ydb подменяются ДО первого импорта ./driver.js:
- * адаптер фиксирует полученные endpoint/secure, а StubDriver — endpoint,
- * переданный в конструктор. Сети нет.
+ * @ydbjs/core and @ycforge/auth/ydb are mocked BEFORE the first import of
+ * ./driver.js: the adapter records the received endpoint/secure, and
+ * StubDriver records the endpoint passed to the constructor. No network.
  */
 
 const adapterCalls: Array<{ endpoint?: string; secure?: boolean }> = [];
 
-/** Реальная AuthManager-конфигурация: адаптер подменён, важна лишь её форма. */
+/** Real AuthManager configuration: the adapter is mocked, only its shape matters. */
 function staticAuth() {
   return createAuth({ type: 'static', username: 'user', password: 'pass' });
 }

@@ -8,9 +8,9 @@ import {
 } from '../../../src/index.js';
 
 /**
- * Регрессия #238: колонки, имена которых совпадают с шаблоном генерируемых
- * параметров (`name_0_eq`) и с префиксом опаковых имён (`w0`), не должны
- * приводить к переиспользованию одного query-параметра.
+ * Regression #238: columns whose names match the generated parameter pattern
+ * (`name_0_eq`) and the opaque name prefix (`w0`) must not cause the same
+ * query parameter to be reused.
  */
 @YdbEntity('param_collision_test')
 export class ParamCollisionEntity extends YdbBaseEntity {
@@ -36,8 +36,8 @@ export enum CollisionStatus {
 }
 
 /**
- * @YdbEnum (Utf8) с именем первого WHERE-параметра `w0`: старый bindParams
- * выводил enum-конверсию из ключа параметра и подменял значение предиката.
+ * @YdbEnum (Utf8) named after the first WHERE parameter `w0`: the old bindParams
+ * derived the enum conversion from the parameter key and replaced the predicate value.
  */
 @YdbEntity('param_collision_enum_utf8_test')
 export class ParamCollisionEnumUtf8Entity extends YdbBaseEntity {
@@ -53,8 +53,8 @@ export class ParamCollisionEnumUtf8Entity extends YdbBaseEntity {
 }
 
 /**
- * @YdbEnum (Int32) с именем `w0`: без фикса значение предиката молча
- * конвертировалось в Int32(0) и тип параметра брался от enum-колонки.
+ * @YdbEnum (Int32) named `w0`: without the fix the predicate value was silently
+ * converted to Int32(0) and the parameter type was taken from the enum column.
  */
 @YdbEntity('param_collision_enum_int32_test')
 export class ParamCollisionEnumInt32Entity extends YdbBaseEntity {
@@ -69,7 +69,7 @@ export class ParamCollisionEnumInt32Entity extends YdbBaseEntity {
   w0!: CollisionStatus;
 }
 
-/** @YdbJson с именем `w0`: подменял WHERE-параметр JSON-сериализацией. */
+/** @YdbJson named `w0`: replaced the WHERE parameter with JSON serialization. */
 @YdbEntity('param_collision_json_where_test')
 export class ParamCollisionJsonWhereEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -83,7 +83,7 @@ export class ParamCollisionJsonWhereEntity extends YdbBaseEntity {
   w0!: Record<string, any>;
 }
 
-/** @YdbJson с именем `s0`: подменял SET-параметр JSON-сериализацией. */
+/** @YdbJson named `s0`: replaced the SET parameter with JSON serialization. */
 @YdbEntity('param_collision_json_set_test')
 export class ParamCollisionJsonSetEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')
@@ -97,7 +97,7 @@ export class ParamCollisionJsonSetEntity extends YdbBaseEntity {
   s0!: Record<string, any>;
 }
 
-/** @YdbEnum (Utf8) с именем `s0`: подменял SET-параметр enum-конверсией. */
+/** @YdbEnum (Utf8) named `s0`: replaced the SET parameter with enum conversion. */
 @YdbEntity('param_collision_enum_set_test')
 export class ParamCollisionEnumSetEntity extends YdbBaseEntity {
   @YdbPrimaryColumn('Uuid')

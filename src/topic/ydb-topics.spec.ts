@@ -68,7 +68,7 @@ describe('YdbTopics: границы транзакций и ресурсы', () 
 
   it('отклоняет операцию при уже прерванном сигнале привязки', () => {
     const { driver, trx } = fixture();
-    // Сигнал транзакции (таймаут/отмена) уже сработал — ресурс не создаётся.
+    // The transaction signal (timeout/cancellation) has already fired — no resource is created.
     bindTopicTransaction(
       trx,
       trx,

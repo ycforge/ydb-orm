@@ -8,9 +8,9 @@ import {
 } from '../../../src/index.js';
 
 /**
- * Тестовая сущность для проекций с aadOverride (#240): secret использует
- * фиксированный AAD ('pin'), поэтому его проекция не обязана включать
- * AAD-колонку uuid.
+ * Test entity for projections with aadOverride (#240): secret uses a
+ * fixed AAD ('pin'), so its projection does not have to include the
+ * AAD column uuid.
  */
 @YdbEntity('aad_override_secrets')
 export class AadOverrideEntity extends YdbBaseEntity {

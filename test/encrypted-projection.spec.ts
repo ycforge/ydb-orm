@@ -7,9 +7,9 @@ import { LazySecretEntity } from './fixtures/lazy_secret/lazy-secret.entity.js';
 import { AadOverrideEntity } from './fixtures/aad_override/aad-override.entity.js';
 
 /**
- * Строгий провайдер: decrypt падает, если переданный AAD не совпадает ни с
- * одним «принятым» (как реальная authenticate-then-decrypt схема). Позволяет
- * ловить чтение шифрованного поля с неполным AAD.
+ * Strict provider: decrypt fails if the given AAD matches none of the
+ * "accepted" ones (like a real authenticate-then-decrypt scheme). This lets
+ * tests catch reads of an encrypted field with an incomplete AAD.
  */
 class StrictAadProvider extends TestOnlyEncryptionProvider {
   accepted = new Set<string>();
@@ -36,9 +36,9 @@ class StrictAadProvider extends TestOnlyEncryptionProvider {
 }
 
 /**
- * Executor, эмулирующий реальную БД: возвращает строку только из тех колонок,
- * что перечислены в SELECT. Так проекция без AAD-колонки действительно
- * приводит к неполной строке.
+ * Executor emulating a real DB: returns a row built only from the columns
+ * listed in SELECT. Thus a projection without the AAD column really produces
+ * an incomplete row.
  */
 function createProjectingExecutor(fullRows: Record<string, any>[]) {
   const queries: { sql: string }[] = [];

@@ -5,11 +5,11 @@ import type {
 } from '../../src/index.js';
 
 /**
- * Тестовый провайдер шифрования, фиксирующий фактическую конкурентность (#234):
- * `active` — число вызовов encrypt() в полёте, `maxActive` — его пик.
- * Опциональная задержка делает перекрытие вызовов наблюдаемым.
- * Также можно заставить encrypt() бросить на конкретном plaintext для
- * проверки прерывания предобработки.
+ * Test encryption provider that records actual concurrency (#234):
+ * `active` is the number of in-flight encrypt() calls, `maxActive` its peak.
+ * An optional delay makes overlapping calls observable.
+ * encrypt() can also be forced to throw on a specific plaintext to
+ * verify pre-processing interruption.
  */
 export class RecordingEncryptionProvider
   implements YdbEncryptionProvider, YdbBlindIndexProvider

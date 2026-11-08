@@ -246,7 +246,8 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     const [q] = mock.queries;
     expect(q.sql).toContain('`secret_lazy` = $s0');
     expect(q.sql).toContain('`secret_lazy_bi` = $s1');
-    // identity-провайдер: повторное шифрование plaintext даёт исходный ciphertext
+    // identity provider: re-encrypting the plaintext yields the original
+    // ciphertext
     expect((q.params['s0'] as any).value).toEqual(row.secret_lazy);
     expect((q.params['s1'] as any).value).toBe(row.secret_lazy_bi);
     expect(provider.encryptCalls).toEqual(['secret_lazy']);

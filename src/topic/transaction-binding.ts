@@ -5,15 +5,15 @@ import type { YdbExecutor, YdbIsolationLevel } from '../core/interfaces.js';
 
 type TopicTransaction = Parameters<TopicClient['createTxWriter']>[0];
 
-// Привязка хранится вне executor и переносится через штатные обёртки ORM.
-interface Binding {
-  tx: TopicTransaction;
-  driver: Driver;
-  isolation: YdbIsolationLevel;
+export interface TopicTransactionBinding {
+  readonly tx: TopicTransaction;
+  readonly driver: Driver;
+  readonly isolation: YdbIsolationLevel;
   active: boolean;
-  signal?: AbortSignal;
+  readonly signal?: AbortSignal;
 }
-const bindings = new WeakMap<YdbExecutor, Binding>();
+
+const bindings = new WeakMap<YdbExecutor, TopicTransactionBinding>();
 
 export function bindTopicTransaction(
   executor: YdbExecutor,
@@ -22,7 +22,8 @@ export function bindTopicTransaction(
   isolation: YdbIsolationLevel = 'serializableReadWrite',
   signal?: AbortSignal,
 ): void {
-  // SDK переиспользует callable: снимок защищает от соседних транзакций.
+  // The SDK reuses the callable: the snapshot shields it from neighboring
+  // transactions.
   const snapshot: TopicTransaction = Object.freeze({
     sessionId: tx.sessionId,
     transactionId: tx.transactionId,
@@ -31,7 +32,7 @@ export function bindTopicTransaction(
     onClose: tx.onClose.bind(tx),
     signal,
   });
-  const binding: Binding = {
+  const binding: TopicTransactionBinding = {
     tx: snapshot,
     driver,
     isolation,
@@ -71,4 +72,15 @@ export function resolveTopicTransaction(
   }
   binding.signal?.throwIfAborted();
   return binding.tx;
+}
+
+/**
+ * Returns the raw transaction binding without validating it. Used by
+ * YdbTopics to decide whether an active ALS transaction belongs to this
+ * driver/configuration at all.
+ */
+export function getTopicTransactionBinding(
+  executor: YdbExecutor,
+): TopicTransactionBinding | undefined {
+  return bindings.get(executor);
 }

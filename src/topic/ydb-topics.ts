@@ -12,7 +12,10 @@ import type {
 } from '@ydbjs/topic/writer';
 import type { YdbExecutor } from '../core/interfaces.js';
 import { getActiveTransaction } from '../transaction/transaction-context.js';
-import { resolveTopicTransaction } from './transaction-binding.js';
+import {
+  getTopicTransactionBinding,
+  resolveTopicTransaction,
+} from './transaction-binding.js';
 
 export interface YdbTopicOperationOptions {
   trx?: YdbExecutor;
@@ -23,7 +26,7 @@ export type YdbTopicTxWriter = Pick<TopicTxWriter, 'write' | 'flush'>;
 export type YdbTopicReader = TopicReader | YdbTopicTxReader;
 export type YdbTopicWriter = TopicWriter | YdbTopicTxWriter;
 
-/** Работа с существующими топиками. Транзакционными ресурсами владеет SDK. */
+/** Works with existing topics. Transactional resources are owned by the SDK. */
 export class YdbTopics implements AsyncDisposable {
   private readonly client: TopicClient;
   private readonly resources = new Set<TopicReader | TopicWriter>();
@@ -62,8 +65,9 @@ export class YdbTopics implements AsyncDisposable {
     operation?: YdbTopicOperationOptions,
   ): YdbTopicWriter {
     this.assertOpen();
-    // Даже JS-вызов не может обойти проверку транзакции через SDK options.tx.
-    if ('tx' in options)
+    // Even a JS caller cannot bypass the transaction check via SDK options.tx.
+    const sdkOptions = options as TopicWriterOptions;
+    if (sdkOptions.tx !== undefined)
       throw new Error(
         'Pass the ORM transaction via { trx }, not writer options.tx.',
       );
@@ -108,7 +112,7 @@ export class YdbTopics implements AsyncDisposable {
       const results = await Promise.allSettled(
         [...this.resources].map((resource) => resource.close()),
       );
-      // Освобождаем все ресурсы, даже если graceful close одного из них упал.
+      // Release every resource even if a graceful close of one of them failed.
       for (const resource of this.resources) resource.destroy();
       this.resources.clear();
       const errors = results
@@ -131,25 +135,46 @@ export class YdbTopics implements AsyncDisposable {
   private resolveTransaction(operation?: YdbTopicOperationOptions) {
     const active = getActiveTransaction();
     const explicit = operation?.trx;
-    // Сравниваем исходные SDK-транзакции, включая обёрнутые executor.
-    const tx = explicit
+    // Resolve the explicit executor first: it may be a wrapper that inherited
+    // the SDK transaction binding.
+    const explicitTx = explicit
       ? resolveTopicTransaction(explicit, this.driver)
       : undefined;
-    if (active?.ambient) {
+
+    if (!active) return explicitTx;
+
+    const activeBinding = getTopicTransactionBinding(active.trx);
+    const belongsToAnotherDriver =
+      activeBinding !== undefined && activeBinding.driver !== this.driver;
+
+    if (belongsToAnotherDriver && !active.ambient) {
+      // A non-ambient ALS context of another configuration does not constrain
+      // resources of this YdbTopics instance.
+      return explicitTx;
+    }
+
+    if (active.ambient) {
       const ambient = resolveTopicTransaction(active.trx, this.driver);
-      if (tx && tx !== ambient)
+      if (explicitTx && explicitTx !== ambient)
         throw new Error('Topic transaction mixing detected.');
       return ambient;
     }
-    if (active) {
-      // Активная транзакция без ambient: ресурс без явного { trx } вышел бы
-      // из транзакции (writer опубликовал бы сообщение даже при rollback).
-      // Явный отказ вместо тихой утечки; вне транзакции ресурсы создавать можно.
+
+    // Non-ambient transaction: a resource without an explicit { trx } would
+    // escape it (a writer would publish even on rollback). An explicit
+    // transaction is allowed, but it must be the active one to prevent mixing
+    // two transactions in the same async context.
+    if (!explicitTx) {
       throw new Error(
         'Topic resource would escape the active transaction: ' +
           'pass { trx } or enable ambient transactions.',
       );
     }
-    return tx;
+    if (!belongsToAnotherDriver && activeBinding !== undefined) {
+      const activeTx = resolveTopicTransaction(active.trx, this.driver);
+      if (explicitTx !== activeTx)
+        throw new Error('Topic transaction mixing detected.');
+    }
+    return explicitTx;
   }
 }

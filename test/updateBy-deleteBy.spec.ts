@@ -257,6 +257,24 @@ describe('updateBy() / deleteBy()', () => {
       expect(affected).toBe(0);
     });
 
+    it('rejects changing an @YdbSecurityAAD field when encrypted values exist (#238)', async () => {
+      const provider = new RecordingEncryptionProvider();
+      AadEntity.setEncryptionProvider(provider);
+      AadEntity.setBlindIndexProvider(provider);
+      const mock = createMockExecutor([[]]);
+      AadEntity.setExecutor(mock.executor);
+      const newUuid = '00000000-0000-0000-0000-000000000003';
+
+      await expect(
+        AadEntity.updateBy({ uuid: userRow.uuid }, { uuid: newUuid }),
+      ).rejects.toThrow(
+        /cannot change @YdbSecurityAAD field\(s\) "uuid".*undecryptable/,
+      );
+
+      expect(mock.queries).toHaveLength(0);
+      expect(provider.encryptContexts).toHaveLength(0);
+    });
+
     it('updates encrypted field when AAD field is fixed in where', async () => {
       const provider = new RecordingEncryptionProvider();
       AadEntity.setEncryptionProvider(provider);

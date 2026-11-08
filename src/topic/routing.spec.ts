@@ -10,6 +10,7 @@ import {
   createTransactionContext,
   runWithTransactionContext,
 } from '../transaction/transaction-context.js';
+import { YdbTransactionManager } from '../transaction/transaction.manager.js';
 
 const makeResource = () => ({
   read: jest.fn(),
@@ -140,7 +141,7 @@ describe('YdbTopics: маршрутизация SDK', () => {
         await Promise.resolve();
       },
     );
-    // Вне транзакции ресурсы по-прежнему создаются без ограничений.
+    // Outside a transaction resources are still created without restrictions.
     expect('close' in topics.createWriter({ topic: 'news' })).toBe(true);
     await topics.close();
   });
@@ -159,9 +160,98 @@ describe('YdbTopics: маршрутизация SDK', () => {
       async () => {
         const writer = topics.createWriter({ topic: 'news' }, { trx });
         expect('close' in writer).toBe(false);
-        // Тот же снимок SDK TX, что у ambient-транзакции: без ошибки смешивания.
+        // Same SDK TX snapshot as the ambient transaction: no mixing error.
         const expected = resolveTopicTransaction(trx, driver);
         expect(client.createTxWriter.mock.calls.at(-1)![0]).toBe(expected);
+        await Promise.resolve();
+      },
+    );
+    await topics.close();
+  });
+
+  it('allows an explicit trx inside a non-ambient transaction', async () => {
+    const driver = {} as Driver;
+    const trx = txFixture(driver);
+    const topics = new YdbTopics(driver);
+
+    await runWithTransactionContext(
+      createTransactionContext({
+        transactionId: Symbol(),
+        trx,
+        db: trx,
+        ambient: false,
+      }),
+      async () => {
+        const writer = topics.createWriter({ topic: 'news' }, { trx });
+        expect('close' in writer).toBe(false);
+
+        const foreign = txFixture(driver);
+        expect(() =>
+          topics.createWriter({ topic: 'news' }, { trx: foreign }),
+        ).toThrow('mixing');
+        await Promise.resolve();
+      },
+    );
+    await topics.close();
+  });
+
+  it('treats an explicitly undefined options.tx as absent', async () => {
+    const topics = new YdbTopics({} as Driver);
+    const writer = topics.createWriter({
+      topic: 'news',
+      tx: undefined,
+    } as never);
+
+    expect('close' in writer).toBe(true);
+    if ('close' in writer) await writer.close();
+    await topics.close();
+  });
+
+  it('supports the documented runInTransaction + explicit { trx } pattern', async () => {
+    const driver = {} as Driver;
+    const trx = txFixture(driver);
+    const topics = new YdbTopics(driver);
+    const db = Object.assign(
+      () => {
+        throw new Error('query is not expected in this test');
+      },
+      {
+        transaction: () => ({
+          execute: (fn: (trx: YdbExecutor, signal?: AbortSignal) => unknown) =>
+            Promise.resolve(fn(trx)),
+        }),
+      },
+    ) as unknown as YdbExecutor;
+    const manager = new YdbTransactionManager(db);
+
+    await manager.runInTransaction(async (transactionExecutor) => {
+      const writer = topics.createWriter(
+        { topic: 'news' },
+        { trx: transactionExecutor },
+      );
+      expect('close' in writer).toBe(false);
+      await Promise.resolve();
+    });
+
+    await topics.close();
+  });
+
+  it('ignores a non-ambient context of another configuration', async () => {
+    const driver = {} as Driver;
+    const foreignDriver = {} as Driver;
+    const foreignTrx = txFixture(foreignDriver);
+    const topics = new YdbTopics(driver);
+
+    await runWithTransactionContext(
+      createTransactionContext({
+        transactionId: Symbol(),
+        trx: foreignTrx,
+        db: foreignTrx,
+        ambient: false,
+      }),
+      async () => {
+        const writer = topics.createWriter({ topic: 'news' });
+        expect('close' in writer).toBe(true);
         await Promise.resolve();
       },
     );

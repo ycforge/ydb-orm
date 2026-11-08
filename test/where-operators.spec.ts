@@ -10,6 +10,10 @@ import {
 } from './fixtures/param_collision/param-collision.entity.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { TestOnlyEncryptionProvider } from '@ycforge/js-dev-tools';
+import {
+  wrapExecutorWithLogging,
+  type QueryLogEntry,
+} from '../src/core/query-logger.js';
 import { Utf8, Int32, Uuid } from '@ydbjs/value/primitive';
 
 const COLLISION_UUID = '5ad91505-d4f6-4a81-ab65-9dbc68cf4ed5';
@@ -381,7 +385,8 @@ describe('WHERE operators', () => {
       const mock = createMockExecutor([[]]);
       ParamCollisionEnumInt32Entity.setExecutor(mock.executor);
 
-      // 'active' входит в enum-значения: без фикса параметр стал бы Int32(0).
+      // 'active' is a valid enum value: without the fix the parameter would
+      // silently become Int32(0).
       await ParamCollisionEnumInt32Entity.find({ title: 'active' });
 
       const [q] = mock.queries;
@@ -435,13 +440,41 @@ describe('WHERE operators', () => {
       const mock = createMockExecutor([[]]);
       ParamCollisionEnumUtf8Entity.setExecutor(mock.executor);
 
-      // w0 = @YdbEnum({ storage: 'Utf8' }): шаблон LIKE не должен проходить
-      // enum-конверсию (иначе "act%" не входит в значения и бросается ошибка).
+      // w0 = @YdbEnum({ storage: 'Utf8' }): the LIKE pattern must not go
+      // through enum conversion (otherwise "act%" is not an allowed value).
       await ParamCollisionEnumUtf8Entity.find({ w0: { $like: 'act%' } });
 
       const [q] = mock.queries;
       expect(q.params.w0).toBeInstanceOf(Utf8);
       expect((q.params.w0 as any).value).toBe('act%');
+    });
+
+    it('includes the logical field in parameter conversion errors (#238)', async () => {
+      const mock = createMockExecutor([[]]);
+      WhereOperatorEntity.setExecutor(mock.executor);
+
+      await expect(
+        WhereOperatorEntity.find({ uuid: 'not-a-uuid' }),
+      ).rejects.toThrow(/field "uuid"/);
+    });
+
+    it('registers a logical field mapping for query logs (#238)', async () => {
+      const mock = createMockExecutor([[]]);
+      const entries: QueryLogEntry[] = [];
+      const logging = wrapExecutorWithLogging(
+        mock.executor,
+        { log: (entry) => entries.push(entry) },
+        { values: ['name'] },
+      );
+      WhereOperatorEntity.setExecutor(logging);
+
+      await WhereOperatorEntity.find({ name: 'Ivan' });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0].paramFields).toEqual({ w0: 'name' });
+      // logParamValues matches the logical field, even though the SQL
+      // parameter is opaque.
+      expect(entries[0].maskedParams.w0).toBe('Ivan');
     });
   });
 });

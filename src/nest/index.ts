@@ -37,5 +37,6 @@ export {
   getScopedToken,
   getTransactionManagerToken,
   getTopicsToken,
+  getCoreCleanupToken,
 } from './constants.js';
 export type { YdbOptionsFactory, YdbModuleAsyncOptions } from './interfaces.js';

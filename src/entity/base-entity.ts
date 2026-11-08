@@ -293,6 +293,8 @@ export class YdbBaseEntity {
     values: Record<string, any>;
     keys: string[];
     dbSchema: Record<string, YdbPrimitive>;
+    fields: Record<string, string>;
+    effectiveConditions: number;
   }> {
     return getOrCreateRepository(this).persistence.buildWhere(where);
   }
@@ -307,6 +309,7 @@ export class YdbBaseEntity {
     keys: string[],
     dbSchema: Record<string, YdbPrimitive>,
     options?: QueryOptions,
+    fields?: Record<string, string>,
   ): Promise<T[]> {
     return getOrCreateRepository<T>(this).persistence.executeSelect(
       sql,
@@ -314,6 +317,7 @@ export class YdbBaseEntity {
       keys,
       dbSchema,
       options,
+      fields,
     );
   }
 
@@ -327,6 +331,7 @@ export class YdbBaseEntity {
     keys: string[],
     dbSchema: Record<string, YdbPrimitive>,
     options?: QueryOptions,
+    fields?: Record<string, string>,
   ): Promise<number> {
     return getOrCreateRepository(this).persistence.executeCount(
       sql,
@@ -334,6 +339,7 @@ export class YdbBaseEntity {
       keys,
       dbSchema,
       options,
+      fields,
     );
   }
 

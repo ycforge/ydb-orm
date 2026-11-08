@@ -317,9 +317,9 @@ export function validateYdbTtlAgainstSchema(
   const issues: string[] = [];
   const type = columns[ttl.column];
 
-  // Повторная проверка интервала на уровне схемы (defense-in-depth, #236):
-  // метаданные могут быть собраны в обход @YdbTtl, но календарные компоненты
-  // (годы/месяцы) не должны дойти до генерации DDL.
+  // Re-check the interval at the schema level (defense-in-depth, #236):
+  // metadata may be assembled bypassing @YdbTtl, but calendar components
+  // (years/months) must not reach DDL generation.
   const parsed = parseIsoDuration(ttl.interval);
   if (parsed === null) {
     issues.push(

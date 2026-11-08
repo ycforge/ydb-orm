@@ -32,6 +32,7 @@ import {
   getScopedToken,
   getTransactionManagerToken,
   getTopicsToken,
+  getCoreCleanupToken,
 } from './constants.js';
 import { YdbModuleAsyncOptions, YdbOptionsFactory } from './interfaces.js';
 import type { YdbModuleOptions, YdbExecutor } from '../core/interfaces.js';
@@ -92,6 +93,30 @@ async function closeOwnedDriver(
 }
 
 /**
+ * Releases everything a module instance owns: the connection-name claim, the
+ * ORM entity scope, topic resources and the owned driver. Every step is
+ * idempotent, so both the shutdown hook and post-driver provider failure
+ * paths can call it safely (#232).
+ */
+async function disposeCoreModule(
+  state: CoreModuleState,
+  topics: YdbTopics | undefined,
+  opts: { ignoreCloseErrors?: boolean } = {},
+): Promise<void> {
+  releaseCoreModuleInit(state);
+  // The configuration's entities are released: after shutdown they can be
+  // claimed by another configuration (#199).
+  releaseOrmScope(state.ormScope);
+  try {
+    await topics?.close();
+  } catch (error) {
+    if (!opts.ignoreCloseErrors) throw error;
+  } finally {
+    await closeOwnedDriver(state, opts);
+  }
+}
+
+/**
  * Internal core lifecycle provider (#93).
  *
  * - onApplicationBootstrap: schema sync (if `sync: true`). The hook runs
@@ -144,23 +169,13 @@ class YdbCoreModuleLifecycle
   }
 
   /** Idempotent: unregister + release the entity scope (#199)
-   * + close the module-created driver. */
+   * + close topics and the module-created driver. */
   private async dispose(
     opts: { ignoreCloseErrors?: boolean } = {},
   ): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    releaseCoreModuleInit(this.state);
-    // The configuration's entities are released: after shutdown they can be
-    // claimed by another configuration (#199).
-    releaseOrmScope(this.state.ormScope);
-    try {
-      await this.topics.close();
-    } catch (error) {
-      if (!opts.ignoreCloseErrors) throw error;
-    } finally {
-      await closeOwnedDriver(this.state, opts);
-    }
+    await disposeCoreModule(this.state, this.topics, opts);
   }
 }
 
@@ -207,6 +222,7 @@ export class YdbCoreModule {
       lifecycle: getScopedToken(YDB_CORE_LIFECYCLE, name),
       transactionManager: getTransactionManagerToken(name),
       topics: getTopicsToken(name),
+      cleanup: getCoreCleanupToken(name),
     };
     const state: CoreModuleState = {
       entityScope: createEntityScope(),
@@ -235,6 +251,16 @@ export class YdbCoreModule {
           provide: tokens.topics,
           useFactory: (driver: Driver) => new YdbTopics(driver),
           inject: [tokens.driver],
+        },
+        {
+          // Idempotent cleanup for post-driver provider failures (#232), e.g.
+          // invalid entity metadata thrown by a forFeature repository factory
+          // after the driver already exists. The original error is preserved:
+          // close errors are ignored here.
+          provide: tokens.cleanup,
+          useFactory: (topics?: YdbTopics) => () =>
+            disposeCoreModule(state, topics, { ignoreCloseErrors: true }),
+          inject: [{ token: tokens.topics, optional: true }],
         },
         ...asyncProviders,
 
@@ -378,6 +404,7 @@ export class YdbCoreModule {
       ],
       exports: [
         tokens.topics,
+        tokens.cleanup,
         tokens.options,
         tokens.driver,
         tokens.query,
@@ -418,7 +445,7 @@ export class YdbCoreModule {
       return [
         {
           provide: optionsToken,
-          useFactory: async (...args: any[]) => {
+          useFactory: async (...args: unknown[]) => {
             const opts = await options.useFactory!(...args);
             validateYdbModuleOptions(opts);
             claimCoreModuleInit(state);

@@ -71,7 +71,9 @@ export function getTransactionManagerToken(
 
 const YDB_TRANSACTION_MANAGER_BASE = Symbol('YDB_TRANSACTION_MANAGER');
 
-/** DI-токен топиков конкретной конфигурации. */
+const YDB_TOPICS_BASE = Symbol('YDB_TOPICS');
+
+/** DI token of the topics client of a specific configuration. */
 export function getTopicsToken(
   name = DEFAULT_CONNECTION_NAME,
 ): symbol | typeof YdbTopics {
@@ -79,4 +81,16 @@ export function getTopicsToken(
     ? YdbTopics
     : getScopedToken(YDB_TOPICS_BASE, name);
 }
-const YDB_TOPICS_BASE = Symbol('YDB_TOPICS');
+
+/** DI token of the idempotent cleanup function of a specific configuration. */
+export const YDB_CORE_CLEANUP = Symbol('YDB_CORE_CLEANUP');
+
+/**
+ * Cleanup function token (#232): releases the connection-name claim, the ORM
+ * entity scope, topic resources and the owned driver. Post-driver provider
+ * failures (for example, invalid entity metadata in forFeature) call it so a
+ * later bootstrap in the same process is not poisoned.
+ */
+export function getCoreCleanupToken(name = DEFAULT_CONNECTION_NAME): symbol {
+  return getScopedToken(YDB_CORE_CLEANUP, name);
+}

@@ -43,8 +43,8 @@ describe('NestJS: топики (#265)', () => {
       const primary = module.get(YdbTopics);
       const other = module.get<YdbTopics>(getTopicsToken('topics-other'));
       expect(primary).not.toBe(other);
-      // Порядок закрытия проверяем для ОБЕИХ конфигураций: топики раньше
-      // своего драйвера.
+      // Verify the close order for BOTH configurations: topics before
+      // their own driver.
       const primaryClose = primary.close.bind(primary);
       jest.spyOn(primary, 'close').mockImplementation(async () => {
         events.push('topics');
@@ -58,6 +58,14 @@ describe('NestJS: топики (#265)', () => {
     } finally {
       await module.close();
     }
+    expect(events).toEqual(
+      expect.arrayContaining([
+        'topics',
+        'default',
+        'other-topics',
+        'topics-other',
+      ]),
+    );
     expect(events.indexOf('topics')).toBeLessThan(events.indexOf('default'));
     expect(events.indexOf('other-topics')).toBeLessThan(
       events.indexOf('topics-other'),
@@ -85,20 +93,23 @@ describe('NestJS: топики (#265)', () => {
     })
       .overrideProvider(YDB_QUERY)
       .useValue(createMockExecutor())
-      // sync падает на bootstrap -> dispose({ ignoreCloseErrors: true }).
+      // sync fails on bootstrap -> dispose({ ignoreCloseErrors: true }).
       .overrideProvider(YDB_SCHEMA_SYNC)
       .useValue({
         sync: () => Promise.reject(new Error('schema failure')),
       })
       .compile();
     const topics = module.get(YdbTopics);
-    // Закрытие топиков тоже падает: ошибка должна быть проглочена, а не
-    // вытеснить исходную ошибку schema sync.
-    jest.spyOn(topics, 'close').mockRejectedValue(new Error('topic close'));
-    // После провального init() module.close() повторно бросает исходную
-    // ошибку bootstrap — dispose уже выполнен, повторное закрытие не нужно.
+    // Closing topics fails too: the error must be swallowed rather than
+    // replace the original schema sync error.
+    const closeSpy = jest
+      .spyOn(topics, 'close')
+      .mockRejectedValue(new Error('topic close'));
+    // After a failed init() module.close() rethrows the original
+    // bootstrap error — dispose already ran, no second close is needed.
     await expect(module.init()).rejects.toThrow('schema failure');
-    // Драйвер закрыт, несмотря на обе ошибки (ignoreCloseErrors при dispose).
+    // The driver is closed despite both errors (ignoreCloseErrors on dispose).
+    expect(closeSpy).toHaveBeenCalled();
     expect(events).toEqual(['driver']);
   });
 });

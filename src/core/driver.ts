@@ -15,10 +15,11 @@ import { withRetryPolicy } from './retry-executor.js';
 import { resolveYdbRetryPolicy } from './retry.js';
 
 /**
- * Нормализация endpoint (#244): пробелы по краям срезаются в одной точке,
- * чтобы адаптер AuthManager и драйвер выводили транспорт из одного и того же
- * значения. Драйвер трактует endpoint как URL и тоже принимает окружающие
- * пробелы — без нормализации `secure` мог бы разойтись с фактическим режимом.
+ * Endpoint normalization (#244): surrounding whitespace is stripped in one
+ * place so the AuthManager adapter and the driver derive the transport from
+ * the same value. The driver treats the endpoint as a URL and also accepts
+ * surrounding whitespace — without normalization `secure` could diverge from
+ * the actual transport mode.
  */
 export function normalizeEndpoint(endpoint: string): string {
   return endpoint.trim();
@@ -57,8 +58,8 @@ export function validateYdbModuleOptions(
 }
 
 /**
- * Опции адаптера для пути AuthManager (#244): endpoint сначала нормализуется,
- * чтобы `secure` выводился из того же значения, что использует драйвер.
+ * Adapter options for the AuthManager path (#244): the endpoint is normalized
+ * first so `secure` is derived from the same value the driver uses.
  */
 function authAdapterOptions(endpoint: string): {
   endpoint: string;
@@ -70,6 +71,36 @@ function authAdapterOptions(endpoint: string): {
     // grpc:// — local insecure endpoint; grpcs:// — TLS (default).
     secure: !normalized.startsWith('grpc://'),
   };
+}
+
+/** Endpoints that already produced an insecure-transport warning. */
+const warnedInsecureEndpoints = new Set<string>();
+
+/**
+ * Warns once per endpoint when plaintext gRPC is used. `grpc://` sends
+ * credentials and data without TLS, which is acceptable for local development
+ * but dangerous in production.
+ */
+function warnInsecureEndpoint(opts: YdbModuleOptions, endpoint: string): void {
+  if (
+    !endpoint.startsWith('grpc://') ||
+    warnedInsecureEndpoints.has(endpoint)
+  ) {
+    return;
+  }
+  warnedInsecureEndpoints.add(endpoint);
+  const message =
+    `[ydb-orm] Endpoint "${endpoint}" uses grpc:// (insecure transport, ` +
+    'no TLS). Use grpcs:// outside local development.';
+  const logger =
+    typeof opts.logQueries === 'object' && opts.logQueries !== null
+      ? opts.logQueries
+      : undefined;
+  if (logger?.warn) {
+    logger.warn(message);
+  } else {
+    console.warn(message);
+  }
 }
 
 /**
@@ -184,6 +215,7 @@ export async function createDriver(
   credentialsProvider?: CredentialsProvider,
 ): Promise<Driver> {
   const endpoint = validateYdbModuleOptions(opts, credentialsProvider);
+  warnInsecureEndpoint(opts, endpoint);
   // The provider is resolved by the single priority rule (#96) and is passed
   // AFTER spreading driverOptions: driverOptions.credentialsProvider cannot
   // silently overwrite the already-resolved provider.
@@ -197,7 +229,20 @@ export async function createDriver(
     ...restDriverOptions,
     credentialsProvider: resolvedProvider,
   });
-  await driver.ready();
+  try {
+    await driver.ready();
+  } catch (error) {
+    // The Driver constructor starts discovery and allocates a connection pool;
+    // a failed ready() would otherwise leak both resources and poison
+    // subsequent bootstrap attempts in the same process (#232).
+    try {
+      const closing = driver.close() as unknown;
+      if (closing instanceof Promise) await closing;
+    } catch {
+      // Preserve the original connection error.
+    }
+    throw error;
+  }
   return driver;
 }
 
@@ -222,7 +267,7 @@ export function createExecutor(
   // idempotent) pass through to the SDK as is; timeout is implemented by the
   // transaction manager per attempt (a fresh AbortSignal.timeout for each
   // attempt) and never reaches the SDK.
-  const adapted = ((strings: TemplateStringsArray, ...args: any[]) =>
+  const adapted = ((strings: TemplateStringsArray, ...args: unknown[]) =>
     client(strings, ...args)) as unknown as YdbExecutor;
 
   (adapted as any).transaction = (

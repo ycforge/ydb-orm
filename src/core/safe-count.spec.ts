@@ -45,6 +45,8 @@ describe('toSafeCount (#245)', () => {
     expect(() => toSafeCount(1.5)).toThrow(/not a valid integer count/);
     expect(() => toSafeCount(NaN)).toThrow(/not a valid integer count/);
     expect(() => toSafeCount('abc')).toThrow(/not a valid integer count/);
+    expect(() => toSafeCount('')).toThrow(/not a valid integer count/);
+    expect(() => toSafeCount('   ')).toThrow(/not a valid integer count/);
     expect(() => toSafeCount({})).toThrow(/not a valid integer count/);
   });
 });

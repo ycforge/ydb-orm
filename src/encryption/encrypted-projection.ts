@@ -1,18 +1,17 @@
 import type { YdbEntityMetadata } from '../metadata/entity-metadata.js';
 
 /**
- * Вычисляет эффективную SELECT-проекцию с сохранением Security AAD (#240).
+ * Computes the effective SELECT projection while preserving the Security AAD (#240).
  *
- * Если явная проекция выбирает шифрованное поле, чей AAD строится из полей
- * сущности (`@YdbSecurityAAD` и нет `aadOverride`), в проекцию добавляются все
- * отсутствующие AAD-поля. Иначе строка не содержит AAD-значений, при
- * дешифровке собирается другой аутентифицированный контекст и чтение падает.
- * Поля с `aadOverride` используют фиксированный AAD и дополнительных колонок
- * не требуют.
+ * If an explicit projection selects an encrypted field whose AAD is built from
+ * entity fields (`@YdbSecurityAAD` and no `aadOverride`), all missing AAD fields
+ * are added to the projection. Otherwise the row has no AAD values, a different
+ * authenticated context is assembled on decryption and the read fails.
+ * Fields with `aadOverride` use a fixed AAD and require no extra columns.
  *
- * @param meta - метаданные сущности.
- * @param select - запрошенная проекция; `undefined`/пустая — проекция по умолчанию.
- * @returns проекция, дополненная недостающими AAD-колонками.
+ * @param meta - entity metadata.
+ * @param select - requested projection; `undefined`/empty means the default projection.
+ * @returns the projection extended with the missing AAD columns.
  */
 export function resolveEncryptedProjection(
   meta: YdbEntityMetadata,

@@ -373,6 +373,10 @@ await user.loadRelations(['roles']);
 
 `QueryOptions`: `trx`, `timeout` (мс), `signal` (AbortSignal), `limit` (по умолчанию 100, макс 1000; семантика та же, что у `limit()` билдера — см. таблицу ниже: `0` → пустой результат, отрицательное/дробное — ошибка `Invalid LIMIT`), `offset`.
 
+`insertMany()` обрабатывает вход батчами по 100 строк: шифрование и удержание данных ограничены текущим батчем. Как и при ошибке записи SQL-батча, сбой предобработки/шифрования в более позднем батче оставляет ранее записанные батчи в БД (частичная вставка); операция целиком не откатывается.
+
+Явная проекция (`select` в `find`/`findAll` или `select()` в QueryBuilder) при выборе `@YdbEncrypted`-поля автоматически добавляет в SQL недостающие `@YdbSecurityAAD`-колонки — иначе дешифровка построила бы неполный аутентифицированный контекст. Эти добавленные поля будут присутствовать и в возвращённом инстансе (и в `toJSON()`). Поля с `aadOverride` дополнительных колонок не требуют.
+
 `count()` возвращает `Promise<number>`. YDB отдаёт `COUNT(*)` как Int64, который может прийти из драйвера в виде `bigint`, `number` или `string`. Значения до `Number.MAX_SAFE_INTEGER` (2^53 − 1 = `9007199254740991`) возвращаются точно; значение выше диапазона безопасных целых не представимо типом `number` без потери точности, поэтому вместо молчаливого округления `count()` бросает ошибку с фактическим значением. Сужайте выборку через `where`, чтобы считать меньше строк. `QueryBuilder.getCount()` использует ту же семантику.
 
 ## QueryBuilder
@@ -471,7 +475,7 @@ await UserEntity.findAll({
 | many-to-one / one-to-one | `root.fk IN (SELECT target.pk FROM target WHERE pred)` |
 | many-to-many | `root.pk IN (SELECT jt.owner FROM jt WHERE jt.inverse IN (SELECT target.pk FROM target WHERE pred))` |
 
-Пустой предикат `{ tags: {} }` означает «есть хотя бы одна связанная строка». Связи можно вкладывать (`{ linkedUser: { roles: { role: 'admin' } } }`).
+Пустой предикат `{ tags: {} }` означает «есть хотя бы одна связанная строка». Связи можно вкладывать (`{ linkedUser: { roles: { role: 'admin' } } }`). В bulk-операциях (`updateBy`/`deleteBy`) такой пустой предикат не считается значимым условием WHERE: если он единственный, операция отвергается как потенциально full-table.
 
 Ограничения и гарантии:
 
@@ -602,6 +606,8 @@ HMAC-SHA256, KMS) — в пакете `@ycforge/orm-security-providers`.
 
 При `updateBy()` для зашифрованного поля ORM собирает AAD из значений AAD-полей, зафиксированных в `where` (например, по PK). Если AAD не может быть однозначно определён из предиката, ORM бросает ошибку — для явного переопределения можно использовать `aadOverride` в `@YdbEncrypted({ aadOverride: '...' })`.
 
+**`updateBy()` не меняет `@YdbSecurityAAD`-поля.** AAD аутентифицируется в каждом ciphertext, а bulk-обновление не перешифровывает существующие значения. Поэтому патч, содержащий AAD-поле (обычно это PK), отвергается до выполнения запроса: иначе строки стали бы нерасшифровываемыми. Используйте `save()` для перешифровки сущности или обновляйте только не-AAD поля.
+
 **Контракт `updateBy()` для lazy-полей — только plaintext.** В отличие от `save()`, `updateBy()` принимает обычный патч и не знает, что значение скопировано из ещё не расшифрованного `@YdbEncrypted({ lazy: true })` поля. Поэтому ciphertext (`Uint8Array`/`Buffer`) в патче отвергается до выполнения запроса: сначала получите plaintext через `await entity.decryptField('field')` / `await entity.decryptLazyFields()` и передайте его, либо не включайте поле в патч, чтобы оставить значение в БД без изменений. Обычные `string`/`number`/`boolean` значения шифруются как прежде.
 
 ## JSON-колонки
@@ -644,8 +650,8 @@ await EventEntity.query()
   .andWhereJsonExists('metadata', '$.settings.theme')
   .andWhereJsonValue('metadata', '$.role', 'admin')
   .getMany();
-// WHERE (JSON_EXISTS(`metadata`, $metadata_0_jsonexists)
-//    AND JSON_VALUE(`metadata`, $metadata_1_jsonvalue_path) = $metadata_1_jsonvalue_val)
+// WHERE (JSON_EXISTS(`metadata`, $w0)
+//    AND JSON_VALUE(`metadata`, $w1) = $w2)
 ```
 
 ## Schema sync
@@ -993,15 +999,15 @@ YdbCoreModule.forRootAsync({
 ```
 
 - `logQueries: true` — используется `ConsoleQueryLogger` (вывод `[YDB] QUERY <ms>` с SQL и замаскированными параметрами).
-- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void; warn?(message: string): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `maskedParams`, `durationMs` и опциональную `error`. Опциональный `warn` получает предупреждения ORM (см. `warnOutsideTransaction`).
+- `logQueries: <QueryLogger>` — собственный логгер: интерфейс `QueryLogger { log(entry: QueryLogEntry): void; warn?(message: string): void }`. `QueryLogEntry` содержит `sql`, `paramNames`, `paramFields`, `maskedParams`, `durationMs` и опциональную `error`. `paramFields` сопоставляет непрозрачные имена WHERE/SET-параметров (`w0`, `s1`) с исходными полями (`uuid`, `email_encrypted_bi`). Опциональный `warn` получает предупреждения ORM (см. `warnOutsideTransaction`).
 - Утилита `wrapExecutorWithLogging(executor, logger, options?)` позволяет обернуть executor логированием вручную — она же логирует каждый запрос внутри `runInTransaction`.
 - **Значения параметров по умолчанию скрыты (#168)**: raw-значения не попадают в журналы вообще, только тип и укрупнённый класс размера (`<string:1-31>`, `<json:512-2047>`, `<bytes:128-511>`). Точная длина скрыта (чтобы по журналам нельзя было различать значения). Это intentional behavior change: раньше маскировался лишь конечный денylist имён (`password`, `token`, `email`, ...), и значения с произвольными именами (`salary`, `medical_record`, blind-index хеши не из денylist) утекали в лог.
 - **Бинарные значения маскируются всегда**, даже при явном opt-in: ciphertext шифрованных колонок логируется только как `<bytes:<класс размера>>`.
 - **Опциональное raw-раскрытие** — `logParamValues` в `YdbModuleOptions` (standalone и NestJS) или `options.values` у `wrapExecutorWithLogging`:
   - `true` — все значения (кроме бинарных);
-  - `string[]` — только перечисленные имена параметров;
-  - `RegExp` — только имена по маске;
-  - `(name) => boolean` — предикат приложения.
+  - `string[]` — только перечисленные имена параметров или логические поля (для WHERE/SET ORM сравнивает и с `paramFields`, например `"email_encrypted_bi"`);
+  - `RegExp` — только имена/логические поля по маске;
+  - `(name) => boolean` — предикат приложения (получает и имя параметра, и логическое поле).
   При opt-in длинные строки обрезаются до 64 символов. Blind-index хеши — обычные строки: по умолчанию маскируются, раскрываются только при явном opt-in на их имя.
 
 ## Аутентификация
@@ -1010,6 +1016,8 @@ YdbCoreModule.forRootAsync({
 `ydb-orm` больше не реализует собственные стратегии и не парсит env-переменные
 типа `YDB_AUTH_TYPE`. Все способы входа описываются через `AuthManager`, который
 передаётся в опцию `auth`:
+
+При создании драйвера ORM проверяет транспорт: для `grpc://` выводится однократное предупреждение о незашифрованном соединении. Используйте `grpcs://` вне локальной разработки.
 
 ```ts
 import { createAuth, authKeyFromFile } from '@ycforge/auth';
@@ -1400,7 +1408,9 @@ try {
 они присоединяются к активной ambient-транзакции, если она включена. Внутри
 активной транзакции без ambient создание ресурса без `{ trx }` — ошибка:
 ресурс не может тихо выйти из транзакции (writer опубликовал бы сообщение
-даже при rollback таблиц). Вне транзакции ресурс создаётся обычным
+даже при rollback таблиц). Явный `{ trx }` в не-ambient транзакции разрешён:
+ресурс привязывается к переданной транзакции (смешивание с другой активной
+транзакцией отвергается). Вне транзакции ресурс создаётся обычным
 (нетранзакционным). `trx` должен быть получен через `YdbTransactionManager`
 над `createExecutor()` с тем же Driver. Поддерживается только
 `serializableReadWrite`. Чужие, завершённые и неподдерживаемые транзакции
@@ -1450,8 +1460,12 @@ class NewsService {
 
 ```bash
 YDB_ENDPOINT=grpc://localhost:2136/local YDB_AUTH_TYPE=anonymous \
+  YDB_DISABLE_DISCOVERY=1 \
   yarn test:e2e --runInBand --runTestsByPath test/e2e/topics.e2e.spec.ts
 ```
+
+Для локального одноузлового YDB discovery может вернуть недоступный извне адрес;
+`YDB_DISABLE_DISCOVERY=1` заставляет SDK подключаться напрямую к endpoint.
 
 Тесты создают уникальные временные топики, consumer и таблицу, а затем удаляют
 их. Используйте тестовую БД и учётную запись с соответствующими правами.

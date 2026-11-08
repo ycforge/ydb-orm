@@ -29,6 +29,7 @@ export interface BuiltQuery {
 interface CompiledQuery extends BuiltQuery {
   keys: string[];
   dbSchema: Record<string, YdbPrimitive>;
+  fields: Record<string, string>;
 }
 
 type EntityClass<T extends YdbBaseEntity> = {
@@ -320,13 +321,14 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   /** Executes the query and returns entities (with eager relations). */
   async getMany(): Promise<T[]> {
-    const { sql, values, keys, dbSchema } = await this.build();
+    const { sql, values, keys, dbSchema, fields } = await this.build();
     const rows = await this.entity._executeSelect(
       sql,
       values,
       keys,
       dbSchema,
       this.queryOptions,
+      fields,
     );
     return rows as T[];
   }
@@ -350,7 +352,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
   /** COUNT(*) over the same conditions (ignores limit/offset/order). */
   async getCount(): Promise<number> {
     const meta = this.getMeta();
-    const { whereClause, values, keys, dbSchema } =
+    const { whereClause, values, keys, dbSchema, fields } =
       await this.entity._buildWhereClause(this.materialize() ?? {});
     const sql =
       `SELECT COUNT(*) AS cnt FROM ${quoteIdentifier(meta.tableName)}` +
@@ -361,6 +363,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       keys,
       dbSchema,
       this.queryOptions,
+      fields,
     );
   }
 
@@ -380,7 +383,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
 
   private async build(): Promise<CompiledQuery> {
     const meta = this.getMeta();
-    const { whereClause, values, keys, dbSchema } =
+    const { whereClause, values, keys, dbSchema, fields } =
       await this.entity._buildWhereClause(this.materialize() ?? {});
     this.validateOrderFields(dbSchema);
     this.validateSelectFields(dbSchema);
@@ -408,7 +411,7 @@ export class YdbQueryBuilder<T extends YdbBaseEntity> {
       `${whereClause ? ` ${whereClause}` : ''}${orderClause}` +
       ` LIMIT ${this.resolveLimit()} OFFSET ${this.resolveOffset()}`;
 
-    return { sql, values, keys, dbSchema };
+    return { sql, values, keys, dbSchema, fields };
   }
 
   private getMeta() {

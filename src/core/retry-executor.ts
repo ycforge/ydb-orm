@@ -34,8 +34,8 @@ import {
 
 /** AbortError-like error (cancellation), as opposed to application errors. */
 function isAbortLike(error: unknown): boolean {
-  // Нативный DOMException (AbortSignal.throwIfAborted) может принадлежать
-  // другому realm, например в Jest VM: instanceof Error тогда возвращает false.
+  // A native DOMException (AbortSignal.throwIfAborted) may belong to another
+  // realm, e.g. in the Jest VM: instanceof Error then returns false.
   return (
     typeof error === 'object' &&
     error !== null &&
@@ -155,7 +155,7 @@ function createPolicyQuery(
     try {
       return await query;
     } catch (error) {
-      // Пользовательская отмена важнее служебного подавления SDK retry.
+      // User cancellation takes precedence over suppressing the SDK retry.
       if (policySignal?.aborted) throw abortReasonToError(policySignal.reason);
       if (captured && isAbortLike(error)) throw capturedError;
       throw error;

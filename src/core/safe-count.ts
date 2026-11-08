@@ -1,17 +1,17 @@
 /**
- * Безопасное приведение результата COUNT(*) (#245).
+ * Safe conversion of a COUNT(*) result (#245).
  *
- * YDB возвращает YQL-тип Int64, который в драйвере может прийти как `bigint`,
- * `number` либо `string`. Публичный API `count()` типизирован как
- * `Promise<number>`, поэтому значение выше `Number.MAX_SAFE_INTEGER`
- * (2^53 - 1) не может быть представлено точно. Вместо молчаливого округления
- * такое значение отклоняется явной ошибкой.
+ * YDB returns the YQL Int64 type, which the driver may expose as `bigint`,
+ * `number` or `string`. The public `count()` API is typed as
+ * `Promise<number>`, so a value above `Number.MAX_SAFE_INTEGER` (2^53 - 1)
+ * cannot be represented exactly. Instead of silently rounding, such a value
+ * is rejected with an explicit error.
  */
 
-/** Верхняя граница безопасных целых: 2^53 - 1. */
+/** Upper bound of safe integers: 2^53 - 1. */
 const MAX_SAFE_COUNT = BigInt(Number.MAX_SAFE_INTEGER);
 
-/** Нижняя граница безопасных целых: -(2^53 - 1). */
+/** Lower bound of safe integers: -(2^53 - 1). */
 const MIN_SAFE_COUNT = -MAX_SAFE_COUNT;
 
 function unsafeCountError(value: bigint, source: string): Error {
@@ -34,15 +34,16 @@ function bigintReplacer(_key: string, value: unknown): unknown {
 }
 
 /**
- * Приводит результат COUNT(*) к безопасному `number`.
+ * Converts a COUNT(*) result into a safe `number`.
  *
- * - `undefined`/`null` — `0` (текущее поведение по умолчанию);
- * - `bigint` — точное сравнение с границей 2^53 - 1;
- * - `number` — принимается только безопасное целое;
- * - `string` — парсится как целое (`bigint`, с фолбэком на `number`).
+ * - `undefined`/`null` — `0` (the current default behavior);
+ * - `bigint` — exact comparison against the 2^53 - 1 boundary;
+ * - `number` — only a safe integer is accepted;
+ * - `string` — parsed as an integer (`bigint`, with a `number` fallback);
+ *   an empty or whitespace-only string is invalid, not zero.
  *
- * Значение вне безопасного диапазона отклоняется ошибкой — молчаливого
- * округления нет.
+ * A value outside the safe range is rejected with an error — there is no
+ * silent rounding.
  */
 export function toSafeCount(value: unknown): number {
   if (value === undefined || value === null) return 0;
@@ -60,6 +61,9 @@ export function toSafeCount(value: unknown): number {
     count = BigInt(value);
   } else if (typeof value === 'string') {
     const trimmed = value.trim();
+    // BigInt('') is 0n, which would silently turn a malformed driver response
+    // into a zero count.
+    if (trimmed === '') throw invalidCountError(value);
     try {
       count = BigInt(trimmed);
     } catch {
