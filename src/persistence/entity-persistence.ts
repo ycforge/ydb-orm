@@ -700,6 +700,36 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   }
 
   /**
+   * Validates a static JsonPath argument for $jsonExists/$jsonValue.
+   *
+   * YQL forbids parameters in the JsonPath position ("must be explicitly
+   * specified with a string literal"), so the path is interpolated into the
+   * query text as a literal. To keep that interpolation injection-proof, the
+   * path is validated against a strict whitelist grammar and may only contain
+   * segments: `.prop`, `.*`, `[N]`, `[*]`.
+   */
+  private validateJsonPath(path: string, op: string, field: string): string {
+    if (typeof path !== 'string' || path.length === 0 || path[0] !== '$') {
+      throw new Error(
+        `Operator "${op}" on field "${field}" requires a JsonPath starting with "$" and non-empty, got ${JSON.stringify(path)}.`,
+      );
+    }
+    let rest = path.slice(1);
+    const segmentRe = /^(?:\.([A-Za-z_][A-Za-z0-9_]*)|\.\*|\[(?:\*|\d+)\])/;
+    while (rest.length > 0) {
+      const match = segmentRe.exec(rest);
+      if (!match) {
+        throw new Error(
+          `Operator "${op}" on field "${field}": invalid JsonPath segment in ${JSON.stringify(path)} — ` +
+            `allowed after "$": ".prop", ".*", "[digit]", "[*]" — filters, functions, quotes and like_regex are not allowed.`,
+        );
+      }
+      rest = rest.slice(match[0].length);
+    }
+    return path;
+  }
+
+  /**
    * Returns whether the key is a logical WHERE combinator.
    */
   private isLogicalKey(key: string): boolean {
@@ -1062,9 +1092,11 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
           );
         }
-        const name = ctx.nextParam();
-        addParam(name, operand, 'Utf8');
-        return `JSON_EXISTS(${quotedField}, $${name})`;
+        const path = this.validateJsonPath(operand, op, field);
+        // YQL (over YDB) rejects a parameter in the JsonPath position — the
+        // path must be a string literal. The grammar whitelist above makes the
+        // interpolation injection-proof (no quote/semicolon can survive).
+        return `JSON_EXISTS(${quotedField}, "${path}")`;
       }
       case '$jsonValue': {
         const { path, equals } = operand as { path: string; equals: any };
@@ -1083,11 +1115,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             `Operator "${op}" on field "${field}" requires a JSON column (Json, JsonDocument or @YdbJson), got "${fieldType}".`,
           );
         }
-        const pathName = ctx.nextParam();
+        this.validateJsonPath(path, op, field);
         const valName = ctx.nextParam();
-        addParam(pathName, path, 'Utf8');
         addParam(valName, this.normalizeWhereValue(field, equals), 'Utf8');
-        return `JSON_VALUE(${quotedField}, $${pathName}) = $${valName}`;
+        return `JSON_VALUE(${quotedField}, "${path}") = $${valName}`;
       }
       default:
         throw new Error(

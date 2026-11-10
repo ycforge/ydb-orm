@@ -462,6 +462,16 @@ export function generateResetTtlYql(tableName: string): string {
 
 /** The `TTL = Interval(...) ON col [AS unit]` expression, shared by CREATE/ALTER. */
 function ttlExpression(ttl: YdbTtlMetadata): string {
+  // Defense-in-depth (#236): the interval is embedded inside a `"..."` string
+  // literal, so it must be an exact ISO duration. If metadata were ever
+  // assembled bypassing @YdbTtl, a crafted interval containing `"` or `;`
+  // would otherwise break out of the literal into arbitrary DDL.
+  if (isoDurationToMicrosecondsExact(ttl.interval) === null) {
+    throw new Error(
+      `@YdbTtl interval "${ttl.interval}" is not a fixed ISO 8601 duration ` +
+        `representable in YDB Interval (microsecond precision) — refusing DDL (#236)`,
+    );
+  }
   const unitPart = ttl.unit ? ` AS ${ttl.unit.toUpperCase()}` : '';
   return `TTL = Interval("${ttl.interval}") ON ${quoteIdentifier(ttl.column)}${unitPart}`;
 }

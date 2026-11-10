@@ -141,8 +141,25 @@ function toValidJsDate(value: Date | number | string): Date {
 /** Wrappers of JS values into YDB values with type and range validation. */
 const valueMappers: Record<YdbPrimitive, (value: any) => unknown> = {
   Uuid: (value: string) => new Uuid(value),
-  Utf8: (value: string) => new Utf8(value),
-  Bytes: (value: Uint8Array) => new Bytes(value),
+  Utf8: (value: string) => {
+    // Strict runtime input guard: otherwise a crafted arbitrary object would
+    // flow into the unvalidated Ydb Value wrapper and end up in the protobuf
+    // parameter envelope with an attacker-chosen payload oneof.
+    if (typeof value !== 'string') {
+      throw new TypeError(
+        `Utf8 value must be a string, got ${valuePreview(value)}`,
+      );
+    }
+    return new Utf8(value);
+  },
+  Bytes: (value: Uint8Array) => {
+    if (value instanceof Uint8Array === false) {
+      throw new TypeError(
+        `Bytes value must be a Uint8Array, got ${valuePreview(value)}`,
+      );
+    }
+    return new Bytes(value);
+  },
   Int32: (value: number) => {
     if (typeof value !== 'number' || !Number.isInteger(value)) {
       throw new TypeError(
