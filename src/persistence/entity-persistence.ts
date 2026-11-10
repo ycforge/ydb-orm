@@ -357,7 +357,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   ): void {
     if (!select?.length) return;
     for (const field of select) {
-      if (!meta.schema[field]) {
+      if (!Object.hasOwn(meta.schema, field)) {
         throw new Error(
           `Unknown field in select: "${field}" on entity ${this.entityClass.name}. ` +
             `Known fields: ${this.knownFields(meta)}. ` +
@@ -886,7 +886,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
 
-    if (!dbSchema[field]) {
+    if (!Object.hasOwn(dbSchema, field)) {
       throw new Error(
         `Unknown field in WHERE: "${field}" on entity ${this.entityClass.name}. ` +
           `Known fields: ${this.knownFields(meta)}. ` +
@@ -1222,7 +1222,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           // `((A OR B) AND (C OR D))`). A nested $or always wraps itself.
           parts.push(combiner === 'OR' ? `(${joined})` : joined);
         }
-      } else if (!dbSchema[key] && this.findRelation(key)) {
+      } else if (!Object.hasOwn(dbSchema, key) && this.findRelation(key)) {
         // Related filter (#17): the key is a relation property and the value is
         // a predicate over the related entity's columns. Columns are checked
         // first, so existing behavior for fields is unchanged. The
@@ -1520,7 +1520,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       // Only declared columns. Synthetic {field}_bi and ANY column removed from
       // the metadata (#164) are excluded from the instance — otherwise legacy
       // secrets would leak into toJSON()/JSON.stringify().
-      if (!meta.schema[key]) continue;
+      if (!Object.hasOwn(meta.schema, key)) continue;
       const enumMeta = enums.find((e) => e.propertyKey === key);
       let converted = this.convertEnumIn(value, enumMeta);
       converted = this.convertJsonIn(key, converted);
@@ -1912,7 +1912,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       entity,
     );
     const keys = Object.keys(data).filter(
-      (k) => data[k] !== undefined && dbSchema[k],
+      (k) => data[k] !== undefined && Object.hasOwn(dbSchema, k),
     );
     const columns = keys.map(quoteIdentifier).join(', ');
     const values = keys.map((k) => `$${k}`).join(', ');
@@ -1963,7 +1963,10 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       entity,
     );
     const keys = Object.keys(data).filter(
-      (k) => !pkFields.includes(k) && data[k] !== undefined && dbSchema[k],
+      (k) =>
+        !pkFields.includes(k) &&
+        data[k] !== undefined &&
+        Object.hasOwn(dbSchema, k),
     );
     const pkFilter = this.requirePkValues(meta, data, 'update');
     const setClause = keys
@@ -2076,7 +2079,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
       for (const data of dataList) {
         const keys = Object.keys(data)
-          .filter((k) => data[k] !== undefined && dbSchema[k])
+          .filter((k) => data[k] !== undefined && Object.hasOwn(dbSchema, k))
           .sort();
         const signature = keys.join(' ');
         const group = groups.get(signature);
@@ -2282,9 +2285,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       }
     }
 
-    const setKeys = Object.keys(data).filter((k) => dbSchema[k]);
+    const setKeys = Object.keys(data).filter((k) => Object.hasOwn(dbSchema, k));
     for (const k of Object.keys(data)) {
-      if (!dbSchema[k]) {
+      if (!Object.hasOwn(dbSchema, k)) {
         throw new Error(
           `Unknown field in patch: "${k}" on entity ${this.entityClass.name}. ` +
             `Known fields: ${this.knownFields(meta)}. ` +
@@ -2367,7 +2370,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const pkFields = this.getPkFields(meta);
 
     for (const f of pkFields) {
-      if (!dbSchema[f]) {
+      if (!Object.hasOwn(dbSchema, f)) {
         throw new Error(
           `Cannot delete ${this.entityClass.name} by primary key: column "${f}" ` +
             `is not declared. Declare it via @YdbPrimaryColumn ` +
