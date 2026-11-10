@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import { YdbPrimitive } from '../core/types.js';
+import { validateColumnType } from '../core/sql-utils.js';
 import {
   YDB_COLUMNS_KEY,
   YDB_PRIMARY_KEYS_KEY,
@@ -16,6 +17,9 @@ import {
  */
 export function YdbColumn(type: YdbPrimitive): PropertyDecorator {
   return (target, propertyKey) => {
+    // Fail-fast (#91 pattern): an invalid type would surface only later,
+    // at DDL generation (the type string is interpolated there unquoted).
+    validateColumnType(type);
     const constructor = target.constructor;
     const inherited: Map<string, YdbPrimitive> | undefined =
       Reflect.getMetadata(YDB_COLUMNS_KEY, constructor);

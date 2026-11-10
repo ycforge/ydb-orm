@@ -384,3 +384,24 @@ describe('mapToYdb', () => {
     });
   });
 });
+
+describe('mapToYdb crafted-object guards (parameterization boundary)', () => {
+  it('rejects a non-string value for Utf8 before it reaches the YDB wrapper', () => {
+    // A duck-shaped object would otherwise flow through the unvalidated YDB
+    // value wrapper and end up in the protobuf envelope with an
+    // attacker-chosen payload oneof.
+    const crafted = { value: { case: 'int64Value', value: 1n } } as any;
+    expect(() => mapToYdb('Utf8', crafted)).toThrow(
+      /Utf8 value must be a string/,
+    );
+    expect(() => mapToYdb('Utf8', 42 as any)).toThrow(
+      /Utf8 value must be a string/,
+    );
+  });
+
+  it('rejects a non-Uint8Array value for Bytes', () => {
+    expect(() => mapToYdb('Bytes', 'a string' as any)).toThrow(
+      /Bytes value must be a Uint8Array/,
+    );
+  });
+});
