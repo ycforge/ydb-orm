@@ -1980,7 +1980,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       (k) =>
         !pkFields.includes(k) &&
         (entity as Record<string, any>)[k] !== undefined &&
-        dbSchema[k],
+        Object.hasOwn(dbSchema, k),
     );
     if (!rawKeys.length) {
       throw new Error(

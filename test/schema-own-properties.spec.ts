@@ -47,6 +47,25 @@ describe('schema membership excludes Object.prototype properties', () => {
     },
   );
 
+  it.each(['constructor', 'toString', '__proto__'])(
+    'rejects an update containing only a primary key and undeclared %s before SQL execution',
+    async (field) => {
+      const mock = createMockExecutor();
+      User.setExecutor(mock.executor);
+      const user = new User();
+      user.id = '1';
+      Object.defineProperty(user, field, {
+        value: 'undeclared',
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+
+      await expect(User.save(user)).rejects.toThrow(/no fields to update/);
+      expect(mock.queries).toHaveLength(0);
+    },
+  );
+
   it('does not hydrate legacy secrets or replace the entity prototype', () => {
     const row = JSON.parse(
       '{"id":"1","name":"Alice","constructor":"legacy-secret","toString":"legacy-secret","__proto__":{"admin":true}}',
