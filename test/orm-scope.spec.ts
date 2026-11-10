@@ -20,7 +20,10 @@ import {
 } from '../src/transaction/transaction-context.js';
 import { createMockExecutor } from './helpers/mock-executor.js';
 import { createScriptedExecutor } from './helpers/ydb-mock.js';
-import { resolveExecutorLogger } from '../src/core/query-logger.js';
+import {
+  resolveExecutorLogger,
+  wrapExecutorWithLogging,
+} from '../src/core/query-logger.js';
 
 @YdbEntity('scope_users_a')
 class ScopeUserA extends YdbBaseEntity {
@@ -196,7 +199,7 @@ describe('ORM scopes: независимые конфигурации в одн�
 
     const db = createScriptedExecutor();
     const manager = new YdbTransactionManager(db.executor, { ambient: true });
-    const baseExecutor = createMockExecutor().executor;
+    const baseExecutor = db.executor;
 
     await manager.runInTransaction((trx) => {
       expect(getActiveTransaction()?.ambient).toBe(true);
@@ -207,6 +210,70 @@ describe('ORM scopes: независимые конфигурации в одн�
     });
 
     db.assertComplete();
+  });
+
+  it.each([false, true])(
+    'rejects cross-connection ambient reads and writes (explicit trx: %s)',
+    async (explicit) => {
+      const a = createMockExecutor();
+      const b = createMockExecutor();
+      configureEntities([ScopeUserA], {
+        executor: a.executor,
+        scope: createOrmScope('ambient-a'),
+      });
+      configureEntities([ScopeUserB], {
+        executor: b.executor,
+        scope: createOrmScope('ambient-b'),
+      });
+      const manager = new YdbTransactionManager(a.executor);
+      await manager.runInTransaction(
+        async (trx) => {
+          const options = explicit ? { trx } : undefined;
+          await expect(ScopeUserB.findAll({}, options)).rejects.toThrow(
+            /different connection/,
+          );
+          await expect(
+            ScopeUserB.updateBy({ name: 'Alice' }, { name: 'Bob' }, options),
+          ).rejects.toThrow(/different connection/);
+          await expect(
+            ScopeUserB.deleteBy({ name: 'Alice' }, options),
+          ).rejects.toThrow(/different connection/);
+        },
+        { ambient: true },
+      );
+      expect(a.queries).toHaveLength(0);
+      expect(b.queries).toHaveLength(0);
+    },
+  );
+
+  it('does not let ambient state configure an unregistered entity', async () => {
+    const db = createMockExecutor();
+    await new YdbTransactionManager(db.executor).runInTransaction(
+      () => {
+        expect(
+          resolveOperationExecutor(undefined, undefined, 'Unconfigured'),
+        ).toBeUndefined();
+        return Promise.resolve();
+      },
+      { ambient: true },
+    );
+    expect(db.queries).toHaveLength(0);
+  });
+
+  it('recognizes the same connection through a logging wrapper', async () => {
+    const db = createMockExecutor();
+    const wrapped = wrapExecutorWithLogging(db.executor, { log: () => {} });
+    configureEntities([ScopeUserA], {
+      executor: db.executor,
+      scope: createOrmScope('ambient-wrapped'),
+    });
+    await new YdbTransactionManager(wrapped).runInTransaction(
+      async () => {
+        await ScopeUserA.findAll({});
+      },
+      { ambient: true },
+    );
+    expect(db.queries).toHaveLength(1);
   });
 
   it('YdbTransactionManager без настроек — прежнее глобальное поведение', async () => {

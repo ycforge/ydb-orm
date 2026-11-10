@@ -122,6 +122,24 @@ describe('NestJS: несколько независимых конфигурац
     const tmReporting = module.get(getTransactionManagerToken('reporting'));
     expect(tmReporting).toBeDefined();
     expect(tmReporting).not.toBe(tmDefault);
+
+    // Ambient state must not redirect reporting operations to the default DB.
+    await tmDefault.runInTransaction(
+      async () => {
+        await expect(McReport.findAll()).rejects.toThrow(
+          /different connection/,
+        );
+        await expect(
+          McReport.updateBy({ title: 'private' }, { title: 'changed' }),
+        ).rejects.toThrow(/different connection/);
+        await expect(McReport.deleteBy({ title: 'private' })).rejects.toThrow(
+          /different connection/,
+        );
+      },
+      { ambient: true },
+    );
+    expect(execDefault.queries).toHaveLength(1);
+    expect(execReporting.queries).toHaveLength(1);
   });
 
   it('одна сущность в двух конфигурациях — детерминированная ошибка', async () => {

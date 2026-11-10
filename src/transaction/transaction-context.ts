@@ -132,8 +132,11 @@ export function runWithTransactionContext<T>(
  *   different transaction this is almost certainly an error — an active
  *   ambient transaction cannot be mixed with a foreign one, so we throw a
  *   clear error.
- * - Without an explicit trx, when ambient auto-join is enabled, the active
- *   transaction is returned.
+ * - An ambient transaction may only be used by its own connection (including
+ *   logging/retry wrappers with the same executor identity). A foreign
+ *   configured connection is rejected before SQL is sent.
+ * - Without an explicit trx, ambient auto-join requires a configured executor;
+ *   the active transaction is returned only for that connection.
  * - Otherwise — the entity's normal executor; if warnOutsideTransaction is
  *   configured and no transaction is active at all, a warning is emitted.
  *
@@ -154,6 +157,23 @@ export function resolveOperationExecutor(
   const active = storage.getStore();
   const effectiveSettings = resolveTransactionSettings(scopeSettings);
 
+  // ALS is shared by all connections in this process. Never route an entity
+  // configured for another DB through the active ambient transaction. Internal
+  // relation loaders may already carry the resolved transaction as fallback.
+  if (active?.ambient && fallback) {
+    const identity = getTransactionId(fallback);
+    if (
+      identity !== getTransactionId(active.db) &&
+      identity !== getTransactionId(active.trx)
+    ) {
+      throw new Error(
+        `Transaction connection mismatch in ${entityName}: the active ambient ` +
+          'transaction belongs to a different connection. Run this operation ' +
+          'outside that transaction or use the matching connection.',
+      );
+    }
+  }
+
   if (explicitTrx) {
     if (
       active?.ambient &&
@@ -170,7 +190,8 @@ export function resolveOperationExecutor(
   }
 
   if (active?.ambient) {
-    return active.trx;
+    // Ambient state must not implicitly configure an unregistered entity.
+    return fallback ? active.trx : undefined;
   }
 
   // No executor — the caller itself throws a clear "executor not set" error,
