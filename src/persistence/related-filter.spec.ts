@@ -201,7 +201,7 @@ describe('Related-entity filters (#17): findAll({ relation: { column } })', () =
     // Semi-join rather than a JOIN: duplicate root rows are impossible.
     expect(sql.toUpperCase()).not.toContain('JOIN');
     expect(sql).not.toContain("'admin'");
-    expect(sql).toMatch(/LIMIT 100 OFFSET 0$/);
+    expect(sql).toMatch(/LIMIT 101 OFFSET 0$/);
   });
 
   it('2. several related-predicates AND-combined with root conditions', async () => {

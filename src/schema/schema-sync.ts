@@ -1,3 +1,4 @@
+import { SchemeServiceDefinition } from '@ydbjs/api/scheme';
 import { Driver } from '@ydbjs/core';
 import { anyUnpack } from '@bufbuild/protobuf/wkt';
 import {
@@ -972,8 +973,22 @@ export class YdbSchemaSyncer {
    *    a migration is required).
    */
   async sync(entities: (new (...args: any[]) => any)[]): Promise<void> {
-    for (const expected of buildExpectedSchemas(entities)) {
-      const existing = await this.describeTable(expected.tableName);
+    const schemas = buildExpectedSchemas(entities);
+    const descriptions = new Map<string, YdbTableDescription | null>();
+    // Bound cold-start concurrency; wait for every RPC before propagating errors.
+    for (let start = 0; start < schemas.length; start += 4) {
+      const chunk = schemas.slice(start, start + 4);
+      const results = await Promise.allSettled(
+        chunk.map((schema) => this.describeTable(schema.tableName)),
+      );
+      for (let i = 0; i < results.length; i += 1) {
+        const result = results[i];
+        if (result.status === 'rejected') throw result.reason;
+        descriptions.set(chunk[i].tableName, result.value);
+      }
+    }
+    for (const expected of schemas) {
+      const existing = descriptions.get(expected.tableName);
 
       if (!existing) {
         const yql = generateCreateTableYql(expected);
@@ -1146,6 +1161,24 @@ export class YdbSchemaSyncer {
           (operation?.status === StatusIds_StatusCode.SCHEME_ERROR &&
             NOT_FOUND_ISSUE_RE.test(issueText));
         if (notFound) return null;
+        if (
+          operation?.status === StatusIds_StatusCode.SCHEME_ERROR &&
+          !issueText
+        ) {
+          // Older serverless endpoints omit issues in Table.DescribeTable.
+          // Only an authoritative Scheme response may establish absence.
+          const scheme = await this.driver
+            .createClient(SchemeServiceDefinition)
+            .describePath({ path });
+          const status = scheme.operation?.status;
+          const details = this.formatIssues(scheme.operation?.issues);
+          if (
+            status === StatusIds_StatusCode.NOT_FOUND ||
+            (status === StatusIds_StatusCode.SCHEME_ERROR &&
+              NOT_FOUND_ISSUE_RE.test(details))
+          )
+            return null;
+        }
 
         const statusName = operation
           ? (StatusIds_StatusCode[operation.status] ?? operation.status)

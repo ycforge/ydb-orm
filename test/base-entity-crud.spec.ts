@@ -169,13 +169,13 @@ describe('BaseEntity CRUD (mock executor)', () => {
       );
     });
 
-    it('uses default limit 100 and offset 0', async () => {
+    it('probes one row beyond the implicit limit and uses offset 0', async () => {
       const mock = createMockExecutor([[]]);
       UserEntity.setExecutor(mock.executor);
 
       await UserEntity.findAll();
       const [q] = mock.queries;
-      expect(q.sql).toContain('LIMIT 100');
+      expect(q.sql).toContain('LIMIT 101');
       expect(q.sql).toContain('OFFSET 0');
     });
 

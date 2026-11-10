@@ -388,21 +388,22 @@ describe('NestJS integration: жизненный цикл YdbCoreModule (#93)', 
   it('ошибка создания executor после драйвера закрывает его и освобождает слот (#232)', async () => {
     let closeCount = 0;
     const fakeDriver = {
+      get identity() {
+        throw new Error('executor initialization failed');
+      },
       close: () => {
         closeCount++;
       },
     };
 
-    // minSize > maxSize: SessionPool throws RangeError AFTER the driver has
-    // already been created by the YDB_DRIVER provider.
+    // SessionPool reads identity after the driver has been created.
     await expect(
       Test.createTestingModule({
         imports: coreImports(false, {
           driverFactory: () => fakeDriver as unknown as Driver,
-          poolOptions: { minSize: 5, maxSize: 1 },
         }),
       }).compile(),
-    ).rejects.toThrow(/minSize \(5\) cannot exceed maxSize \(1\)/);
+    ).rejects.toThrow('executor initialization failed');
 
     // The original configuration error is propagated; the driver is closed
     // exactly once.

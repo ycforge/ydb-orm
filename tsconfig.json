@@ -20,6 +20,8 @@
     "forceConsistentCasingInFileNames": true,
     "noImplicitAny": true,
     "strictBindCallApply": true,
-    "noFallthroughCasesInSwitch": true
-  }
+    "noFallthroughCasesInSwitch": true,
+    "rootDir": "."
+  },
+  "exclude": ["node_modules", "dist", "dist-examples", ".tmp"]
 }

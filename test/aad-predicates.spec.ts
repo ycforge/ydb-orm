@@ -177,21 +177,20 @@ describe('#166: updateBy() требует однозначный AAD-преди�
     expect(mock.queries).toHaveLength(0);
   });
 
-  it('aadOverride по-прежнему обходит проверку уникальности — где остаётся произвольным', async () => {
+  it('aadOverride does not bypass complete-PK binding for bulk writes', async () => {
     const provider = new RecordingEncryptionProvider();
     AadUniqueEntity.setEncryptionProvider(provider);
     AadUniqueEntity.setBlindIndexProvider(provider);
     const mock = createMockExecutor([[]]);
     AadUniqueEntity.setExecutor(mock.executor);
-
-    await AadUniqueEntity.updateBy(
-      { tenant_id: { $in: ['t1', 't2'] }, org_id: 'o1' },
-      { pinned_secret: 's1' },
-    );
-
-    expect(mock.queries).toHaveLength(1);
-    expect(provider.encrypts).toHaveLength(1);
-    expect(provider.encrypts[0].aad).toBe('fixed-aad');
+    await expect(
+      AadUniqueEntity.updateBy(
+        { tenant_id: { $in: ['t1', 't2'] }, org_id: 'o1' },
+        { pinned_secret: 's1' },
+      ),
+    ).rejects.toThrow('unique AAD predicate');
+    expect(mock.queries).toHaveLength(0);
+    expect(provider.encrypts).toHaveLength(0);
   });
 
   const makeScalarWhere = (when: Date) => ({

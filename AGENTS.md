@@ -90,3 +90,22 @@ GitHub Actions в `.github/workflows/`:
 - Сущности наследуют `YdbBaseEntity`, декорируются `@YdbEntity`/`@YdbColumn`; колонки типизируются примитивами YDB (`Uuid`, `Utf8`, `Bool` и т.д.). Новую сущность-потребителя не забудьте добавить в `YdbOrmModule.forFeature([...])`.
 - Запросы к YDB параметризованы (`query.parameter(...)`) — сохраняйте этот паттерн, не конкатенируйте значения в SQL.
 - `authorized_key.json` (ключ сервисного аккаунта YC) — секретный файл, в `.gitignore`; не коммитить, не выводить содержимое в код/логи/ответы. Это касается и `.env`.
+
+## Encryption binding
+
+`primaryKeyValue` — полный типизированный JSON tuple `pk:v1`, нормализованный
+через SDK. Общая сериализация используется при encrypt/eager/lazy decrypt и
+updateBy с полным PK. Проекции encrypted-полей всегда включают полный PK.
+Lazy pending state хранит исходный fingerprint PK/AAD: изменённая привязка
+отвергается перед сохранением/дешифровкой. Зашифрованный updateBy требует
+равенств всех PK даже с aadOverride; null-clearing остаётся массовым.
+Проверки: test/encryption-binding.spec.ts и test/e2e/encryption-binding.e2e.spec.ts.
+
+## Serverless usability
+
+- `findAll` без limit проверяет границу 100 (SQL LIMIT 101) и бросает ошибку при переполнении. `findAllPaged` у Active Record/Repository читает страницы с ORDER BY по полному PK, pageSize 1–1000, общий limit и offset; без trx нет гарантии единого снимка.
+- `core/json-value.ts`: обычные строки — JSON-значения, готовый JSON-текст требует `rawJson()`. Native JSON уже декодирован SDK, Utf8 + @YdbJson декодируется ORM.
+- Timestamp-декораторы добавляют Timestamp при отсутствии явного типа. ORDER BY типизирован ключами сущности и проверяется синхронно.
+- Schema sync описывает таблицы группами по 4, DDL выполняется последовательно. При Table SCHEME_ERROR без issues проверяет Scheme.DescribePath; неоднозначные ошибки не трактуются как отсутствие.
+- `serverlessYdbOptions()` — консервативный профиль с sync:false; poolOptions соответствуют SessionPoolOptions SDK, неизвестные поля отклоняются.
+- `scripts/build-interop.mjs` создаёт асинхронный CommonJS-мост `@ycforge/ydb-orm/cjs`. `yarn test:package` проверяет его и NestJS DI после tsc → esbuild (packages:external); пример в examples/serverless-nest имеет собственный tsconfig с emitDecoratorMetadata:true. Основной пакет остаётся ESM/Node ≥22.18.

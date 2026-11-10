@@ -58,7 +58,7 @@ describe('JSON columns', () => {
       expect(entity!.document).toEqual(document);
     });
 
-    it('parses native Json/JsonDocument if driver returns strings', async () => {
+    it('preserves string values already decoded by the SDK for native JSON', async () => {
       const mock = createMockExecutor([
         [
           {
@@ -73,8 +73,8 @@ describe('JSON columns', () => {
 
       const entity = await JsonDocEntity.find({ uuid });
 
-      expect(entity!.payload).toEqual(payload);
-      expect(entity!.document).toEqual(document);
+      expect(entity!.payload).toEqual(JSON.stringify(payload));
+      expect(entity!.document).toEqual(JSON.stringify(document));
     });
   });
 

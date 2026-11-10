@@ -1,3 +1,5 @@
+import { YdbColumn } from './column.decorator.js';
+import { YDB_COLUMNS_KEY } from '../metadata/entity-metadata.js';
 import 'reflect-metadata';
 
 export const YDB_CREATE_DATE_KEY = 'ydb:createDateColumn';
@@ -10,6 +12,10 @@ export const YDB_UPDATE_DATE_KEY = 'ydb:updateDateColumn';
  */
 export function YdbCreateDateColumn(): PropertyDecorator {
   return (target, propertyKey) => {
+    const columns = Reflect.getMetadata(YDB_COLUMNS_KEY, target.constructor) as
+      Map<string, unknown> | undefined;
+    if (!columns?.has(String(propertyKey)))
+      YdbColumn('Timestamp')(target, propertyKey);
     Reflect.defineMetadata(
       YDB_CREATE_DATE_KEY,
       propertyKey,
@@ -25,6 +31,10 @@ export function YdbCreateDateColumn(): PropertyDecorator {
  */
 export function YdbUpdateDateColumn(): PropertyDecorator {
   return (target, propertyKey) => {
+    const columns = Reflect.getMetadata(YDB_COLUMNS_KEY, target.constructor) as
+      Map<string, unknown> | undefined;
+    if (!columns?.has(String(propertyKey)))
+      YdbColumn('Timestamp')(target, propertyKey);
     Reflect.defineMetadata(
       YDB_UPDATE_DATE_KEY,
       propertyKey,

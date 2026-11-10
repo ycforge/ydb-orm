@@ -91,7 +91,9 @@ describe('lazy decrypt (@YdbEncrypted({ lazy: true }))', () => {
     expect(provider.decryptContexts[0].aadFields).toEqual({
       uuid: makeRow().uuid,
     });
-    expect(provider.decryptContexts[0].primaryKeyValue).toBe(makeRow().uuid);
+    expect(provider.decryptContexts[0].primaryKeyValue).toBe(
+      JSON.stringify(['pk:v1', [['uuid', 'Uuid', makeRow().uuid]]]),
+    );
 
     // Повторное обращение — из кеша, без вызова провайдера
     const again = await entity.decryptField('secret_lazy');

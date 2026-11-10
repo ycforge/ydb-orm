@@ -48,6 +48,13 @@ export class YdbRepository<T extends YdbBaseEntity> {
     return this.persistence.findOneBy(where, options);
   }
 
+  findAllPaged(
+    where?: Record<string, any>,
+    options?: QueryOptions & { pageSize?: number },
+  ): Promise<T[]> {
+    return this.persistence.findAllPaged(where ?? {}, options);
+  }
+
   findAll(where?: Record<string, any>, options?: QueryOptions): Promise<T[]> {
     return this.persistence.findAll(where ?? {}, options);
   }

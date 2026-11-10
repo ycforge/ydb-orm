@@ -1,3 +1,6 @@
+import { toJs } from '@ydbjs/value';
+import type { Value } from '@ydbjs/value';
+import { serializeJson } from '../core/json-value.js';
 import type { AadFormat } from '../encryption/aad.js';
 import {
   buildAad,
@@ -9,6 +12,7 @@ import { valueIdentityKey } from '../core/value-identity.js';
 import {
   getYdbEntityMetadata,
   type YdbEntityMetadata,
+  type EncryptedFieldMeta,
 } from '../metadata/entity-metadata.js';
 import { mapToYdb } from '../core/mapper.js';
 import { v7 as uuidv7 } from 'uuid';
@@ -35,6 +39,8 @@ import { getEntityRuntime } from '../entity/entity-runtime.js';
 import {
   chunkInValues,
   dedupeInValues,
+  DEFAULT_RETRIEVE_LIMIT,
+  MAX_RETRIEVE_LIMIT,
   resolveRetrieveLimit,
   resolveRetrieveOffset,
 } from '../core/query-limits.js';
@@ -112,6 +118,8 @@ export interface PersistenceDeps {
  * Object.entries/toJSON.
  */
 const lazyPendingCiphertext = new WeakMap<object, Map<string, any>>();
+// Authenticate the original location before reusing pending lazy ciphertext.
+const lazyOriginalBindings = new WeakMap<object, Map<string, string>>();
 
 /**
  * Binary value detector for #243. The encryption provider contract accepts
@@ -398,18 +406,41 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     return filter;
   }
 
-  /**
-   * String representation of the PK for the encryption context: the values of
-   * all components joined with ':'.
-   */
+  /** Normalize key components to the values actually stored by the SDK. */
+  private canonicalKeyValue(field: string, value: unknown): string {
+    const meta = this.getMeta();
+    const enumeration = getYdbEnumMetadata(this.entityClass).find(
+      (item) => item.propertyKey === field,
+    );
+    const stored =
+      enumeration?.storage === 'Int32' && typeof value === 'number'
+        ? value
+        : this.convertEnumOut(value, enumeration);
+    return toAadString(
+      toJs(mapToYdb(meta.schema[field], stored, field) as Value),
+    );
+  }
+
+  /** Canonical complete PK tuple. Missing components never yield a partial identity. */
   pkValueForContext(
     meta: YdbEntityMetadata,
     source: Record<string, any>,
   ): string | undefined {
-    const parts = this.getPkFields(meta)
-      .map((f) => source[f])
-      .filter((v) => v !== undefined && v !== null);
-    return parts.length ? parts.map(String).join(':') : undefined;
+    const fields = this.getPkFields(meta);
+    if (
+      fields.some(
+        (field) => source[field] === undefined || source[field] === null,
+      )
+    )
+      return undefined;
+    return JSON.stringify([
+      'pk:v1',
+      fields.map((field) => [
+        field,
+        meta.schema[field],
+        this.canonicalKeyValue(field, source[field]),
+      ]),
+    ]);
   }
 
   private convertEnumOut(value: any, enumMeta: YdbEnumMeta | undefined): any {
@@ -449,7 +480,9 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       dbType === 'Json' ||
       dbType === 'JsonDocument'
     ) {
-      return typeof value === 'string' ? value : JSON.stringify(value);
+      return dbType === 'Json' || dbType === 'JsonDocument'
+        ? value
+        : serializeJson(value);
     }
     return value;
   }
@@ -459,11 +492,8 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const meta = this.getMeta();
     const dbSchema = getEntityDbSchema(meta);
     const dbType = dbSchema[key];
-    if (
-      meta.jsonColumns.includes(key) ||
-      dbType === 'Json' ||
-      dbType === 'JsonDocument'
-    ) {
+    if (dbType === 'Json' || dbType === 'JsonDocument') return value;
+    if (meta.jsonColumns.includes(key)) {
       return typeof value === 'string' ? JSON.parse(value) : value;
     }
     return value;
@@ -515,13 +545,46 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     }
   }
 
+  private requireEncryptionPk(
+    meta: YdbEntityMetadata,
+    source: Record<string, any>,
+  ): string {
+    const value = this.pkValueForContext(meta, source);
+    if (value === undefined)
+      throw new Error(
+        `Encryption on ${meta.tableName} requires the complete primary key.`,
+      );
+    return value;
+  }
+
+  private lazyBinding(
+    meta: YdbEntityMetadata,
+    entity: Record<string, any>,
+    field: EncryptedFieldMeta,
+  ): string {
+    const pk = this.pkValueForContext(meta, entity);
+    if (pk === undefined)
+      throw new Error(
+        `Encrypted field "${field.propertyKey}" requires the complete primary key.`,
+      );
+    return JSON.stringify([
+      meta.tableName,
+      field.propertyKey,
+      pk,
+      field.aadOverride ?? this.buildAAD(entity, meta.aadFields),
+    ]);
+  }
+
   private buildAAD(
     entity: Record<string, any>,
     aadFieldNames: string[],
   ): string {
     return buildAad(
       aadFieldNames,
-      (name) => entity[name],
+      (name) =>
+        entity[name] === undefined || entity[name] === null
+          ? entity[name]
+          : this.canonicalKeyValue(name, entity[name]),
       this.options.aadFormat ?? DEFAULT_AAD_FORMAT,
     );
   }
@@ -550,14 +613,20 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     context: YdbEncryptionContext,
   ): Promise<string> {
     const format = this.options.aadFormat ?? DEFAULT_AAD_FORMAT;
-    const primary = aadOverride ?? buildAad(names, valueOf, format);
+    const normalized = (name: string) => {
+      const value = valueOf(name);
+      return value === undefined || value === null
+        ? value
+        : this.canonicalKeyValue(name, value);
+    };
+    const primary = aadOverride ?? buildAad(names, normalized, format);
     try {
       return await provider.decrypt(ciphertext, primary, context);
     } catch (primaryError) {
       const fallbackEnabled = this.options.aadReadFallback ?? true;
       if (aadOverride || !fallbackEnabled) throw primaryError;
       const secondary = format === 'v2' ? 'legacy' : 'v2';
-      const fallback = buildAad(names, valueOf, secondary);
+      const fallback = buildAad(names, normalized, secondary);
       try {
         return await provider.decrypt(ciphertext, fallback, context);
       } catch {
@@ -593,14 +662,15 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       entityName: this.entityClass.name,
       tableName: meta.tableName,
       fieldName: '',
-      primaryKeyValue: this.pkValueForContext(meta, entity),
+      primaryKeyValue: this.requireEncryptionPk(meta, entity),
       aadFields: {},
     };
 
     const aadFields: Record<string, string> = {};
     for (const aadName of meta.aadFields) {
       const av = entity[aadName];
-      if (av !== undefined && av !== null) aadFields[aadName] = toAadString(av);
+      if (av !== undefined && av !== null)
+        aadFields[aadName] = this.canonicalKeyValue(aadName, av);
     }
 
     const pendingLazy = source ? lazyPendingCiphertext.get(source) : undefined;
@@ -613,6 +683,14 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       if (value === undefined) continue;
 
       if (ef.lazy && pendingLazy?.get(ef.propertyKey) === value) {
+        const original = source
+          ? lazyOriginalBindings.get(source)?.get(ef.propertyKey)
+          : undefined;
+        if (original !== this.lazyBinding(meta, entity, ef)) {
+          throw new Error(
+            `Cannot save lazy encrypted field "${ef.propertyKey}" after changing its primary key or AAD. Decrypt it before changing the binding.`,
+          );
+        }
         encrypted[ef.propertyKey] = value;
         continue;
       }
@@ -673,7 +751,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       for (const aadName of meta.aadFields) {
         const av = row[aadName];
         if (av !== undefined && av !== null)
-          aadFields[aadName] = toAadString(av);
+          aadFields[aadName] = this.canonicalKeyValue(aadName, av);
       }
 
       for (const ef of meta.encryptedFields) {
@@ -691,7 +769,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
             entityName: this.entityClass.name,
             tableName: meta.tableName,
             fieldName: ef.propertyKey,
-            primaryKeyValue: this.pkValueForContext(meta, row),
+            primaryKeyValue: this.requireEncryptionPk(meta, row),
             aadFields,
           },
         );
@@ -770,7 +848,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
   private extractUniqueAadValue(
     field: string,
     raw: unknown,
-  ): { value: string } | null {
+  ): { value: string; rawValue: unknown } | null {
     if (raw === null || raw === undefined) return null;
     let operand = raw;
     if (this.isOperatorObject(raw)) {
@@ -792,7 +870,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
           `got ${this.formatWhereValue(raw)}`,
       );
     }
-    return { value: toAadString(operand) };
+    return { value: toAadString(operand), rawValue: operand };
   }
 
   private formatWhereValue(value: unknown): string {
@@ -1117,7 +1195,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         }
         this.validateJsonPath(path, op, field);
         const valName = ctx.nextParam();
-        addParam(valName, this.normalizeWhereValue(field, equals), 'Utf8');
+        addParam(valName, equals, 'Utf8');
         return `JSON_VALUE(${quotedField}, "${path}") = $${valName}`;
       }
       default:
@@ -1483,13 +1561,21 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const lazyFields = meta.encryptedFields.filter((ef) => ef.lazy);
     if (lazyFields.length) {
       const pending = new Map<string, any>();
+      const bindings = new Map<string, string>();
       for (const ef of lazyFields) {
         const value = (instance as any)[ef.propertyKey];
         if (value !== null && value !== undefined) {
           pending.set(ef.propertyKey, value);
+          bindings.set(
+            ef.propertyKey,
+            this.lazyBinding(meta, instance as Record<string, any>, ef),
+          );
         }
       }
-      if (pending.size) lazyPendingCiphertext.set(instance, pending);
+      if (pending.size) {
+        lazyPendingCiphertext.set(instance, pending);
+        lazyOriginalBindings.set(instance, bindings);
+      }
     }
     return instance;
   }
@@ -1623,7 +1709,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
 
   /**
    * Finds all entities matching the conditions. With no conditions it returns
-   * the whole table's rows up to the resolveRetrieveLimit default of 100.
+   * at most 100 rows, rejecting overflow unless a limit is explicit.
    * @param where filter conditions (defaults to an empty filter).
    * @param options query options (limit/offset semantics, transaction, etc.).
    * @returns the matching entities.
@@ -1642,7 +1728,7 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const selectClause = effectiveSelect?.length
       ? effectiveSelect.map(quoteIdentifier).join(', ')
       : this.buildDefaultSelect(meta);
-    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${resolveRetrieveLimit(options?.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
+    const sql = `SELECT ${selectClause} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} LIMIT ${options?.limit === undefined ? DEFAULT_RETRIEVE_LIMIT + 1 : resolveRetrieveLimit(options.limit)} OFFSET ${resolveRetrieveOffset(options?.offset)}`;
 
     const query = exec([sql] as unknown as TemplateStringsArray);
     this.bindNormalizedParams(query, values, keys, dbSchema, fields);
@@ -1652,7 +1738,69 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
       options,
     );
 
+    if (
+      options?.limit === undefined &&
+      (rows[0]?.length ?? 0) > DEFAULT_RETRIEVE_LIMIT
+    ) {
+      throw new Error(
+        `findAll() exceeds the implicit ${DEFAULT_RETRIEVE_LIMIT}-row safety limit. Use findAllPaged() or pass an explicit limit.`,
+      );
+    }
     return this.hydrate(rows[0] ?? [], options);
+  }
+
+  /** Reads all matching rows in ordered pages. Use a transaction for a consistent snapshot. */
+  async findAllPaged(
+    where: Record<string, any> = {},
+    options?: QueryOptions & { pageSize?: number },
+  ): Promise<T[]> {
+    const pageSize = options?.pageSize ?? MAX_RETRIEVE_LIMIT;
+    if (
+      !Number.isInteger(pageSize) ||
+      pageSize < 1 ||
+      pageSize > MAX_RETRIEVE_LIMIT
+    ) {
+      throw new Error('pageSize must be an integer between 1 and 1000.');
+    }
+    if (
+      options?.limit !== undefined &&
+      (!Number.isSafeInteger(options.limit) || options.limit < 0)
+    ) {
+      throw new Error('Invalid LIMIT: expected a non-negative safe integer.');
+    }
+    const meta = this.getMeta();
+    if (!meta.primaryKeys.length)
+      throw new Error(
+        'findAllPaged() requires a declared primary key for stable ordering.',
+      );
+    const result: T[] = [];
+    const maximum = options?.limit ?? Infinity;
+    let offset = resolveRetrieveOffset(options?.offset);
+    const exec = this.getExecutor(options?.trx);
+    this.validateSelectFields(options?.select, meta);
+    const projection = resolveEncryptedProjection(meta, options?.select);
+    const select = projection?.length
+      ? projection.map(quoteIdentifier).join(', ')
+      : this.buildDefaultSelect(meta);
+    const { whereClause, values, keys, dbSchema, fields } =
+      await this.buildWhere(where);
+    const order = meta.primaryKeys.map(quoteIdentifier).join(', ');
+    while (result.length < maximum) {
+      options?.signal?.throwIfAborted();
+      const limit = Math.min(pageSize, maximum - result.length);
+      const sql = `SELECT ${select} FROM ${quoteIdentifier(meta.tableName)} ${whereClause} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
+      const query = exec([sql] as unknown as TemplateStringsArray);
+      this.bindNormalizedParams(query, values, keys, dbSchema, fields);
+      const rows = await this.executeQuery<Record<string, any>[][]>(
+        query,
+        options,
+      );
+      const page = rows[0] ?? [];
+      result.push(...(await this.hydrate(page, options)));
+      if (page.length < limit) break;
+      offset += page.length;
+    }
+    return result;
   }
 
   /**
@@ -2120,16 +2268,31 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
                   `for field "${f}"`,
               );
             }
-            resolved[f] = unique.value;
+            resolved[f] = this.canonicalKeyValue(f, unique.rawValue);
           }
           aadFields = resolved;
         }
-        const aad = ef.aadOverride ?? this.buildAAD(aadFields, meta.aadFields);
+        const pkValues: Record<string, unknown> = {};
+        for (const pk of this.getPkFields(meta)) {
+          const unique = this.extractUniqueAadValue(pk, where[pk]);
+          if (!unique)
+            throw new Error(
+              `updateBy() encrypted field "${ef.propertyKey}" requires equality on the complete primary key. Use per-row save() for bulk encryption.`,
+            );
+          pkValues[pk] = unique.rawValue;
+        }
+        const aad =
+          ef.aadOverride ??
+          buildAad(
+            meta.aadFields,
+            (name) => aadFields[name],
+            this.options.aadFormat ?? DEFAULT_AAD_FORMAT,
+          );
         const context: YdbEncryptionContext = {
           entityName: this.entityClass.name,
           tableName: meta.tableName,
           fieldName: ef.propertyKey,
-          primaryKeyValue: this.pkValueForContext(meta, where),
+          primaryKeyValue: this.requireEncryptionPk(meta, pkValues),
           aadFields,
         };
 
@@ -2355,10 +2518,17 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
     const aadFields: Record<string, string> = {};
     for (const aadName of meta.aadFields) {
       const av = (instance as any)[aadName];
-      if (av !== undefined && av !== null) aadFields[aadName] = toAadString(av);
+      if (av !== undefined && av !== null)
+        aadFields[aadName] = this.canonicalKeyValue(aadName, av);
     }
-    const pkField = this.getPkFields(meta)[0];
-    const pkValue = (instance as any)[pkField];
+    if (
+      lazyOriginalBindings.get(instance)?.get(name) !==
+      this.lazyBinding(meta, instance as Record<string, any>, ef)
+    ) {
+      throw new Error(
+        `Cannot decrypt lazy field "${name}" after changing its primary key or AAD. Restore the original binding first.`,
+      );
+    }
 
     const plaintext = await this.decryptWithAadFallback(
       provider,
@@ -2370,17 +2540,21 @@ export class YdbEntityPersistence<T extends YdbBaseEntity> {
         entityName: this.entityClass.name,
         tableName: meta.tableName,
         fieldName: name,
-        primaryKeyValue:
-          pkValue !== undefined && pkValue !== null
-            ? String(pkValue)
-            : undefined,
+        primaryKeyValue: this.pkValueForContext(
+          meta,
+          instance as Record<string, any>,
+        ),
         aadFields,
       },
     );
 
     (instance as any)[name] = plaintext;
     pending.delete(name);
-    if (!pending.size) lazyPendingCiphertext.delete(instance);
+    lazyOriginalBindings.get(instance)?.delete(name);
+    if (!pending.size) {
+      lazyPendingCiphertext.delete(instance);
+      lazyOriginalBindings.delete(instance);
+    }
     return plaintext;
   }
 

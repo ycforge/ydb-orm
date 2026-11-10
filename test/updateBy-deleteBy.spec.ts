@@ -296,7 +296,9 @@ describe('updateBy() / deleteBy()', () => {
       expect(provider.encryptContexts[0].aadFields).toEqual({
         uuid: userRow.uuid,
       });
-      expect(provider.encryptContexts[0].primaryKeyValue).toBe(userRow.uuid);
+      expect(provider.encryptContexts[0].primaryKeyValue).toBe(
+        JSON.stringify(['pk:v1', [['uuid', 'Uuid', userRow.uuid]]]),
+      );
     });
 
     it('updates encrypted field with multiple AAD fields in where', async () => {
@@ -393,7 +395,13 @@ describe('updateBy() / deleteBy()', () => {
         user_uuid: userRow.uuid,
       });
       expect(provider.encryptContexts[0].primaryKeyValue).toBe(
-        `${userRow.uuid}:00000000-0000-0000-0000-000000000002`,
+        JSON.stringify([
+          'pk:v1',
+          [
+            ['user_uuid', 'Uuid', userRow.uuid],
+            ['role_uuid', 'Uuid', '00000000-0000-0000-0000-000000000002'],
+          ],
+        ]),
       );
     });
 
