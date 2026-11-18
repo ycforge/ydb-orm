@@ -7,6 +7,8 @@ import {
   CreateTopicRequestSchema,
   DropTopicRequestSchema,
 } from '@ydbjs/api/topic';
+import type { TopicMessage } from '@ydbjs/topic/message';
+import type { TopicTxReader } from '@ydbjs/topic/reader';
 import {
   createExecutor,
   getNativeTransaction,
@@ -34,8 +36,10 @@ suite('YDB Topics: нативная транзакция через getNativeTra
   let db: YdbExecutor;
   let manager: YdbTransactionManager;
   const prefix = `orm_ntx_${Date.now()}`;
-  const table = `${prefix}_rows`;
   const paths: string[] = [];
+  const tables: string[] = [];
+  const mainTable = `${prefix}_rows`;
+  tables.push(mainTable);
   // The SDK rolls back a transaction fire-and-forget: wait briefly before
   // follow-up queries after a rollback (see topics.e2e.spec.ts).
   const ROLLBACK_SETTLE_MS = 500;
@@ -47,19 +51,23 @@ suite('YDB Topics: нативная транзакция через getNativeTra
       logQueries: { log: () => undefined },
     });
     manager = new YdbTransactionManager(db);
-    await db`CREATE TABLE ${identifier(table)} (id Utf8 NOT NULL, PRIMARY KEY (id))`;
+    await db`CREATE TABLE ${identifier(mainTable)} (id Utf8 NOT NULL, PRIMARY KEY (id))`;
   }, 60000);
 
   afterAll(async () => {
     if (!ctx) return;
     const client = ctx.driver.createClient(TopicServiceDefinition);
-    for (const path of paths)
-      await client.dropTopic(create(DropTopicRequestSchema, { path }));
-    await db`DROP TABLE ${identifier(table)}`;
+    for (const path of paths) {
+      const response = await client.dropTopic(
+        create(DropTopicRequestSchema, { path }),
+      );
+      expect(response.operation?.status).toBe(400000);
+    }
+    for (const table of tables) await db`DROP TABLE ${identifier(table)}`;
     ctx.driver.close();
   }, 60000);
 
-  async function provision(name: string) {
+  async function provision(name: string, consumer = 'processor') {
     const path = `${ctx.dbPath}/${prefix}_${name}`;
     const response = await ctx.driver
       .createClient(TopicServiceDefinition)
@@ -67,7 +75,7 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         create(CreateTopicRequestSchema, {
           path,
           partitioningSettings: { minActivePartitions: 1n },
-          consumers: [{ name: 'processor' }],
+          consumers: [{ name: consumer }],
         }),
       );
     expect(response.operation?.status).toBe(400000);
@@ -75,26 +83,95 @@ suite('YDB Topics: нативная транзакция через getNativeTra
     return path;
   }
 
-  async function countRows(id: string): Promise<number> {
+  async function createResultsTable(name: string) {
+    const table = `${prefix}_${name}`;
+    tables.push(table);
+    await db`CREATE TABLE ${identifier(table)} (id Utf8 NOT NULL, PRIMARY KEY (id))`;
+    return table;
+  }
+
+  async function countRows(table: string, id: string): Promise<number> {
     const rows = await db`SELECT id FROM ${identifier(table)} WHERE id = ${id}`;
     return rows[0].length;
   }
 
-  async function countMessages(path: string): Promise<number> {
+  /** Ordinary (non-tx) writer: seed/cleanup helper, closed right after flush. */
+  async function seedMessage(
+    path: string,
+    payload: string,
+    producer: string,
+  ): Promise<void> {
     const client = createTopicClient(ctx.driver);
-    const reader = client.createReader({ topic: path, consumer: 'processor' });
-    let count = 0;
+    const writer = client.createWriter({ topic: path, producer });
+    writer.write(new TextEncoder().encode(payload));
+    await writer.flush();
+    if ('close' in writer) await writer.close();
+  }
+
+  /**
+   * Reads with an ordinary reader until the bounded wait expires. Resolves
+   * [] when the wait elapses with no messages — this is the EXPECTED
+   * bounded-completion path, NOT a failure. Network/auth errors propagate.
+   */
+  async function readOrdinary(
+    path: string,
+    consumer: string,
+    limit = 10,
+  ): Promise<TopicMessage[]> {
+    const client = createTopicClient(ctx.driver);
+    const reader = client.createReader({ topic: path, consumer });
+    const messages: TopicMessage[] = [];
     try {
       for await (const batch of reader.read({
-        limit: 10,
-        waitMs: 2000,
-        signal: AbortSignal.timeout(10000),
+        limit,
+        waitMs: 3000,
+        signal: AbortSignal.timeout(15000),
       }))
-        count += batch.length;
+        messages.push(...batch);
+      return messages;
     } finally {
       if ('close' in reader) await reader.close();
     }
-    return count;
+  }
+
+  function payload(message: TopicMessage): string {
+    return new TextDecoder().decode(message.payload);
+  }
+
+  /** Bounded read inside a transaction: exactly one batch, then no more reads. */
+  async function readOneTx(reader: TopicTxReader): Promise<TopicMessage[]> {
+    const messages: TopicMessage[] = [];
+    for await (const batch of reader.read({
+      limit: 1,
+      waitMs: 10000,
+      signal: AbortSignal.timeout(30000),
+    })) {
+      messages.push(...batch);
+    }
+    return messages;
+  }
+
+  /**
+   * The real SDK wraps a failed transaction into Error('Transaction failed.')
+   * with the original error in `cause` — assert the STRUCTURE, not just
+   * "some error happened".
+   */
+  function assertTransactionFailedWith(
+    error: unknown,
+    expectedMessage: string,
+  ): void {
+    const top = error as Error | undefined;
+    expect(top?.message).toBe('Transaction failed.');
+    let current: unknown = error;
+    for (let depth = 0; depth < 8 && current; depth += 1) {
+      const cause = (current as { cause?: unknown }).cause;
+      if (cause instanceof Error && cause.message === expectedMessage) return;
+      current = cause;
+    }
+    throw new Error(
+      `Expected the transaction error cause chain to contain "${expectedMessage}", ` +
+        `got: ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`,
+    );
   }
 
   it('commit: строка и сообщение сохраняются вместе (runInTransaction)', async () => {
@@ -108,12 +185,12 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         topic: path,
         producer: 'commit',
       });
-      await trx`UPSERT INTO ${identifier(table)} (id) VALUES ('committed')`;
+      await trx`UPSERT INTO ${identifier(mainTable)} (id) VALUES ('committed')`;
       writer.write(new TextEncoder().encode('committed'));
       await writer.flush();
     });
-    expect(await countRows('committed')).toBe(1);
-    expect(await countMessages(path)).toBe(1);
+    expect(await countRows(mainTable, 'committed')).toBe(1);
+    expect(await readOrdinary(path, 'processor')).toHaveLength(1);
   }, 60000);
 
   it('executor.transaction().execute(): та же нативная транзакция доступна', async () => {
@@ -127,21 +204,21 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         topic: path,
         producer: 'direct',
       });
-      await trx`UPSERT INTO ${identifier(table)} (id) VALUES ('direct')`;
+      await trx`UPSERT INTO ${identifier(mainTable)} (id) VALUES ('direct')`;
       writer.write(new TextEncoder().encode('direct'));
       await writer.flush();
     });
     expect(transactionId).toBeTruthy();
-    expect(await countRows('direct')).toBe(1);
-    expect(await countMessages(path)).toBe(1);
+    expect(await countRows(mainTable, 'direct')).toBe(1);
+    expect(await readOrdinary(path, 'processor')).toHaveLength(1);
   }, 60000);
 
   it('rollback: подтверждённая в транзакции отправка откатывается вместе со строкой', async () => {
     const path = await provision('rollback');
     const topics = createTopicClient(ctx.driver);
     const statuses: Array<'written' | 'writtenInTx' | 'skipped'> = [];
-    await expect(
-      manager.runInTransaction(async (trx) => {
+    const thrown = await manager
+      .runInTransaction(async (trx) => {
         const nativeTx = getNativeTransaction(trx);
         const writer = topics.createTxWriter(nativeTx, {
           topic: path,
@@ -150,15 +227,20 @@ suite('YDB Topics: нативная транзакция через getNativeTra
             if (status) statuses.push(status);
           },
         });
-        await trx`UPSERT INTO ${identifier(table)} (id) VALUES ('rolled_back')`;
+        await trx`UPSERT INTO ${identifier(mainTable)} (id) VALUES ('rolled_back')`;
         writer.write(new TextEncoder().encode('rolled_back'));
         await writer.flush();
         throw new Error('intentional rollback');
-      }),
-    ).rejects.toThrow('intentional rollback');
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    expect(thrown).toBeInstanceOf(Error);
+    assertTransactionFailedWith(thrown, 'intentional rollback');
     await new Promise((resolve) => setTimeout(resolve, ROLLBACK_SETTLE_MS));
-    expect(await countRows('rolled_back')).toBe(0);
-    expect(await countMessages(path)).toBe(0);
+    expect(await countRows(mainTable, 'rolled_back')).toBe(0);
+    expect(await readOrdinary(path, 'processor')).toHaveLength(0);
     // The server acknowledged the write inside the transaction before the
     // rollback — but the message never becomes visible to consumers.
     expect(statuses).toContain('writtenInTx');
@@ -177,7 +259,7 @@ suite('YDB Topics: нативная транзакция через getNativeTra
             topic: path,
             producer: 'reuse',
           });
-          await inner`UPSERT INTO ${identifier(table)} (id) VALUES ('reused')`;
+          await inner`UPSERT INTO ${identifier(mainTable)} (id) VALUES ('reused')`;
           writer.write(new TextEncoder().encode('reused'));
           await writer.flush();
         },
@@ -185,8 +267,8 @@ suite('YDB Topics: нативная транзакция через getNativeTra
       );
     });
     expect(ids[0]).toBe(ids[1]);
-    expect(await countRows('reused')).toBe(1);
-    expect(await countMessages(path)).toBe(1);
+    expect(await countRows(mainTable, 'reused')).toBe(1);
+    expect(await readOrdinary(path, 'processor')).toHaveLength(1);
   }, 60000);
 
   it('retry-политика: новая попытка получает новую нативную транзакцию', async () => {
@@ -209,6 +291,9 @@ suite('YDB Topics: нативная транзакция через getNativeTra
           topic: path,
           producer: `retry_${attempts.length}`,
         });
+        // Each attempt writes BOTH the row and the message inside ITS OWN
+        // transaction — the failed attempt must not survive anywhere.
+        await trx`UPSERT INTO ${identifier(mainTable)} (id) VALUES (${`attempt_${attempts.length}`})`;
         writer.write(new TextEncoder().encode(`attempt_${attempts.length}`));
         await writer.flush();
         if (attempts.length === 1) {
@@ -226,7 +311,96 @@ suite('YDB Topics: нативная транзакция через getNativeTra
     expect(attempts).toHaveLength(2);
     expect(attempts[0]).not.toBe(attempts[1]);
     expect(firstCloseStates).toEqual([false]);
-    expect(await countRows('attempt_2')).toBe(1);
-    expect(await countMessages(path)).toBe(1);
+    expect(await countRows(mainTable, 'attempt_1')).toBe(0);
+    expect(await countRows(mainTable, 'attempt_2')).toBe(1);
+    const messages = await readOrdinary(path, 'processor');
+    expect(messages).toHaveLength(1);
+    expect(payload(messages[0])).toBe('attempt_2');
   }, 60000);
+
+  it('tx reader (commit): сообщение прочитано, результат записан, offset закоммичен', async () => {
+    const path = await provision('reader_commit', 'reader_commit_consumer');
+    const results = await createResultsTable('reader_commit_results');
+    const topics = createTopicClient(ctx.driver);
+    await seedMessage(path, 'reader_message_1', 'reader_commit_seed');
+
+    let seenSeqNo: bigint | undefined;
+    let seenProducer: string | undefined;
+    await manager.runInTransaction(async (trx) => {
+      const nativeTx = getNativeTransaction(trx);
+      // Lifecycle belongs to the transactional hooks — do NOT close the tx
+      // reader inside the callback.
+      const reader = topics.createTxReader(nativeTx, {
+        topic: path,
+        consumer: 'reader_commit_consumer',
+      });
+      const messages = await readOneTx(reader);
+      expect(messages).toHaveLength(1);
+      seenSeqNo = messages[0].seqNo;
+      seenProducer = messages[0].producer;
+      expect(payload(messages[0])).toBe('reader_message_1');
+      await trx`UPSERT INTO ${identifier(results)} (id) VALUES (${`processed_${messages[0].seqNo}`})`;
+    });
+
+    expect(seenSeqNo).toBe(1n);
+    expect(seenProducer).toBe('reader_commit_seed');
+    expect(await countRows(results, 'processed_1')).toBe(1);
+    // The read position was committed together with the result: a NEW reader
+    // on the same consumer must not deliver the processed message again
+    // (checked after the reader is connected — waitMs bounds the wait).
+    const redelivered = await readOrdinary(path, 'reader_commit_consumer', 5);
+    expect(redelivered).toHaveLength(0);
+  }, 120000);
+
+  it('tx reader (rollback): позиция чтения не продвигается, сообщение читается повторно', async () => {
+    const path = await provision('reader_rollback', 'reader_rollback_consumer');
+    const results = await createResultsTable('reader_rollback_results');
+    const topics = createTopicClient(ctx.driver);
+    await seedMessage(path, 'reader_message_2', 'reader_rollback_seed');
+
+    // First transaction: read the message, write the result, then fail.
+    const thrown = await manager
+      .runInTransaction(async (trx) => {
+        const nativeTx = getNativeTransaction(trx);
+        const reader = topics.createTxReader(nativeTx, {
+          topic: path,
+          consumer: 'reader_rollback_consumer',
+        });
+        const messages = await readOneTx(reader);
+        expect(messages).toHaveLength(1);
+        expect(payload(messages[0])).toBe('reader_message_2');
+        await trx`UPSERT INTO ${identifier(results)} (id) VALUES (${`processed_${messages[0].seqNo}`})`;
+        throw new Error('intentional rollback');
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    assertTransactionFailedWith(thrown, 'intentional rollback');
+    expect(await countRows(results, 'processed_2')).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, ROLLBACK_SETTLE_MS));
+
+    // Second transaction with a NEW tx reader on the SAME consumer: the
+    // position was NOT advanced by the rolled-back attempt, so the same
+    // message is delivered again (same seqNo, same content).
+    let retriedSeqNo: bigint | undefined;
+    await manager.runInTransaction(async (trx) => {
+      const nativeTx = getNativeTransaction(trx);
+      const reader = topics.createTxReader(nativeTx, {
+        topic: path,
+        consumer: 'reader_rollback_consumer',
+      });
+      const messages = await readOneTx(reader);
+      expect(messages).toHaveLength(1);
+      retriedSeqNo = messages[0].seqNo;
+      expect(payload(messages[0])).toBe('reader_message_2');
+      await trx`UPSERT INTO ${identifier(results)} (id) VALUES (${`processed_${messages[0].seqNo}`})`;
+    });
+    expect(retriedSeqNo).toBe(1n);
+    expect(await countRows(results, 'processed_2')).toBe(1);
+
+    // Now the position is committed: nothing is redelivered.
+    const redelivered = await readOrdinary(path, 'reader_rollback_consumer', 5);
+    expect(redelivered).toHaveLength(0);
+  }, 120000);
 });
