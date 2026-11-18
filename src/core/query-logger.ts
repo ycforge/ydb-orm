@@ -3,6 +3,7 @@ import {
   ensureExecutorIdentity,
   inheritExecutorIdentity,
 } from '../transaction/transaction-context.js';
+import { inheritNativeTransaction } from './native-transaction.js';
 
 /**
  * Query information for logging.
@@ -419,7 +420,12 @@ export function wrapExecutorWithLogging(
           // The transactional executor is wrapped with the same logger: every
           // query inside runInTransaction (and nested transactions) is logged
           // with the same semantics as ordinary queries.
-          return fn(wrapExecutorWithLogging(trx, logger, options), signal);
+          const loggedTrx = wrapExecutorWithLogging(trx, logger, options);
+          // The native transaction (Topics) is bound to the original trx —
+          // let the logging wrapper resolve the SAME transaction
+          // (getNativeTransaction through the wrapper).
+          inheritNativeTransaction(trx, loggedTrx);
+          return fn(loggedTrx, signal);
         }),
     };
   };

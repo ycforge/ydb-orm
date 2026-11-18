@@ -230,6 +230,8 @@ export type {
 // Transactions
 export { YdbTransactionManager } from './transaction/transaction.manager.js';
 export type { RunInTransactionOptions } from './transaction/transaction.manager.js';
+export { getNativeTransaction } from './core/native-transaction.js';
+export type { YdbNativeTransaction } from './core/native-transaction.js';
 export {
   configureTransactionContext,
   getActiveTransaction,

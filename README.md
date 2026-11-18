@@ -705,6 +705,72 @@ YdbCoreModule.forRootAsync({
 
 ## Транзакции
 
+### Нативная транзакция SDK и YDB Topics (getNativeTransaction)
+
+Внутри транзакционного колбэка можно получить **нативный объект транзакции SDK**
+(`@ydbjs/query` TX) и передать его напрямую в транзакционные writer/reader
+`@ydbjs/topic` (`createTxWriter` / `createTxReader`). Это позволяет одной
+YDB-транзакцией атомарно изменить таблицу и записать сообщение в топик — например,
+вместо паттерна outbox, когда таблица и топик живут в одной БД:
+
+```ts
+import { topic as createTopicClient } from '@ydbjs/topic';
+import { getNativeTransaction } from '@ycforge/ydb-orm';
+
+const topics = createTopicClient(driver);
+
+await txManager.runInTransaction(async (trx) => {
+  const nativeTx = getNativeTransaction(trx); // тот же объект, что отдал SDK
+
+  // Изменение таблицы через ORM — как обычно.
+  await OrderEntity.save(order, { trx });
+
+  // Транзакционный writer Topics на ТОЙ ЖЕ транзакции.
+  const writer = topics.createTxWriter(nativeTx, {
+    topic: `${dbPath}/orders-events`,
+    producer: 'order-service',
+  });
+  writer.write(new TextEncoder().encode(JSON.stringify(eventPayload)));
+  await writer.flush();
+  // Commit/close writer вручную НЕ нужны: хук onCommit у writer сработает
+  // до коммита транзакции (SDK сам завершит транзакцию после возврата колбэка).
+});
+```
+
+Работает и на уровне executor'а:
+
+```ts
+await executor.transaction().execute(async (trx) => {
+  const writer = topics.createTxWriter(getNativeTransaction(trx), { topic });
+  await trx`UPSERT INTO orders ...`;
+  writer.write(...);
+  await writer.flush();
+});
+```
+
+Свойства и границы гарантии:
+
+- **Атомарность — это атомарность изменений YDB** (строка таблицы + сообщение
+  топика в одной БД), а не «ровно один раз» для внешних систем: HTTP-вызов или
+  отправка в ГАС внутри транзакции не откатываются и не повторяются —
+  такие эффекты остаются на совести приложения.
+- **Жизненный цикл транзакции управляется ORM и SDK**: приложение не коммитит,
+  не откатывает и не закрывает транзакцию; при исключении в колбэке SDK
+  откатывает и строку, и сообщение (сервер мог подтвердить отправку как
+  `writtenInTx`, но после отката сообщение потребителю недоступно).
+- **Каждая попытка — новая транзакция**: при retry-политике/`idempotent`
+  колбэк исполняется заново и получает новый объект транзакции; writer
+  предыдущей попытки использовать нельзя (его хуки уже отработали). Регистрируйте
+  writer внутри колбэка на каждой попытке.
+- `getNativeTransaction()` вне транзакции (или после её завершения) бросает
+  понятную ошибку — обычный executor не «притворяется» активной транзакцией.
+  Обёртки executor'а (логирование, retry-политика) и вложенные вызовы с
+  `reuse: true` видят ту же нативную транзакцию.
+- YQL `INSERT INTO topic` **не** заменяет транзакционный writer.
+- Альтернатива: `YdbTopics` из самой ORM уже умеет транзакционные
+  reader/writer через `{ trx }` — `getNativeTransaction` нужен, когда
+  приложение работает с `@ydbjs/topic` напрямую.
+
 ### Standalone
 
 ```ts
