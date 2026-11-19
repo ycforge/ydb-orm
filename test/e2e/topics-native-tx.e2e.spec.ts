@@ -119,7 +119,19 @@ suite('YDB Topics: нативная транзакция через getNativeTra
     limit = 10,
   ): Promise<TopicMessage[]> {
     const client = createTopicClient(ctx.driver);
-    const reader = client.createReader({ topic: path, consumer });
+    // Track partition assignment: a completed read() with zero messages is
+    // only proof of "no redelivery" if a partition was actually assigned and
+    // the server-side committed offset equals the partition end. Without
+    // this, a failed connect / early abort could masquerade as success.
+    const positions: Array<{ committed: bigint; end: bigint }> = [];
+    const reader = client.createReader({
+      topic: path,
+      consumer,
+      onPartitionSessionStart: (_session, committed, offsets) => {
+        positions.push({ committed, end: offsets.end });
+        return Promise.resolve();
+      },
+    });
     const messages: TopicMessage[] = [];
     try {
       for await (const batch of reader.read({
@@ -128,6 +140,11 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         signal: AbortSignal.timeout(15000),
       }))
         messages.push(...batch);
+      expect(positions.length).toBeGreaterThan(0);
+      if (messages.length === 0) {
+        for (const position of positions)
+          expect(position.committed).toBe(position.end);
+      }
       return messages;
     } finally {
       if ('close' in reader) await reader.close();
@@ -358,6 +375,7 @@ suite('YDB Topics: нативная транзакция через getNativeTra
     const topics = createTopicClient(ctx.driver);
     await seedMessage(path, 'reader_message_2', 'reader_rollback_seed');
 
+    let firstSeqNo: bigint | undefined;
     // First transaction: read the message, write the result, then fail.
     const thrown = await manager
       .runInTransaction(async (trx) => {
@@ -368,6 +386,7 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         });
         const messages = await readOneTx(reader);
         expect(messages).toHaveLength(1);
+        firstSeqNo = messages[0].seqNo;
         expect(payload(messages[0])).toBe('reader_message_2');
         await trx`UPSERT INTO ${identifier(results)} (id) VALUES (${`processed_${messages[0].seqNo}`})`;
         throw new Error('intentional rollback');
@@ -377,7 +396,7 @@ suite('YDB Topics: нативная транзакция через getNativeTra
         (error: unknown) => error,
       );
     assertTransactionFailedWith(thrown, 'intentional rollback');
-    expect(await countRows(results, 'processed_2')).toBe(0);
+    expect(await countRows(results, `processed_${firstSeqNo}`)).toBe(0);
     await new Promise((resolve) => setTimeout(resolve, ROLLBACK_SETTLE_MS));
 
     // Second transaction with a NEW tx reader on the SAME consumer: the
@@ -396,8 +415,9 @@ suite('YDB Topics: нативная транзакция через getNativeTra
       expect(payload(messages[0])).toBe('reader_message_2');
       await trx`UPSERT INTO ${identifier(results)} (id) VALUES (${`processed_${messages[0].seqNo}`})`;
     });
-    expect(retriedSeqNo).toBe(1n);
-    expect(await countRows(results, 'processed_2')).toBe(1);
+    expect(firstSeqNo).toBe(1n);
+    expect(retriedSeqNo).toBe(firstSeqNo);
+    expect(await countRows(results, `processed_${firstSeqNo}`)).toBe(1);
 
     // Now the position is committed: nothing is redelivered.
     const redelivered = await readOrdinary(path, 'reader_rollback_consumer', 5);
