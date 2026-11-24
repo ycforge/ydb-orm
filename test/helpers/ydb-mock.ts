@@ -4,6 +4,7 @@ import type {
   YdbQuery,
   YdbTransactionOptions,
 } from '../../src/index.js';
+import { bindNativeTransaction } from '../../src/core/native-transaction.js';
 
 /**
  * Программируемый детерминированный мок YdbExecutor (#109).
@@ -318,16 +319,42 @@ export function createScriptedExecutor(
         const trxLabel = `${label}-trx-${++txCounter}`;
         transactionEvents.push({ type: 'begin', options, label: trxLabel });
 
+        // A fake native transaction, as @ydbjs/query would provide: fresh
+        // object per attempt, hooks fired on commit/rollback. Bound to the
+        // attempt executor so getNativeTransaction() works with mocks.
+        const commitHooks: Array<(s?: AbortSignal) => unknown> = [];
+        const rollbackHooks: Array<
+          (error: unknown, s?: AbortSignal) => unknown
+        > = [];
+        const closeHooks: Array<
+          (committed: boolean, s?: AbortSignal) => unknown
+        > = [];
+        const fakeTx = {
+          sessionId: `session-${trxLabel}`,
+          transactionId: trxLabel,
+          onCommit: (fn: (s?: AbortSignal) => unknown) => commitHooks.push(fn),
+          onRollback: (fn: (error: unknown, s?: AbortSignal) => unknown) =>
+            rollbackHooks.push(fn),
+          onClose: (fn: (committed: boolean, s?: AbortSignal) => unknown) =>
+            closeHooks.push(fn),
+        };
+
         // У транзакции свой executor-«сессия»: видно, какой executor
         // реально выполнил каждый шаг, но очередь сценария общая —
         // порядок begin→шаги→commit|rollback проверяется глобально.
         const prevOpen = openTransactionLabel;
         openTransactionLabel = trxLabel;
+        const attemptTrx = makeScopedExecutor(trxLabel);
+        bindNativeTransaction(attemptTrx, fakeTx);
         try {
-          const result = await fn(makeScopedExecutor(trxLabel));
+          const result = await fn(attemptTrx);
+          for (const hook of commitHooks) await hook();
+          for (const hook of closeHooks) await hook(true);
           transactionEvents.push({ type: 'commit', label: trxLabel });
           return result;
         } catch (error) {
+          for (const hook of rollbackHooks) await hook(error);
+          for (const hook of closeHooks) await hook(false);
           transactionEvents.push({
             type: 'rollback',
             label: trxLabel,

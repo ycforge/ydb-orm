@@ -1,4 +1,5 @@
 import { bindTopicTransaction } from '../topic/transaction-binding.js';
+import { bindNativeTransaction } from './native-transaction.js';
 import { Driver } from '@ydbjs/core';
 import { query } from '@ydbjs/query';
 import { CredentialsProvider } from '@ydbjs/auth';
@@ -313,6 +314,9 @@ export function createExecutor(
             ...args: unknown[]
           ) => tx(strings, ...args)) as unknown as YdbExecutor;
           bindTopicTransaction(transactionExecutor, tx, driver, isolation, sgn);
+          // Native transaction accessor (Topics): the callback can resolve
+          // the raw SDK transaction of THIS attempt via getNativeTransaction().
+          bindNativeTransaction(transactionExecutor, tx, sgn);
           return fn(transactionExecutor, sgn);
         },
       );
